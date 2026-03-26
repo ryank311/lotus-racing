@@ -65,47 +65,48 @@ Handling:
 Ride Height:
   130mm
 
+Front Caster:
+  3.2 degrees
+
 Front toe:
-  0mm
+  0mm total
 
 Rear Toe:
-  2mm toe in
+  3.3mm total toe-in
 
 Front Camber:
-  -3 Degrees
+  Left: -2.8 degrees
+  Right: -2.7 degrees
 
 Rear Camber:
-  -3 Degrees
+  Left: -2.8 degrees
+  Right: -2.6 degrees
 
 
 ## Setup Research: Reducing Oversteer & Optimizing Handling
 
 ### 1. Alignment Changes to Reduce Trail-Brake and Lift-Off Oversteer
 
-Your current setup: -3F/-3R camber, 0mm front toe, 2mm rear toe-in, 130mm ride height.
+Your current setup: -2.8/-2.7 front camber, -2.8/-2.6 rear camber, 0mm front toe, 3.3mm rear toe-in, 3.2 deg front caster, 130mm ride height.
 
-**Rear Toe-In (Most Impactful Change)**
-Your 2mm total rear toe-in is on the low side for a track Exige fighting oversteer. The Lotus factory spec is 1.2-1.8mm per side (2.4-3.6mm total), and experienced Exige track drivers converge on 3mm total as the baseline for R-compound tires. Sector 111, EuroSport, and multiple pro drivers all recommend 3mm total rear toe-in as a starting point.
+**Rear Toe-In: 3.3mm total -- Already in the sweet spot**
+Factory spec is 2.4-3.6mm total, community consensus for R-comps is 3-3.5mm. Your 3.3mm is right where it should be. No change needed.
 
-Recommended change: Increase rear toe-in from 2mm total to 3-3.5mm total. For your oversteer issues, start at 3mm and go up to 4mm if needed. More rear toe-in directly increases rear stability and reduces both trail-brake and lift-off oversteer. The trade-off is slightly more tire wear and a slight tendency toward understeer, but at 2mm you are leaving stability on the table. No experienced Exige track driver recommends less than 2mm total, and many consider 3mm the minimum safe track setting for a mid-engine car with 40/60 weight distribution.
+**Rear Camber: -2.8L / -2.6R -- Already in range**
+The recommended range is -2.5 to -2.8 for track use. Your values are already there. At a future alignment, evening both sides to -2.7 would be ideal but is not a priority.
 
-**Rear Camber (Reduce from -3.0 to -2.5 or -2.7)**
-At -3.0 degrees rear, you are at the upper end of what the community runs. Hoosier's own documentation says 3 degrees is optimal for maximum grip but recommends 2.5 degrees as the best wear/speed compromise. Several experienced Exige owners have commented that -3 rear is aggressive, and the commonly recommended range is -2.4 to -2.7 rear. At -3 rear on a car with 60% rear weight, you may be losing some rear stability under braking and transitions as the tires are running on a narrower contact patch.
+**Front Camber: -2.8L / -2.7R -- Maxed out**
+The Exige uses shims for camber adjustment. All shims are removed, so -2.8/-2.7 is the maximum available camber without aftermarket modifications (e.g., offset bushings or machined uprights). This is adequate for track use.
 
-Recommended change: Reduce rear camber to -2.5 to -2.7 degrees. This will give you a wider contact patch under braking (more rear stability during trail-braking) while still keeping enough camber for cornering grip.
+**Front Toe: 0mm -- Correct**
+Zero front toe is standard for track use. Keep at 0mm.
 
-**Front Camber (Keep at -3.0 or go slightly higher if possible)**
-Front camber at -3.0 is appropriate and possibly could even be more if your suspension geometry allows it. The Exige is notorious for not having enough front camber, and the car's tendency toward oversteer is partly because the rear has proportionally too much grip relative to the front. Keeping high front camber maximizes front grip, which counterbalances the rear's tendency to break away. Some owners shave the front uprights to achieve -2.5+ degrees, so your -3.0 front is excellent.
-
-**Front Toe (Keep at 0mm)**
-Zero front toe is standard for track use and is correct. Adding front toe-out would make turn-in sharper but could make the car less stable during trail-braking. Keep at 0mm.
-
-**Summary of Recommended Alignment Changes:**
-- Front camber: Keep -3.0 (or add more if possible)
-- Rear camber: Reduce from -3.0 to -2.5 or -2.7
-- Front toe: Keep 0mm
-- Rear toe-in: Increase from 2mm to 3-3.5mm total
-- This creates a camber split matching the weight distribution: more front camber for the lighter end that needs grip, less rear camber for the heavier end that needs stability
+**Summary of Alignment Status:**
+- Front camber: Maxed at -2.8/-2.7 (all shims removed)
+- Rear camber: Maxed at -2.8/-2.6 (all shims removed)
+- Front toe: Good as-is (0mm)
+- Rear toe-in: Good as-is (3.3mm total)
+- No alignment changes available without aftermarket camber modification parts
 
 ### 2. Anti-Roll Bar (ARB/Sway Bar) Setup
 

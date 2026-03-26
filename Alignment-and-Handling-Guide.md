@@ -1,47 +1,53 @@
 # Alignment, Tires, and Handling Balance -- 2008 Exige Club Racer
 
-## Current Alignment
+## Current Alignment (from last track alignment sheet)
 
-| Parameter | Front | Rear |
-|-----------|-------|------|
-| Camber | -3.0 deg | -3.0 deg |
-| Toe | 0mm | 2mm toe-in |
-| Ride height | 130mm | 130mm |
+| Parameter | Front Left | Front Right | Rear Left | Rear Right |
+|-----------|-----------|-------------|-----------|------------|
+| Camber | -2.8 deg | -2.7 deg | -2.8 deg | -2.6 deg |
+| Toe | 0mm total | | 3.3mm total toe-in | |
+| Caster | 3.2 deg | 3.2 deg | -- | -- |
+| Ride height | 130mm | | 130mm | |
 
 Springs: 550 lbs/in front, 700 lbs/in rear
 Tires: Hoosier A7 -- 205/45/16 front, 225/40/17 rear
 
 ---
 
-## Recommended Alignment Changes
+## Alignment Assessment
 
-These changes are prioritized by expected impact on your oversteer issue.
+Your alignment is already well-dialed. Here's the breakdown:
 
-### 1. Increase Rear Toe-In: 2mm -> 3mm (HIGH PRIORITY)
+### Rear Toe-In: 3.3mm total -- GOOD, no change needed
 
-**This is the single most impactful alignment change you can make.**
-
-Your current 2mm is below both the Lotus factory spec (2.4-3.6mm total) and the community consensus of 3mm for R-compound tires. Rear toe-in acts as a passive stability mechanism -- the rear tires are pre-loaded to resist rotation.
-
-- Factory spec: 2.4-3.6mm total toe-in
+Right in the sweet spot:
+- Factory spec: 2.4-3.6mm total
 - Community consensus for track use with R-comps: 3-3.5mm
-- The 340R Track geometry (Lotus's own aggressive track setup): 3mm rear toe-in
+- This is not contributing to your oversteer
 
-At 2mm, you have less rear stability than Lotus intended even for street driving. On sticky A7s that generate high cornering forces, the rear is being asked to handle more lateral load than the toe-in can stabilize.
+### Rear Camber: -2.8L / -2.6R -- GOOD, minor note
 
-**Trade-off:** More rear toe-in = slightly more tire drag on straights and marginally higher rear tire wear. At your power level (218 hp) this is negligible.
+Already in the recommended range (-2.5 to -2.8). The slight left/right asymmetry is within normal tolerance. If you get a future alignment, evening these to -2.7 both sides would be ideal, but not a priority.
 
-### 2. Reduce Rear Camber: -3.0 -> -2.5 to -2.7 degrees (HIGH PRIORITY)
+### Front Camber: -2.8L / -2.7R -- MAXED OUT (shims)
 
-At -3.0 degrees rear with 60% of the car's weight on the rear axle, the contact patch is narrower than ideal, particularly during trail-braking when the rear is unloading.
+The Exige uses shims for camber adjustment. All shims are currently removed, meaning -2.8/-2.7 is the maximum available without aftermarket parts (offset bushings or machined uprights). Ideally -3.0+ front would help counter oversteer, but this is not available through the stock adjustment method. Not worth pursuing unless you decide to invest in aftermarket camber solutions.
 
-- Keep front at -3.0 degrees (the lighter front axle benefits from aggressive camber for turn-in grip)
-- Reduce rear to -2.5 or -2.7 degrees
-- This creates a camber split that matches your 40/60 weight distribution
+### Front Caster: 3.2 degrees -- STANDARD
 
-**What your pyrometer data should confirm:** If the inside edge of your rear tires runs significantly hotter than the outside, you have more camber than needed. Even temps across the tread = correct camber for your pressures and driving style.
+Normal range for the Exige. More caster adds straight-line stability and dynamic camber gain in corners, but adjustment range is limited on this platform.
 
-### 3. Lower Ride Height: 130mm -> 120mm front / 125mm rear (MEDIUM PRIORITY)
+### Front Toe: 0mm -- CORRECT
+
+- Long front straight at VIR rewards low drag
+- Turn-in is not the issue (you have oversteer, not understeer)
+- If you ever want slightly sharper turn-in, 0.5-1mm toe-out is an option, but address the oversteer first
+
+---
+
+## Recommended Changes
+
+### 1. Lower Ride Height: 130mm -> 120mm front / 125mm rear (HIGHEST PRIORITY)
 
 Your Railer 5-element diffuser needs low ride height to function effectively:
 - At 130mm, the diffuser is producing minimal downforce
@@ -57,12 +63,9 @@ Your Railer 5-element diffuser needs low ride height to function effectively:
 - Hog Pen bumps + stiff springs + lower ride height = higher risk of bottoming
 - Consider running 3-5mm more ride height than your "ideal" as insurance until you know the car's limits at each point
 
-### 4. Front Toe: Keep at 0mm
+### 2. Front Camber -- MAXED OUT, no change available
 
-0mm front toe is correct for your application:
-- Long front straight at VIR rewards low drag
-- Turn-in is not the issue (you have oversteer, not understeer)
-- If you ever want slightly sharper turn-in, 0.5-1mm toe-out is an option, but address the oversteer first
+All shims are removed on both front and rear. Current values (-2.8/-2.7 front, -2.8/-2.6 rear) are the maximum the stock adjustment allows. More front camber would help counter oversteer, but would require aftermarket parts (offset bushings or machined uprights). Not recommended as a priority given the cost/complexity vs. the gains available from damper tuning and ride height.
 
 ---
 
@@ -72,7 +75,7 @@ The Exige has **no rear anti-roll bar from factory** -- only a front bar.
 
 - If your front bar is adjustable (some aftermarket options), stiffening it one position shifts balance toward understeer
 - **Do not add a rear bar** to fix oversteer -- a rear ARB will generally make rear oversteer worse by increasing rear lateral load transfer
-- The front bar should be left at its current setting until the damper and alignment changes are evaluated
+- The front bar should be left at its current setting until the damper changes are evaluated
 
 ---
 
@@ -134,14 +137,14 @@ Your 550/700 ratio = front is 21% softer than rear.
 
 ## Change Priority and Tracking
 
-### Recommended Order of Changes
+### Revised Order of Changes (with correct alignment data)
 
 1. **Damper rebound split** (see Suspension-Tuning-Guide.md) -- Free, reversible, do it first
-2. **Rear toe-in to 3mm** -- Requires alignment appointment, high impact
-3. **Rear camber to -2.5 or -2.7** -- Do at the same time as toe change
-4. **Tire pressures** -- Start with 26F/28R cold, use pyrometer to dial in
-5. **Ride height** -- Lower to 120/125mm after validating handling at current height
-6. **Damper compression tuning** -- Fine-tune after alignment is set
+2. **Tire pressures** -- Start with 26F/28R cold, use pyrometer to dial in
+3. **Ride height** -- Lower to 120/125mm to activate the diffuser
+4. **Damper compression tuning** -- Fine-tune after ride height is set
+
+Note: Alignment is essentially maxed out with all shims removed. Rear toe (3.3mm) and all camber values are already in the recommended range. No alignment changes are available without aftermarket camber modification parts.
 
 ### What to Evaluate After Each Change
 
