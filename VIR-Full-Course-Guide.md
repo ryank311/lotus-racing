@@ -234,11 +234,13 @@ Your existing alignment research (in Lotus.md) is thorough. VIR-specific notes:
 
 ### Ride Height at VIR
 
-Your current 130mm is safe for all of VIR. If you lower to the recommended 120/125mm:
+**Measured (2026-03-27, settled):** 122mm all corners (level, no rake). Target: 120mm front / 125mm rear (5mm positive rake). See Alignment-and-Handling-Guide.md for specific per-shock adjustment instructions.
 
-- **Watch the compression at the bottom of the roller coaster** (between Oak Tree exit and the back straight). This is the lowest point on the circuit and where bottoming is most likely.
-- **Watch the Hog Pen bumps.** Lower ride height + stiff springs + elevation drop = higher risk of bottoming.
-- The diffuser will be more effective at lower ride heights, which matters most on the high-speed sections (front straight, back straight, Esses).
+After adjusting to 120/125mm:
+- **Watch the compression at the bottom of the roller coaster** (between Oak Tree exit and the back straight). This is the lowest point on the circuit and where bottoming is most likely. Front is only 2mm lower than current, so minimal additional risk.
+- **Watch the Hog Pen bumps.** Lower front ride height + stiff springs + elevation drop = slightly higher risk of front bottoming.
+- The rear is raising 3mm from current, so no new rear bottoming risk.
+- The diffuser will be more effective with correct positive rake, which matters most on the high-speed sections (front straight, back straight, Esses).
 
 ---
 

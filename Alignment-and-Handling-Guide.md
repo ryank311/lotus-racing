@@ -7,7 +7,7 @@
 | Camber | -2.8 deg | -2.7 deg | -2.8 deg | -2.6 deg |
 | Toe | 0mm total | | 3.3mm total toe-in | |
 | Caster | 3.2 deg | 3.2 deg | -- | -- |
-| Ride height | 130mm | | 130mm | |
+| Ride height | 122mm (settled) | 122mm (settled) | 122mm (settled) | 122mm (settled) |
 
 Springs: 550 lbs/in front, 700 lbs/in rear
 Tires: Hoosier A7 -- 205/45/16 front, 225/40/17 rear
@@ -47,21 +47,63 @@ Normal range for the Exige. More caster adds straight-line stability and dynamic
 
 ## Recommended Changes
 
-### 1. Lower Ride Height: 130mm -> 120mm front / 125mm rear (HIGHEST PRIORITY)
+### 1. Adjust Ride Height and Add Rake (HIGHEST PRIORITY)
 
-Your Railer 5-element diffuser needs low ride height to function effectively:
-- At 130mm, the diffuser is producing minimal downforce
-- Community consensus: diffuser effects become noticeable below 120mm, meaningful below 100mm
-- The 340R Track geometry runs 100/110mm (front/rear)
+**Measured ride height (2026-03-27, settled):** 122mm all corners (level, no rake)
 
-**Recommended approach:** Lower to 120mm front / 125mm rear (5mm positive rake).
-- The rake helps the diffuser by creating a Venturi effect under the car
-- Positive rake also shifts weight balance slightly rearward at speed, which adds rear grip when you need it most (high-speed corners)
+**Note on measurement procedure:** The Elise/Exige pushrod/bell-crank suspension has significant static friction in the rocker pivots, spherical bearings, and pushrods. Always measure with parking brake OFF, car in neutral, after rolling back and forth several times to settle. Unsettled measurements can be off by 4-7mm per corner.
 
-**VIR caution at lower ride heights:**
+**Issue: The car is running level (no rake).** The Railer diffuser needs positive rake (rear higher than front) to create a Venturi effect that accelerates airflow into the diffuser. Without rake, the diffuser is not operating effectively.
+
+**Target: 120mm front / 125mm rear (5mm positive rake)**
+
+Changes needed:
+- Front: lower 2mm (from 122mm to 120mm)
+- Rear: raise 3mm (from 122mm to 125mm)
+
+#### Specific Adjustment Instructions (Per-Shock Turn Counts)
+
+**Thread pitch:** Nitron 46mm body coilovers use approximately 1.5mm thread pitch per full turn (based on industry-standard M46x1.5 threading for 46mm bodies).
+
+**Motion ratios on Elise/Exige S2 platform:** The pushrod/bell-crank suspension means perch movement is NOT 1:1 with ride height change:
+- Front: 1mm of perch movement = ~1.47mm of ride height change
+- Rear: 1mm of perch movement = ~1.28mm of ride height change
+
+| Corner | Current | Target | Change | Perch Movement | Turns | Direction |
+|--------|---------|--------|--------|----------------|-------|-----------|
+| **LF** | 122mm | 120mm | -2mm | 1.4mm down | **1 full turn** | Reduce preload (thread perch DOWN/away from spring) |
+| **RF** | 122mm | 120mm | -2mm | 1.4mm down | **1 full turn** | Reduce preload (thread perch DOWN/away from spring) |
+| **LR** | 122mm | 125mm | +3mm | 2.3mm up | **1½ turns** | Increase preload (thread perch UP/toward spring) |
+| **RR** | 122mm | 125mm | +3mm | 2.3mm up | **1½ turns** | Increase preload (thread perch UP/toward spring) |
+
+#### Step-by-Step Procedure
+
+1. **Park on level ground**, parking brake OFF, car in neutral
+2. **Jack the car up** and support on jack stands so all four wheels are off the ground (suspension fully drooped)
+3. **Loosen the lock ring** on each shock using a C-spanner. The lock ring sits below the spring platform
+4. **Mark the current position** of each spring platform with a paint pen or marker on both the platform and the shock body
+5. **Adjust each corner:**
+   - **LF:** Turn spring platform 1 full turn counterclockwise (reducing preload, lowering ride height)
+   - **RF:** Turn spring platform 1 full turn counterclockwise (reducing preload, lowering ride height)
+   - **LR:** Turn spring platform 1½ turns clockwise (increasing preload, raising ride height)
+   - **RR:** Turn spring platform 1½ turns clockwise (increasing preload, raising ride height)
+6. **Re-tighten all lock rings** firmly against the spring platforms
+7. **Lower the car** off jack stands
+8. **Roll the car** back and forth several times with parking brake off, in neutral, to settle the suspension
+9. **Measure ride height** at all four corners
+10. **Fine-tune** if needed -- each additional ¼ turn of the perch changes ride height by approximately 0.5mm front or 0.5mm rear
+
+#### Important Notes
+- The 1.5mm thread pitch is based on industry standards for 46mm coilover bodies. To verify, measure the distance the perch travels for one full turn before making all adjustments
+- Always adjust an axle (L and R together) rather than individual corners for predictable results
+- After lowering the car, you MUST roll it back and forth to settle the suspension before measuring. Do not measure with the parking brake on or immediately after lowering off jack stands
+- These calculations should get you within 1-2mm of target on the first try. Final fine-tuning with ¼-turn adjustments will dial it in exactly
+
+**VIR caution at lower front ride height:**
 - Watch the compression at the bottom of the roller coaster (between Oak Tree exit and back straight) -- lowest point on circuit
-- Hog Pen bumps + stiff springs + lower ride height = higher risk of bottoming
-- Consider running 3-5mm more ride height than your "ideal" as insurance until you know the car's limits at each point
+- Hog Pen bumps + stiff springs + lower ride height = higher risk of bottoming at the front
+- The front is only dropping 2mm from current, so minimal additional bottoming risk
+- The rear is raising 3mm from current, so no new rear bottoming risk
 
 ### 2. Front Camber -- MAXED OUT, no change available
 
@@ -137,12 +179,12 @@ Your 550/700 ratio = front is 21% softer than rear.
 
 ## Change Priority and Tracking
 
-### Revised Order of Changes (with correct alignment data)
+### Revised Order of Changes (updated 2026-03-27 with measured ride heights)
 
-1. **Damper rebound split** (see Suspension-Tuning-Guide.md) -- Free, reversible, do it first
-2. **Tire pressures** -- Start with 26F/28R cold, use pyrometer to dial in
-3. **Ride height** -- Lower to 120/125mm to activate the diffuser
-4. **Damper compression tuning** -- Fine-tune after ride height is set
+1. **ADJUST RIDE HEIGHT AND ADD RAKE** -- Car is level at 122mm all corners. Adjust to 120F/125R per the instructions above. Adding 5mm positive rake activates the diffuser, lowers front CG, and adds rear downforce to fight oversteer
+2. **Damper rebound split** (see Suspension-Tuning-Guide.md) -- Free, reversible. Do alongside or immediately after ride height fix
+3. **Tire pressures** -- Start with 26F/28R cold, use pyrometer to dial in
+4. **Damper compression tuning** -- Fine-tune after ride height is set and you have laps on the new platform
 
 Note: Alignment is essentially maxed out with all shims removed. Rear toe (3.3mm) and all camber values are already in the recommended range. No alignment changes are available without aftermarket camber modification parts.
 

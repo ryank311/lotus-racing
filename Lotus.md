@@ -62,8 +62,9 @@ Handling:
 
 ## Other Specs:
 
-Ride Height:
-  130mm
+Ride Height (measured 2026-03-27, settled -- parking brake off, neutral, rolled to settle suspension):
+  122mm all corners (level, no rake)
+  Target: 120mm front / 125mm rear (5mm positive rake for diffuser)
 
 Front Caster:
   3.2 degrees
@@ -87,7 +88,7 @@ Rear Camber:
 
 ### 1. Alignment Changes to Reduce Trail-Brake and Lift-Off Oversteer
 
-Your current setup: -2.8/-2.7 front camber, -2.8/-2.6 rear camber, 0mm front toe, 3.3mm rear toe-in, 3.2 deg front caster, 130mm ride height.
+Your current setup: -2.8/-2.7 front camber, -2.8/-2.6 rear camber, 0mm front toe, 3.3mm rear toe-in, 3.2 deg front caster, ride height 122mm all corners (level, no rake).
 
 **Rear Toe-In: 3.3mm total -- Already in the sweet spot**
 Factory spec is 2.4-3.6mm total, community consensus for R-comps is 3-3.5mm. Your 3.3mm is right where it should be. No change needed.
@@ -165,13 +166,15 @@ Take inside/middle/outside readings immediately after hot laps (no cool-down lap
 
 ### 4. Ride Height and the Railer 5-Element Diffuser
 
-**Current Setup: 130mm ride height**
+**Measured Ride Height (2026-03-27, settled):** 122mm all corners (level, no rake)
 
-The Difflow Railer 5-element diffuser has fins that sit approximately 4 inches (100mm) off the ground on stock suspension. At your 130mm ride height, the fins should be working but are not in their optimal range.
+**Note on measurement procedure:** The Elise/Exige pushrod/bell-crank suspension has significant static friction. Always measure ride height with the parking brake OFF, car in neutral, after rolling the car back and forth several times to settle the suspension. Unsettled measurements can be off by 4-7mm per corner.
 
-**Key Finding: 130mm may be too high for maximum diffuser effectiveness.**
+**Finding: The car is running level (no rake).** The diffuser requires positive rake (rear higher than front) to create the Venturi effect that accelerates airflow through the diffuser elements. Without rake, the diffuser is not operating in its optimal range.
 
-Community consensus and aerodynamic principles both point the same direction: the lower the ride height, the more effective the diffuser. The critical finding from multiple sources:
+The Difflow Railer 5-element diffuser has fins that sit approximately 4 inches (100mm) off the ground on stock suspension. Community consensus and aerodynamic principles both point the same direction: the lower the ride height and the more positive the rake, the more effective the diffuser.
+
+**Reference ride heights from the community:**
 - One experienced owner stated that diffusers on an Elise/Exige make no meaningful difference above approximately 100mm ride height
 - The SELOC 340R Track geo (the most aggressive factory-derived track setup) runs 100mm front / 110mm rear
 - EuroSport's R-compound baseline recommends 120mm front / 125mm rear
@@ -180,13 +183,20 @@ Community consensus and aerodynamic principles both point the same direction: th
 
 For the diffuser to produce meaningful downforce, you ideally want to be below 120mm, and sub-100mm is where effects become truly noticeable. However, going too low creates ride-height sensitivity where vortex breakdown can cause sudden, dramatic loss of downforce. The diffuser works best at a consistent, stable ride height, which is why stiff springs and good platform control matter so much when running aero.
 
-**Recommendation:**
-- Lower ride height to 120mm front / 125mm rear as a starting point (maintaining 5mm rake, rear higher than front)
-- If you can go lower without bottoming out at VIR (watch for the compression at the bottom of the downhill into the roller coaster), consider 110mm front / 115mm rear
-- Ensure you also seal any gaps around the exhaust and suspension that allow air to leak from under the car
-- The stiffer your springs and the more stable your ride height platform, the more consistently the diffuser will produce downforce
+**Target: 120mm front / 125mm rear (5mm positive rake)**
+
+This requires:
+- Lowering the front 2mm (from 122mm to 120mm)
+- Raising the rear 3mm (from 122mm to 125mm)
+- Creating 5mm of positive rake
+
+See the Alignment-and-Handling-Guide.md for detailed per-shock adjustment instructions with exact turn counts.
 
 **Rake Note:** Always maintain a positive rake (rear slightly higher than front). This creates a venturi-like effect under the car that accelerates airflow into the diffuser. The 5mm rake that EuroSport recommends is a good starting point.
+
+**Expected impact of adding rake:** Going from 0mm rake to +5mm positive rake while lowering the front to 120mm should improve rear-end stability at speed. The diffuser will work more effectively with correct rake, generating more downforce on the rear axle, which directly addresses the oversteer tendency -- especially in high-speed corners like the Esses and South Bend at VIR.
+
+**Future consideration:** If you can go lower without bottoming out at VIR (watch for the compression at the bottom of the downhill into the roller coaster), consider 110mm front / 115mm rear. Also ensure you seal any gaps around the exhaust and suspension that allow air to leak from under the car.
 
 ### 5. Spring Rate Analysis: 550F/700R
 
@@ -229,13 +239,13 @@ Your current Nitron 3-way settings (all -8 compression, -10 rebound) appear to b
 
 ### 7. Recommended Changes Priority (Most Impact to Least)
 
-1. **Increase rear toe-in from 2mm to 3-3.5mm total** - Single biggest change for rear stability
-2. **Reduce rear camber from -3.0 to -2.5 or -2.7** - Wider rear contact patch under braking
-3. **Lower ride height to 120/125mm** - Better diffuser effectiveness, lower CG
-4. **Adjust damper settings** - More front compression, more rear rebound
-5. **Stiffen front ARB** if adjustable - Shifts balance toward understeer
-6. **Consider 500/700 spring rates** - Better front-rear ratio for weight distribution
-7. **Dial in tire pressures at VIR** - Start 26F/28R cold, target 32-34 hot, verify with pyrometer
+**Updated with measured ride heights (2026-03-27).** Rear toe and camber are already in the recommended range (3.3mm toe-in, -2.8/-2.6 camber). All shims removed front and rear. Alignment is essentially maxed out without aftermarket parts.
+
+1. **ADJUST RIDE HEIGHT AND ADD RAKE** - Car is level at 122mm all corners. Target 120F/125R (5mm positive rake). The diffuser needs rake to work effectively. See Alignment-and-Handling-Guide.md for per-shock turn counts
+2. **Adjust damper settings** - More front compression, more rear rebound (see Suspension-Tuning-Guide.md)
+3. **Dial in tire pressures at VIR** - Start 26F/28R cold, target 32-34 hot, verify with pyrometer
+4. **Stiffen front ARB** if adjustable - Shifts balance toward understeer
+5. **Consider 500/700 spring rates** - Better front-rear ratio for weight distribution (lower priority -- evaluate after ride height and damper changes)
 
 ### Sources
 
