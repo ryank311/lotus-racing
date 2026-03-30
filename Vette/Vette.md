@@ -1,9 +1,11 @@
-# 2023 Corvette Z51
+# 2021 Corvette Z51
 I own a C8 Chevrolette Corvette that I take for track-day weekends to VIR (Virginia International Raceway). This car is also a street/touring car that I use and it is mostly stock. I have a trailer that I use to tow it when I go to track events.
 
-A typical laptime for me is 2:15 on the VIR full course, and I have PB's in the 2:14s. I have a garmin catalyst that I use to collect video and race data. 
+A typical laptime for me is 2:16 on the VIR full course, and I have PB's in the 2:15s. I have a garmin catalyst that I use to collect video and race data. 
 
 I intend to use Chevrolet's track alignment to get the most out of the car when I take it for track days
+
+I have the 2LT with the Z51 package with the hydraulic front lift and Magna-Ride the suspension.
 
 
 ## Car Stats
@@ -21,40 +23,67 @@ Curb weight	3,647 lb (1,654 kg)
 Modifications I have made to the car for track use
 
 ### Wheels
+I've run stock wheel/rim size in the past, I intend to run these at my next track day:
 Front: 
-
+Apex VS5RS 19x9.5 et 35
 Rear: 
+Apex VS5RS 19x11.5 et 48
+
 
 ### Tires
 Stock sizes:
-  Front: 195/50/16
-  Rear: 225/45/17
+  Front: 245/35ZR-19
+  Rear: 305/30ZR-20
 
-Hoosier A7
-  Front: 205/45/16
-  Rear: 225/40/17
+I currently have:
+Michelin Pilot Sport Cup 2
+  Front: 245/35ZR-19
+  Rear: 305/30ZR-20
+
+I'm bought a set and intend to run these at my next track day:
+Pirelli Tropheo R
+  Front: 265/30/19
+Goodyear Supercar 3R
+  Rear: 335/30/19
+
+
+### Brakes
+Stock z51 package brake calipers
+
+Carbotech brake pads
+  Front: XP12
+  Rear: XP10
+
+Rotors
+  Front: Girodisc 2 piece (stock size)
+  Rear: Girodisc 2 piece (stock size)
+
+Castrol SRF brake fluid
+
 
 ## Other Specs:
 
 Ride Height:
-  
+  Not measured: assume factory for now
 
 Front Caster:
-  3.2 degrees
+  7.5 degrees
+
+Rear Caster:
+  0 degrees
 
 Front toe:
-  0mm total
+  0.10 degrees total
 
 Rear Toe:
-  3.3mm total toe-in
+  0.10 degrees total
 
 Front Camber:
-  Left: -2.8 degrees
-  Right: -2.7 degrees
+  Left: -2.4 degrees
+  Right: -2.4 degrees
 
 Rear Camber:
-  Left: -2.8 degrees
-  Right: -2.6 degrees
+  Left: -1.9 degrees
+  Right: -1.9 degrees
 
-  
 
