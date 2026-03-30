@@ -8,12 +8,14 @@ Research compiled 2026-03-30. Car: 2021 C8 Z51 (2LT, MagneRide, front lift E60).
 
 The C8 Z51 is **not starting from zero** aerodynamically. The stock Z51 package includes:
 - Z51 front splitter with winglets
-- Z51 high wing rear spoiler
+- Z51 medium rear spoiler (2021 model -- not the high wing)
 - **Full flat-bottom undertray with tunneled diffuser channels** -- a genuine ground-effect underbody that most aftermarket cars spend thousands to replicate
-- Approximately **400 lbs of total downforce at ~185 mph** (per GM engineering data)
+- Approximately **400 lbs of total downforce at ~185 mph** with the high wing (per GM engineering data). The medium spoiler generates less rear downforce than the high wing, meaning the car's aero balance is already slightly more front-biased than the high-wing version -- which is actually favorable for your understeer situation
 - Cd 0.39 (vs 0.32 base car -- the aero package adds drag but generates real downforce)
 
 This is more downforce than the C7 Z06/Grand Sport Stage 3 cars (~360 lbs range with significantly more drag). The C8's underbody is one of the best in the industry from the factory.
+
+**Note on the medium spoiler vs. high wing:** The 2021 Z51 came with the medium spoiler. The high wing (RPO 5W8/5V5) is a separate option. Since you have the medium spoiler, upgrading to the high wing is one possible rear aero addition -- but given the understeer, adding rear downforce is NOT the priority. The medium spoiler is actually better for your situation because it puts less rear downforce on the car.
 
 ---
 
@@ -29,7 +31,7 @@ This is more downforce than the C7 Z06/Grand Sport Stage 3 cars (~360 lbs range 
 - Brake duct block-offs (but cooling trade-off -- see below)
 
 **Mods that WORSEN understeer (shift balance rearward):**
-- Wicker bills / gurney flaps on Z51 spoiler (rear downforce ONLY)
+- Wicker bills / gurney flaps on Z51 spoiler/medium spoiler (rear downforce ONLY)
 - Rear wing without front splitter
 - Rear diffuser without front aero
 
@@ -182,31 +184,33 @@ Good addition to a balanced aero package but **do not install without front aero
 | | |
 |---|---|
 | **Cost** | ~$375 |
-| **What it does** | Bolt onto existing Z51 spoiler. Claimed to generate more downforce than the OEM high wing |
+| **What it does** | Bolt onto existing Z51 spoiler/medium spoiler to add rear downforce |
 | **Impact on understeer** | **MAKES IT WORSE** -- adds rear downforce only |
 | **Installation** | Drill 3 holes per side in existing spoiler; rivets + 3M tape |
 | **Street drivability** | Good -- subtle appearance |
 | **Front lift compatible** | N/A (rear only) |
 | **Bang/Buck** | ★★☆☆☆ (alone) / ★★★★☆ (if front aero is already installed) |
 
-Cheap and easy, but **only install after you have front aero to maintain balance.** Without front aero, these will increase high-speed understeer. With dive planes + a better splitter already on, these become a good way to add total downforce cheaply.
+**Fitment note: Verify compatibility with your 2021 medium spoiler.** ACS lists these for the Z51 spoiler/medium spoiler but the 2021 medium spoiler is a different shape than the later high wing. Check with ACS before purchasing.
 
-Will NOT fit 2025+ mid-wing Z51 spoiler (your 2021 is fine).
+Only install after you have front aero to maintain balance. Without front aero, these will increase high-speed understeer. With dive planes + a better splitter already on, these become a good way to add total downforce cheaply.
 
 - [ACS Z51 Wickers](https://acscomposite.com/products/c8-z51-wickers)
 
 ---
 
-### #8. Gurney Flap for Z51 Wing
+### #8. Gurney Flap for Z51 Spoiler
 
 | | |
 |---|---|
 | **Cost** | ~$150-250 |
-| **What it does** | Small lip on trailing edge of Z51 wing. Adds rear downforce with minimal drag |
+| **What it does** | Small lip on trailing edge of spoiler. Adds rear downforce with minimal drag |
 | **Impact on understeer** | **MAKES IT WORSE** -- rear downforce only. Same warning as wicker bills |
 | **Installation** | 3M tape. 10 minutes |
 | **Street drivability** | Excellent -- barely visible |
 | **Bang/Buck** | ★★☆☆☆ (alone) / ★★★☆☆ (with front aero installed) |
+
+**Fitment note: These are typically designed for the high wing, not the 2021 medium spoiler.** Verify compatibility with the manufacturer before purchasing.
 
 Same story as wicker bills but cheaper and less aggressive. Only after front aero.
 

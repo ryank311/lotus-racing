@@ -5,7 +5,7 @@ A typical laptime for me is 2:16 on the VIR full course, and I have PB's in the 
 
 I intend to use Chevrolet's track alignment to get the most out of the car when I take it for track days
 
-I have the 2LT with the Z51 package with the hydraulic front lift and Magna-Ride the suspension.
+I have the 2LT with the Z51 package with the hydraulic front lift and Magna-Ride the suspension. The car has the 2021 Z51 medium rear spoiler (not the high wing).
 
 ## Driver Notes
 - Primary handling concern: **understeer**, especially at Turn 1 (Horseshoe) and Oak Tree (Turns 11-12)
