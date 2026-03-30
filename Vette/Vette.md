@@ -142,3 +142,4 @@ Randy Pobst ran 2:00.96 in a completely stock C8 Z51 on stock tires at VIR. At 2
 - [Alignment-and-Handling-Guide.md](Alignment-and-Handling-Guide.md) -- Full alignment specs, tire strategy, pressure targets, understeer solutions
 - [Brake-Guide.md](Brake-Guide.md) -- Brake setup evaluation, cooling, fade management, eBoost/ABS, upgrade path
 - [VIR-Full-Course-Guide.md](VIR-Full-Course-Guide.md) -- Corner-by-corner technique, lap time benchmarks, where the time is
+- [Aero-Guide.md](Aero-Guide.md) -- Bolt-on aero upgrades ranked by bang-for-buck, balance considerations, build path
