@@ -178,13 +178,79 @@ The stock C8 sway bars are not adjustable. The aftermarket options:
 
 For reducing understeer: a **stiffer rear sway bar** reduces rear grip in corners, allowing the car to rotate more. This is particularly effective at Turn 1 and Oak Tree where mid-corner understeer is the complaint. Start on the softest rear setting and work stiffer.
 
-### Ride Height Considerations
+### Ride Height: Measurement and Adjustment
 
-**Front height:** The hydraulic front lift system **replaces the adjustable front spring seats**, so front height is NOT adjustable via the standard method. Aftermarket lowering kits from Lingenfelter (0.50-0.75" drop) and Paragon (0.75") work with the front lift and MagneRide, but these are beyond bolt-on territory.
+#### How to Measure Ride Height (GM "Trim Height" -- J and K Dimensions)
 
-**Rear height:** IS adjustable via the Z51 spring perches. Approximately 0.75 inch of total range available. Raising the rear by ~2 turns (~1/4 inch) shifts weight balance slightly forward, which helps with understeer.
+GM measures ride height from the **lower edge of the rocker panel to the ground** at specific reference points. This is the same methodology used on C5/C6/C7 Corvettes.
 
-**For understeer:** Raising the rear relative to the front is beneficial and can be done with just the rear spring perches at no cost.
+**Preparation before measuring:**
+1. Park on a **flat, level surface** (alignment rack is ideal)
+2. Set tire pressures to the door placard spec
+3. Full fuel tank
+4. Front seats full rearward, rear compartment empty
+5. All doors, hood, and trunk closed
+6. Car must be running or in accessory mode so **MagneRide is active** during measurement
+
+**Settle the suspension before measuring:**
+- Lift front bumper up ~38mm (1.5 inches), gently release. Repeat 3 times
+- Push front bumper down ~38mm (1.5 inches), gently release. Repeat 3 times
+- Do the same at the rear bumper
+
+**Front measurement (J dimension):**
+1. Measure **35 inches (88.9 cm) rearward** from the center of the front wheel hub along the rocker panel
+2. Mark that spot on the lower edge of the rocker
+3. Measure vertically from that mark straight down to the ground
+
+**Rear measurement (K dimension):**
+1. Measure **31 inches (78.7 cm) forward** from the center of the rear wheel hub along the rocker panel
+2. Mark that spot on the lower edge of the rocker
+3. Measure vertically from that mark straight down to the ground
+
+**Tolerances:** Left and right sides should be within **6.4 mm (0.25 inches)** of each other.
+
+**Record all four corners** (LF, RF, LR, RR) before making any changes so you have a baseline.
+
+#### Factory Ride Height
+
+- **Published ground clearance:** 5.3 inches
+- **Exact J/K dimension specs** are in the GM service manual (available through ACDelco's Technical Delivery System subscription). GM does not publish these publicly for the C8
+- The important thing is to measure your baseline at all four corners and then track changes relative to that baseline
+
+#### What You Can and Cannot Adjust (Z51 + Front Lift E60)
+
+**Front height: NOT adjustable** via the standard Z51 method. The hydraulic front lift system (E60) replaces the adjustable front spring seats. To lower the front requires aftermarket lowering collars (Paragon Performance or Cicio Performance, ~3/4 inch drop) which involve disassembling the front strut -- beyond simple bolt-on territory.
+
+**Rear height: IS adjustable** via the Z51 spring perches. Key specs:
+- Approximately **19-25 mm (0.75-1.0 inch)** of adjustment range from factory position
+- The C8 suspension geometry is approximately **1:1** -- moving the spring seat 1mm changes ride height ~1mm
+- If lowered no more than **12.5mm (0.50 inch)** in the rear, alignment is not affected
+- Beyond 12.5mm rear change, alignment is required
+
+#### Recommended Adjustment for Understeer
+
+**Raise the rear** by ~2 turns on the spring perches (~6mm / ~1/4 inch). This:
+- Shifts weight balance slightly forward (more front grip)
+- Creates a small amount of positive rake (front lower than rear)
+- Is free, reversible, and within the range that does not require re-alignment
+- Directly helps with the understeer at Turn 1 and Oak Tree
+
+**Procedure to raise the rear:**
+1. Jack the rear of the car and support on jack stands (both rear wheels off the ground)
+2. Use a spanner wrench to turn the spring perch **upward** (toward the spring) -- clockwise when viewed from below
+3. Turn approximately 2 full turns on both LR and RR (always adjust both sides equally)
+4. Re-tighten lock rings
+5. Lower the car
+6. Settle the suspension (bounce rear up and down 3 times each direction)
+7. Re-measure J and K dimensions at all four corners
+8. Fine-tune if needed
+
+#### Sources
+- [Corvette Magazine: DIY C8 Ride Height Adjustment](https://www.corvettemagazine.com/diy-c8-corvette-ride-height-adjustment/)
+- [CorvetteBlogger: Adjustable Ride Height, MagneRide, and Front Lift](https://www.corvetteblogger.com/2019/09/10/what-you-need-to-know-about-adjustable-ride-height-magnetic-ride-and-the-e60-front-lift-system/)
+- [MidEngineCorvetteForum: Adjustable Ride Height and E60](https://www.midenginecorvetteforum.com/forum/me-discussion-photos-videos/65328-adjustable-ride-height-magnetic-ride-and-front-lift-system-what-you-need-to-know)
+- [WRTEKNICA: Lowering the C8 Z51](https://wrteknica.com/blogs/builds-and-blogs/lowering-the-c8-corvette-z51)
+- [TorqueNews: C8 Ride Height Adjustment](https://www.torquenews.com/8047/2020-c8-corvette-ride-height-can-be-adjusted-similar-way-previous-generation-corvettes)
 
 ---
 
