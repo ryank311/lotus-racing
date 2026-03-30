@@ -49,7 +49,34 @@ The C8 is fundamentally a safer platform. GM intentionally tuned it to understee
 
 ### PTM (Performance Traction Management)
 
-In Track mode, press TCS button twice to access PTM. Many experienced C8 track drivers run **PTM in Sport mode** -- it allows the car to rotate while still catching real slides. Full TC off is not recommended at intermediate level due to the C8's trailing throttle oversteer tendency.
+In Track mode, press the TCS button twice to access PTM. PTM offers five sub-modes within Track mode, progressing from most to least intervention:
+
+**PTM Modes: Sport vs Race 1 vs Race 2**
+
+| Mode | StabiliTrak/ESC | Power Limiting | eLSD Slip | Safety Net |
+|------|----------------|----------------|-----------|------------|
+| Wet | On | Yes | Minimal | Maximum |
+| Dry | On | Yes | Low | High |
+| **Sport** | **On** | **Yes (limits in corners)** | **Moderate** | **Moderate -- recommended starting point** |
+| **Race 1** | **Off** | **Yes (same limit as Sport)** | **More slip** | **Low -- ESC is gone** |
+| **Race 2** | **Off** | **No (full 490 hp always)** | **Maximum** | **None -- expert only** |
+
+**Key distinction:** Sport to Race 1 is a **big jump** because StabiliTrak/ESC turns off entirely. Race 1 to Race 2 is a smaller jump -- Race 2 just removes engine power limiting, giving full throttle authority even when the system detects wheelspin.
+
+**What PTM does under the hood:** Unlike regular traction control (which aggressively cuts power and is slow to add it back), PTM is a performance-focused system that manages engine torque, MagneRide damping, brake application, and eLSD slip simultaneously to keep traction near the limit. It does the minimum amount of intervention needed.
+
+**Recommendation: Start with PTM Sport.** Here's why:
+
+1. At 2:16 pace, the car's electronics are not the limiting factor. PTM Sport provides performance traction management that still catches big mistakes -- critical at VIR's 150 mph braking zones
+2. The understeer at T1 and Oak Tree is a technique/alignment issue, not a traction control issue. PTM Sport won't hold you back there
+3. The oversteer at Hog Pen and T13 is exactly where the ESC safety net helps. Removing it (Race 1+) makes those moments more dangerous, not faster
+4. PTM Sport still manages the eLSD and MagneRide optimally for track use
+
+**Move to Race 1 when:** lap times are consistently 2:10-2:12, lines are repeatable, and the oversteer at T13/Hog Pen is no longer a surprise. At that point, ESC in Sport mode may start intervening at the limit and costing time.
+
+**Avoid Race 2** until fully comfortable with Race 1. Full power with zero safety net in a 490 hp mid-engine car at 150 mph is expert territory.
+
+As one experienced C8 track driver put it: "Prioritize driving the car home over chasing lap times, and progressively work up through the PTM modes as your experience grows."
 
 ---
 
@@ -304,8 +331,12 @@ From data analysis and coaching reviews:
 - [LapMeta -- VIR Full Course](https://lapmeta.com/en/track/variation/130)
 - [GM News -- ZR1 1:47.74 at VIR](https://news.gm.com/home.detail.html/Pages/topic/us/en/2025/feb/0211-zr1-links/0211-link.html)
 
-### Driving Technique
+### Driving Technique & PTM Modes
 - [Speed Secrets -- DCT Shifting in Corners](https://speedsecrets.com/q-should-i-upshift-or-downshift-in-corners-with-a-dual-clutch-8-speed-c8-corvette/)
+- [CorvetteForum -- PTM Performance Traction Management Question](https://www.corvetteforum.com/forums/c8-tech-performance/4762447-ptm-performance-traction-management-question.html)
+- [MidEngineCorvetteForum -- Let's Talk About PTM Modes](https://www.midenginecorvetteforum.com/forum/me-discussion-photos-videos/251340-let-s-talk-about-ptm-modes)
+- [Corvette Action Center -- What More Does PTM Give Me](https://forums.corvetteactioncenter.com/threads/what-more-does-ptm-give-me.145910/)
+- [GM -- C8 Corvette Track Preparation (PDF)](https://www.gmspecialtyvehicles.com/content/dam/chevrolet/oc/au/en/index/performance/corvette-experience/02-pdf/2022-pdf/Track%20Prep%20Requirements%20-%20C8%20Corvette.pdf)
 - [SpeedSF -- Bennett's C8: Driver Mod Comes First](https://www.speedsf.com/blog/2024/11/14/bennets-c8-driver-mod-comes-first)
 - [CorvetteBlogger -- Randy Pobst on C8 Handling](https://www.corvetteblogger.com/2019/12/09/randy-pobst-on-how-to-make-the-c8-corvettes-handling-even-better/)
 - [Hagerty -- C8 Handling Flaws](https://www.hagerty.com/media/news/the-c8-corvette-is-not-without-flaws/)
