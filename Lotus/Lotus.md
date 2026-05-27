@@ -33,7 +33,15 @@ Stock sizes:
   Front: 195/50/16
   Rear: 225/45/17
 
-Hoosier A7
+Bridgestone Potenza RE-71RZ
+  Front: 205/45R-16 XL
+  Rear: 235/45R-17 SL
+
+Hoosier A8
+  Front: 215/40ZR16
+  Rear: 225/40ZR17
+
+~~Hoosier A7~~ (corded, retired)
   Front: 205/45/16
   Rear: 225/40/17
 
