@@ -15,7 +15,7 @@ Brief contents (lean by default):
   5. ALL laps × per-corner stats (entry/apex/exit speed, max G, brake/throttle)
   6. Personal-best baselines per segment + per corner (for delta computation)
   7. Best-lap sample trace at fixed distance intervals (~50 m)
-  8. Field-label heuristics for f4..f15
+  8. Confirmed field labels with units and interpretation for all 12 telemetry channels
   9. Coaching task instructions
 
 Add --include-guides to inline the HPDE / suspension / track guides too (adds
@@ -74,21 +74,51 @@ def resolve_profile_dir(name: str | None) -> Path:
     raise SystemExit("[ERROR] no profile found — need a folder with Car.md")
 
 
-# Heuristic labels for f4..f15. Marked PROVISIONAL. Verified labels (cross-
-# referenced with observed value ranges) are flagged "(observed-confirmed)".
-PROVISIONAL_FIELD_LABELS = {
-    "f4":  ("speed_mps",          "GPS speed in METRES PER SECOND. Peak ~53 m/s = 120 mph matches Catalyst top speed. Multiply by 2.237 for mph."),
-    "f5":  ("heading_deg",        "GPS heading 0-360° (observed-confirmed — full 0-360 range across a lap)"),
-    "f6":  ("unknown_a",          "small float, often 3-6 — possibly lateral_position_m from meanline or vertical speed"),
-    "f7":  ("throttle_norm",      "best-guess throttle position; check that max across lap is near 1.0"),
-    "f8":  ("unknown_b",          "value 80-100 in mid-lap — could be wheel_speed_mph, or another heading channel"),
-    "f9":  ("brake_norm_or_g",    "peaks >1 in places — may be a G-force, not a normalized brake signal"),
-    "f10": ("unknown_c",          ""),
-    "f11": ("altitude_or_pos",    "negative ~-10 — likely altitude_m relative-to-reference OR lateral offset from meanline"),
-    "f12": ("accel_g_long",       "longitudinal accel G — braking negative, accel positive (best-guess by value range)"),
-    "f13": ("accel_g_lat",        "lateral / cornering G — biggest at apex (best-guess by value range)"),
-    "f14": ("accel_g_vert",       "small negative — vertical G or vertical-speed-derivative"),
-    "f15": ("unknown_d",          "near 1.0 sometimes — gear, slip angle, or steering normalized"),
+# Confirmed field labels from embedded proto descriptor strings in libgecko.so
+# (Racing.Core.Proto.GroupedSensorData, RacingTypes.pb.cc). All verified
+# against observed value ranges on real VIR Full Course data.
+CONFIRMED_FIELD_LABELS = {
+    # name              proto field name        units / interpretation
+    "gnss_speed_mps":     ("m/s",    "GPS speed. Multiply by 3.6 for kph, 2.237 for mph. "
+                                     "Use this for all speed-dependent analysis. "
+                                     "Typical range: 0–60 m/s at VIR."),
+    "gnss_heading_deg":   ("°",      "Compass heading 0–360°. Increases clockwise (N=0, E=90). "
+                                     "Rate of change indicates yaw; near-constant = straight."),
+    "gnss_heading_deriv_dps": ("°/s","Heading rate of change (yaw rate from GPS). "
+                                     "Near zero on straights, peaks in corners. "
+                                     "Positive = turning right."),
+    "gnss_accuracy_m":    ("m",      "GPS fix accuracy estimate. Smaller = better. "
+                                     "Typical: 0.4–1.5 m. Not a driver input channel."),
+    "gnss_altitude_m":    ("m MSL",  "GPS altitude above mean sea level. "
+                                     "VIR Full Course ranges ~75–190 m. "
+                                     "Use to identify elevation changes and their effect on grip."),
+    "accel_x_mps2":       ("m/s²",   "Longitudinal acceleration in the vehicle frame. "
+                                     "Braking = NEGATIVE (peak ~−1.4 g = −13.7 m/s²). "
+                                     "Acceleration = POSITIVE (peak ~+0.9 g = +8.8 m/s²). "
+                                     "Divide by 9.81 for g-force."),
+    "accel_y_mps2":       ("m/s²",   "Lateral (cornering) acceleration. "
+                                     "Left turn = NEGATIVE, right turn = POSITIVE. "
+                                     "Peak ±1.5 g (±14.7 m/s²) on grippy tires. "
+                                     "Divide by 9.81 for lateral g. "
+                                     "This is the primary cornering-grip channel."),
+    "accel_z_mps2":       ("m/s²",   "Vertical acceleration including gravity. "
+                                     "Flat ground at rest ≈ −9.81 m/s² (gravity pulls down). "
+                                     "More negative = more downforce / bump. "
+                                     "Typical range −16 to −4 m/s² (−1.6 to −0.4 g)."),
+    "gyro_roll_dps":      ("°/s",    "Roll angular rate (body rotation about longitudinal axis). "
+                                     "Near zero on flat track; non-zero in elevation changes or "
+                                     "over bumps. NOT a lateral G channel."),
+    "gyro_pitch_dps":     ("°/s",    "Pitch angular rate (nose-up/nose-down rotation). "
+                                     "Positive = nose rising. Peaks under acceleration / "
+                                     "at crest of hills. NOT a longitudinal G channel."),
+    "gyro_yaw_dps":       ("°/s",    "Yaw angular rate from IMU (rotation about vertical axis). "
+                                     "Complements gnss_heading_deriv_dps. "
+                                     "Used internally for stability estimation."),
+    "lateral_position":   ("0–1",    "Normalised position across the track width relative to "
+                                     "the GPS meanline. Interpretation: 0 = one edge, 1 = other "
+                                     "edge, 0.5 = centerline. Exact edge mapping (inside vs "
+                                     "outside) depends on track direction. "
+                                     "Use to track apexing behaviour and line width."),
 }
 
 
@@ -213,14 +243,12 @@ def fetch_lap_table(con, session_guids: list[str]) -> list[dict]:
           SELECT
             session_guid,
             lap_index,
-            MAX(f4)  AS max_speed,
-            MIN(f4)  AS min_speed,
-            AVG(f4)  AS avg_speed,
-            MAX(ABS(f13)) AS max_lat_g,
-            MAX(f12) AS max_accel_g,
-            MIN(f12) AS min_accel_g,
-            MAX(f7)  AS max_throttle,
-            MAX(f9)  AS max_brake
+            MAX(gnss_speed_mps)       AS max_speed,
+            MIN(gnss_speed_mps)       AS min_speed,
+            AVG(gnss_speed_mps)       AS avg_speed,
+            MAX(ABS(accel_y_mps2))    AS max_lat_g,
+            MAX(accel_x_mps2)         AS max_long_accel,
+            MIN(accel_x_mps2)         AS min_long_accel
           FROM samples WHERE session_guid = ANY(?)
           GROUP BY session_guid, lap_index
         )
@@ -229,12 +257,11 @@ def fetch_lap_table(con, session_guids: list[str]) -> list[dict]:
           CAST(s.session_start AS VARCHAR) AS session_start,
           tc.track_configuration_name      AS config,
           l.lap_index,
-          l.lap_number_raw,
+          l.lap_type,
           l.duration_ms,
           l.sample_count,
           st.max_speed, st.min_speed, st.avg_speed,
-          st.max_lat_g, st.max_accel_g, st.min_accel_g,
-          st.max_throttle, st.max_brake
+          st.max_lat_g, st.max_long_accel, st.min_long_accel
         FROM laps l
         JOIN sessions s ON s.session_guid = l.session_guid
         LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
@@ -250,9 +277,8 @@ def fetch_segment_splits(con, session_guid: str, segments: list[dict]) -> list[l
     """
     Per-lap, per-segment estimated split times in seconds.
 
-    For each sample, weight ∝ 1/f4 (slower samples = more time). Scale so the
-    per-lap weighted sum equals duration_ms / 1000. This gives accurate
-    proportional splits even if f4's unit is uncertain.
+    For each sample, weight ∝ 1/gnss_speed_mps (slower samples = more time). Scale so
+    the per-lap weighted sum equals duration_ms / 1000.
     """
     if not segments:
         return []
@@ -263,9 +289,9 @@ def fetch_segment_splits(con, session_guid: str, segments: list[dict]) -> list[l
         ).fetchall()
     }
     rows = con.execute("""
-        SELECT lap_index, dist_idx, f4 FROM samples
-        WHERE session_guid = ? AND f4 IS NOT NULL AND f4 > 0
-        ORDER BY lap_index, dist_idx
+        SELECT lap_index, distance_m, gnss_speed_mps FROM samples
+        WHERE session_guid = ? AND gnss_speed_mps IS NOT NULL AND gnss_speed_mps > 0
+        ORDER BY lap_index, distance_m
     """, [session_guid]).fetchall()
 
     by_lap: dict[int, list[tuple[int, float]]] = {}
@@ -301,9 +327,12 @@ def fetch_corner_stats(con, session_guid: str, lap_idx: int,
     Per-corner aggregates for one lap. Returns {turn_key: {entry, apex, exit, max_lat_g, ...}}.
 
     Approximations:
-      - entry_speed = avg(f4) for the first 5 samples in the corner zone
-      - apex_speed  = min(f4) within the corner
-      - exit_speed  = avg(f4) for the last 5 samples in the corner zone
+      - entry_speed = avg(gnss_speed_mps) for the first 5 samples in the zone
+      - apex_speed  = min(gnss_speed_mps) within the corner
+      - exit_speed  = avg(gnss_speed_mps) for the last 5 samples in the zone
+      - max_lat_g   = max(|accel_y_mps2|) — lateral g in m/s², divide by 9.81 for g
+      - min_accel_g = min(accel_x_mps2) — most negative = hardest braking (m/s²)
+      - max_accel_g = max(accel_x_mps2) — peak acceleration (m/s²)
     """
     out: dict[str, dict] = {}
     for c in corners:
@@ -311,19 +340,17 @@ def fetch_corner_stats(con, session_guid: str, lap_idx: int,
         if lo is None or hi is None:
             continue
         rows = con.execute("""
-            SELECT dist_idx, f4, f7, f9, f12, f13
+            SELECT distance_m, gnss_speed_mps, accel_x_mps2, accel_y_mps2
             FROM samples
             WHERE session_guid = ? AND lap_index = ?
-              AND dist_idx BETWEEN ? AND ?
-            ORDER BY dist_idx
+              AND distance_m BETWEEN ? AND ?
+            ORDER BY distance_m
         """, [session_guid, lap_idx, lo, hi]).fetchall()
         if not rows:
             continue
         speeds = [r[1] for r in rows if r[1] is not None]
-        throttles = [r[2] for r in rows if r[2] is not None]
-        brakes = [r[3] for r in rows if r[3] is not None]
-        accels = [r[4] for r in rows if r[4] is not None]
-        lats = [abs(r[5]) for r in rows if r[5] is not None]
+        longs  = [r[2] for r in rows if r[2] is not None]   # accel_x_mps2 (braking=neg)
+        lats   = [abs(r[3]) for r in rows if r[3] is not None]  # accel_y_mps2 (cornering)
         if not speeds:
             continue
         n_edge = min(5, max(1, len(speeds) // 8))
@@ -335,9 +362,8 @@ def fetch_corner_stats(con, session_guid: str, lap_idx: int,
             "exit_speed":  sum(speeds[-n_edge:]) / n_edge,
             "speed_drop":  (sum(speeds[:n_edge]) / n_edge) - min(speeds),
             "max_lat_g":   max(lats) if lats else 0.0,
-            "max_brake":   max(brakes) if brakes else 0.0,
-            "max_throttle":max(throttles) if throttles else 0.0,
-            "min_accel_g": min(accels) if accels else 0.0,
+            "min_accel_g": min(longs) if longs else 0.0,
+            "max_accel_g": max(longs) if longs else 0.0,
         }
     return out
 
@@ -349,22 +375,23 @@ def fetch_best_lap_trace(con, session_guid: str, lap_idx: int,
     One sample every ~stride_m metres on the chosen lap. Returns a compact
     list of dicts suitable for inline markdown.
     """
-    where_max = "AND dist_idx <= ?" if max_dist_m else ""
+    where_max = "AND distance_m <= ?" if max_dist_m else ""
     params: list = [session_guid, lap_idx, stride_m]
     if max_dist_m:
         params.append(max_dist_m)
     rows = con.execute(f"""
-        SELECT dist_idx, f4, f7, f9, f12, f13, f8
+        SELECT distance_m, gnss_speed_mps, accel_x_mps2, accel_y_mps2,
+               gnss_altitude_m, lateral_position, gnss_heading_deg
         FROM samples
         WHERE session_guid = ? AND lap_index = ?
-          AND dist_idx % ? = 0
+          AND distance_m % ? = 0
           {where_max}
-        ORDER BY dist_idx
+        ORDER BY distance_m
     """, params).fetchall()
     return [
         {
-            "dist": r[0], "speed": r[1], "throttle": r[2],
-            "brake": r[3], "accel_g": r[4], "lat_g": r[5], "heading": r[6],
+            "dist": r[0], "speed": r[1], "long_accel": r[2],
+            "lat_g": r[3], "altitude": r[4], "lateral_pos": r[5], "heading": r[6],
         }
         for r in rows
     ]
@@ -426,8 +453,8 @@ def build_brief(
 
     if corners:
         parts.append("### Named corners (canonical, in driving order)")
-        parts.append("Each corner's `range` is a dist_idx range; per-sample dist_idx "
-                     "in the data ≈ metres along the track.")
+        parts.append("Each corner's `range` corresponds to `distance_m` in the samples table "
+                     "(metres along the track from lap start).")
         parts.append("")
         parts.append("| Turn | Name | Dir | Apex | Range | R(m) | Notes |")
         parts.append("|------|------|-----|-----:|------:|-----:|-------|")
@@ -470,27 +497,25 @@ def build_brief(
     for L in lap_rows:
         by_session.setdefault(L["session_guid"], []).append(L)
 
-    parts.append("| Session | Lap | Duration | Δ best | Max f4 | Max |f13| | Min f12 | Max f12 | Max f7 | Max f9 |")
-    parts.append("|---------|----:|---------:|-------:|-------:|---------:|--------:|--------:|-------:|-------:|")
+    parts.append("| Session | Lap | Type | Duration | Δ best | Max speed (m/s) | Max |lat_g| (m/s²) | Max long_accel (m/s²) | Min long_accel (m/s²) |")
+    parts.append("|---------|----:|------|----------:|-------:|----------------:|------------------:|----------------------:|----------------------:|")
     for sg, laps in by_session.items():
         best_ms = min((L["duration_ms"] for L in laps if L["duration_ms"]), default=0)
         for L in laps:
             delta = (L["duration_ms"] - best_ms) / 1000.0 if best_ms and L["duration_ms"] else 0.0
             parts.append(
-                f"| {sg[:8]}… | {L['lap_index']+1} | "
+                f"| {sg[:8]}… | {L['lap_index']+1} | {L.get('lap_type','') or ''} | "
                 f"{_ms_to_lap(L['duration_ms'])} | {delta:+.3f}s | "
-                f"{(L.get('max_speed') or 0):.1f} | "
-                f"{(L.get('max_lat_g') or 0):.2f} | "
-                f"{(L.get('min_accel_g') or 0):+.2f} | "
-                f"{(L.get('max_accel_g') or 0):+.2f} | "
-                f"{(L.get('max_throttle') or 0):.2f} | "
-                f"{(L.get('max_brake') or 0):.2f} |"
+                f"{(L.get('max_speed') or 0):.2f} | "
+                f"{(L.get('max_lat_g') or 0):.3f} | "
+                f"{(L.get('max_long_accel') or 0):+.3f} | "
+                f"{(L.get('min_long_accel') or 0):+.3f} |"
             )
     parts.append("")
 
     # ── Per-segment splits across every lap ─────────────────────────────
     parts.append(f"## Per-segment splits (sec) — all laps")
-    parts.append("Computed by integrating 1/f4 over distance, scaled so the "
+    parts.append("Computed by integrating 1/gnss_speed_mps over distance, scaled so the "
                  "per-lap sum equals lap duration. Lap-relative; comparable "
                  "across laps and sessions.")
     parts.append("")
@@ -536,9 +561,11 @@ def build_brief(
     # ── Per-corner stats × all laps ─────────────────────────────────────
     if corners:
         parts.append("## Per-corner stats — every lap")
-        parts.append("**entry**=avg speed first 5 samples of zone, **apex**=min speed in zone, "
+        parts.append("**entry**=avg gnss_speed_mps first 5 samples of zone, **apex**=min speed in zone, "
                      "**exit**=avg speed last 5 samples, **drop**=entry-apex. "
-                     "max_lat_g uses |f13|. Use these to find late-braking opportunities "
+                     "max_lat_g = max(|accel_y_mps2|) in m/s² (divide by 9.81 for g). "
+                     "min_accel_g = min(accel_x_mps2) in m/s² — most negative = hardest braking. "
+                     "Use these to find late-braking opportunities "
                      "(low apex speed + high entry speed = high drop) and missed pickup "
                      "(low exit speed relative to others).")
         parts.append("")
@@ -570,22 +597,24 @@ def build_brief(
             cur["best_max_lat_g"]  = max(cur["best_max_lat_g"],  row["max_lat_g"])
 
         parts.append("### One row per (lap, corner)")
-        parts.append("| Sess | Lap | Turn | Name | Entry | Apex | Exit | Drop | LatG | Brake | Thr | MinAcc |")
-        parts.append("|------|----:|------|------|------:|-----:|-----:|-----:|-----:|------:|----:|-------:|")
+        parts.append("Speed columns in m/s. lat_g = |accel_y_mps2| m/s². "
+                     "min_accel_g = min(accel_x_mps2) m/s² (negative = braking). "
+                     "Divide m/s² by 9.81 for g-force.")
+        parts.append("| Sess | Lap | Turn | Name | Entry (m/s) | Apex (m/s) | Exit (m/s) | Drop | LatG (m/s²) | MinAccX (m/s²) |")
+        parts.append("|------|----:|------|------|------------:|-----------:|-----------:|-----:|------------:|---------------:|")
         for row in all_corner_rows:
             parts.append(
                 f"| {row['sg'][:8]}… | {row['lap']} | {row['turn']} | "
                 f"{row['name']} | "
-                f"{row['entry_speed']:.1f} | {row['apex_speed']:.1f} | "
-                f"{row['exit_speed']:.1f} | {row['speed_drop']:.1f} | "
-                f"{row['max_lat_g']:.2f} | {row['max_brake']:.2f} | "
-                f"{row['max_throttle']:.2f} | {row['min_accel_g']:+.2f} |"
+                f"{row['entry_speed']:.2f} | {row['apex_speed']:.2f} | "
+                f"{row['exit_speed']:.2f} | {row['speed_drop']:.2f} | "
+                f"{row['max_lat_g']:.3f} | {row['min_accel_g']:+.3f} |"
             )
         parts.append("")
 
         parts.append("### Personal-best per corner")
-        parts.append("| Turn | Name | Best apex | Best exit | Hardest braking (min f12) | Max LatG |")
-        parts.append("|------|------|----------:|----------:|--------------------------:|---------:|")
+        parts.append("| Turn | Name | Best apex (m/s) | Best exit (m/s) | Hardest braking min(accel_x) m/s² | Max LatG |accel_y| m/s² |")
+        parts.append("|------|------|----------------:|----------------:|----------------------------------:|---------------------:|")
         for c in corners:
             tk = c.get("turn", "?")
             if tk not in pb_corner:
@@ -609,13 +638,17 @@ def build_brief(
         parts.append("")
         trace = fetch_best_lap_trace(con, best_session["session_guid"],
                                      best_lap["lap_index"], stride_m=50)
-        parts.append("| dist_m | speed (f4) | throttle (f7) | brake (f9) | accel_g (f12) | lat_g (f13) | heading (f8) |")
-        parts.append("|-------:|-----------:|--------------:|-----------:|--------------:|------------:|-------------:|")
+        parts.append("speed=gnss_speed_mps (m/s), long_accel=accel_x_mps2 (m/s², neg=braking), "
+                     "lat_g=accel_y_mps2 (m/s², |val|/9.81=g), altitude=gnss_altitude_m (m MSL), "
+                     "lateral_pos=lateral_position (0–1), heading=gnss_heading_deg (°)")
+        parts.append("")
+        parts.append("| dist_m | speed (m/s) | long_accel (m/s²) | lat_g (m/s²) | altitude (m) | lateral_pos | heading (°) |")
+        parts.append("|-------:|------------:|------------------:|-------------:|-------------:|------------:|------------:|")
         for p in trace:
             parts.append(
-                f"| {p['dist']} | {p.get('speed') or 0:.1f} | "
-                f"{p.get('throttle') or 0:.3f} | {p.get('brake') or 0:.3f} | "
-                f"{p.get('accel_g') or 0:+.3f} | {p.get('lat_g') or 0:+.3f} | "
+                f"| {p['dist']} | {p.get('speed') or 0:.2f} | "
+                f"{p.get('long_accel') or 0:+.3f} | {p.get('lat_g') or 0:+.3f} | "
+                f"{p.get('altitude') or 0:.1f} | {p.get('lateral_pos') or 0:.3f} | "
                 f"{p.get('heading') or 0:.1f} |"
             )
         parts.append("")
@@ -637,40 +670,40 @@ def build_brief(
             parts.append("")
 
     # ── Field labels + observed value ranges ────────────────────────────
-    parts.append("## Field labels — PROVISIONAL")
+    parts.append("## Field labels — confirmed")
     parts.append("")
-    parts.append("Each sample has 12 floats whose names Garmin doesn't expose. Best-guess "
-                 "labels from value-range analysis are below. The **observed value "
-                 "ranges across this brief's data** are also tabulated — use them to "
-                 "sanity-check labels and convert units yourself if needed (e.g. "
-                 "f4 peak ≈ 53 strongly implies m/s).")
+    parts.append("Field names confirmed from embedded proto descriptor strings in `libgecko.so` "
+                 "(`Racing.Core.Proto.GroupedSensorData`, `RacingTypes.pb.cc`). All verified "
+                 "against observed value ranges on real VIR Full Course data. "
+                 "The **observed ranges across this brief's data** are tabulated below.")
     parts.append("")
 
     # Compute per-field stats across the selected sessions
     field_stats = con.execute("""
         SELECT
-          MIN(f4),  MAX(f4),  AVG(f4),
-          MIN(f5),  MAX(f5),  AVG(f5),
-          MIN(f6),  MAX(f6),  AVG(f6),
-          MIN(f7),  MAX(f7),  AVG(f7),
-          MIN(f8),  MAX(f8),  AVG(f8),
-          MIN(f9),  MAX(f9),  AVG(f9),
-          MIN(f10), MAX(f10), AVG(f10),
-          MIN(f11), MAX(f11), AVG(f11),
-          MIN(f12), MAX(f12), AVG(f12),
-          MIN(f13), MAX(f13), AVG(f13),
-          MIN(f14), MAX(f14), AVG(f14),
-          MIN(f15), MAX(f15), AVG(f15)
+          MIN(gnss_speed_mps),         MAX(gnss_speed_mps),         AVG(gnss_speed_mps),
+          MIN(gnss_heading_deg),       MAX(gnss_heading_deg),       AVG(gnss_heading_deg),
+          MIN(gnss_heading_deriv_dps), MAX(gnss_heading_deriv_dps), AVG(gnss_heading_deriv_dps),
+          MIN(gnss_accuracy_m),        MAX(gnss_accuracy_m),        AVG(gnss_accuracy_m),
+          MIN(gnss_altitude_m),        MAX(gnss_altitude_m),        AVG(gnss_altitude_m),
+          MIN(accel_x_mps2),           MAX(accel_x_mps2),           AVG(accel_x_mps2),
+          MIN(accel_y_mps2),           MAX(accel_y_mps2),           AVG(accel_y_mps2),
+          MIN(accel_z_mps2),           MAX(accel_z_mps2),           AVG(accel_z_mps2),
+          MIN(gyro_roll_dps),          MAX(gyro_roll_dps),          AVG(gyro_roll_dps),
+          MIN(gyro_pitch_dps),         MAX(gyro_pitch_dps),         AVG(gyro_pitch_dps),
+          MIN(gyro_yaw_dps),           MAX(gyro_yaw_dps),           AVG(gyro_yaw_dps),
+          MIN(lateral_position),       MAX(lateral_position),       AVG(lateral_position)
         FROM samples WHERE session_guid = ANY(?)
     """, [sg_list]).fetchone()
 
-    parts.append("| Field | Best-guess | Notes | min | max | avg |")
-    parts.append("|-------|------------|-------|----:|----:|----:|")
-    for i, (f, (name, note)) in enumerate(PROVISIONAL_FIELD_LABELS.items()):
+    parts.append("| Column | Units | Interpretation | min | max | avg |")
+    parts.append("|--------|-------|----------------|----:|----:|----:|")
+    for i, (col, (units, note)) in enumerate(CONFIRMED_FIELD_LABELS.items()):
         mn, mx, av = field_stats[i*3:i*3+3]
+        fmt = ".3f" if abs(mx or 0) < 10 and abs(mn or 0) < 10 else ".2f"
         parts.append(
-            f"| `{f}` | `{name}` | {note} | "
-            f"{mn:.2f} | {mx:.2f} | {av:.2f} |"
+            f"| `{col}` | {units} | {note} | "
+            f"{(mn or 0):{fmt}} | {(mx or 0):{fmt}} | {(av or 0):{fmt}} |"
         )
     parts.append("")
 
@@ -787,8 +820,8 @@ def write_csv_pack(out_dir: Path, sessions: list[dict], track_yaml: dict,
     with (out_dir / "corner_stats.csv").open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["session_guid", "lap_index", "turn", "corner_name",
-                    "entry_speed", "apex_speed", "exit_speed", "speed_drop",
-                    "max_lat_g", "max_brake", "max_throttle", "min_accel_g"])
+                    "entry_speed_mps", "apex_speed_mps", "exit_speed_mps", "speed_drop_mps",
+                    "max_lat_g_mps2", "min_accel_x_mps2", "max_accel_x_mps2"])
         rows = 0
         for sg in sg_list:
             sess_laps = con.execute(
@@ -801,17 +834,16 @@ def write_csv_pack(out_dir: Path, sessions: list[dict], track_yaml: dict,
                     w.writerow([sg, lap_idx, turn_key, st["name"],
                                 st["entry_speed"], st["apex_speed"],
                                 st["exit_speed"], st["speed_drop"],
-                                st["max_lat_g"], st["max_brake"],
-                                st["max_throttle"], st["min_accel_g"]])
+                                st["max_lat_g"], st["min_accel_g"], st["max_accel_g"]])
                     rows += 1
         counts["corner_stats.csv"] = rows
 
     # 5. best_lap_trace.csv — every-50 m of every lap of every session
     with (out_dir / "best_lap_trace.csv").open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["session_guid", "lap_index", "dist_m",
-                    "speed_f4", "throttle_f7", "brake_f9",
-                    "accel_g_f12", "lat_g_f13", "heading_f8"])
+        w.writerow(["session_guid", "lap_index", "distance_m",
+                    "gnss_speed_mps", "accel_x_mps2", "accel_y_mps2",
+                    "gnss_altitude_m", "lateral_position", "gnss_heading_deg"])
         rows = 0
         for sg in sg_list:
             sess_laps = con.execute(
@@ -822,8 +854,8 @@ def write_csv_pack(out_dir: Path, sessions: list[dict], track_yaml: dict,
                 trace = fetch_best_lap_trace(con, sg, lap_idx, stride_m=50)
                 for p in trace:
                     w.writerow([sg, lap_idx, p["dist"], p.get("speed"),
-                                p.get("throttle"), p.get("brake"),
-                                p.get("accel_g"), p.get("lat_g"),
+                                p.get("long_accel"), p.get("lat_g"),
+                                p.get("altitude"), p.get("lateral_pos"),
                                 p.get("heading")])
                     rows += 1
         counts["best_lap_trace.csv"] = rows

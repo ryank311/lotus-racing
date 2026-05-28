@@ -5,15 +5,16 @@ Load all downloaded Catalyst session data into a DuckDB database.
 Reads from data/sessions/<guid>/{summary,metadata,weather}.json and the decoded
 performance.pb protobuf, populates these tables:
 
-    track_configs(track_cartography_id, track_name, track_configuration_id,
-                  track_configuration_name, reverse, direction)
-    sessions(session_guid PRIMARY KEY, session_start, best_lap_ms, best_lap_normal_ms,
-             track_configuration_id, mean_line_guid, garmin_guid, unit_id,
-             weather_description, temperature_c, humidity_pct,
-             wind_speed_mps, wind_direction_deg)
-    laps(session_guid, lap_index, lap_number_raw, duration_ms, sample_count,
-         PRIMARY KEY (session_guid, lap_index))
-    samples(session_guid, lap_index, dist_idx, lat, lon, f4..f15)
+    track_configs(track_cartography_id, track_name, track_configuration_id, ...)
+    sessions(session_guid PRIMARY KEY, session_start, best_lap_ms, ...)
+    laps(session_guid, lap_index, duration_ms, type, start_time_session_ms,
+         min/max/avg_speed_mps, max_decel_mps2, max_accel_mps2, sample_count)
+    samples(session_guid, lap_index, distance_m, time_ms, lat, lon,
+            gnss_speed_mps, gnss_heading_deg, gnss_heading_deriv_dps,
+            gnss_accuracy_m, gnss_altitude_m,
+            accel_x_mps2, accel_y_mps2, accel_z_mps2,
+            gyro_roll_dps, gyro_pitch_dps, gyro_yaw_dps,
+            lateral_position)
 """
 from __future__ import annotations
 
@@ -90,39 +91,38 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
     CREATE TABLE IF NOT EXISTS laps (
         session_guid VARCHAR,
         lap_index INTEGER,
-        lap_number_raw INTEGER,
+        lap_type VARCHAR,
         duration_ms INTEGER,
+        start_time_session_ms INTEGER,
+        lap_descriptor INTEGER,
+        min_speed_mps DOUBLE,
+        max_speed_mps DOUBLE,
+        avg_speed_mps DOUBLE,
+        max_decel_mps2 DOUBLE,
+        max_accel_mps2 DOUBLE,
         sample_count INTEGER,
-        lap_f3 INTEGER,
-        lap_f4 INTEGER,
-        lap_f5 INTEGER,
-        lap_f6 DOUBLE,
-        lap_f7 DOUBLE,
-        lap_f8 DOUBLE,
-        lap_f9 DOUBLE,
-        lap_f10 DOUBLE,
         PRIMARY KEY (session_guid, lap_index)
     );
 
     CREATE TABLE IF NOT EXISTS samples (
         session_guid VARCHAR,
         lap_index INTEGER,
-        dist_idx INTEGER,
-        seq INTEGER,
+        distance_m INTEGER,
+        time_ms INTEGER,
         lat DOUBLE,
         lon DOUBLE,
-        f4 DOUBLE,
-        f5 DOUBLE,
-        f6 DOUBLE,
-        f7 DOUBLE,
-        f8 DOUBLE,
-        f9 DOUBLE,
-        f10 DOUBLE,
-        f11 DOUBLE,
-        f12 DOUBLE,
-        f13 DOUBLE,
-        f14 DOUBLE,
-        f15 DOUBLE
+        gnss_speed_mps DOUBLE,
+        gnss_heading_deg DOUBLE,
+        gnss_heading_deriv_dps DOUBLE,
+        gnss_accuracy_m DOUBLE,
+        gnss_altitude_m DOUBLE,
+        accel_x_mps2 DOUBLE,
+        accel_y_mps2 DOUBLE,
+        accel_z_mps2 DOUBLE,
+        gyro_roll_dps DOUBLE,
+        gyro_pitch_dps DOUBLE,
+        gyro_yaw_dps DOUBLE,
+        lateral_position DOUBLE
     );
 
     CREATE INDEX IF NOT EXISTS idx_samples_session_lap
@@ -200,29 +200,45 @@ def load_session(con: duckdb.DuckDBPyConnection, session_dir: Path) -> int:
     decoded = decode_performance(perf_p.read_bytes())
     lap_rows = []
     sample_rows = []
-    for lap_idx, lap in enumerate(decoded.get("laps", [])):
+    for lap_idx, lap in enumerate(decoded.get("driven_laps", [])):
         samples = lap.get("samples", [])
         lap_rows.append((
             sg, lap_idx,
-            lap.get("lap_number"),
+            lap.get("type"),
             lap.get("duration_ms"),
+            lap.get("start_time_session_ms"),
+            lap.get("lap_descriptor"),
+            lap.get("min_speed_mps"),
+            lap.get("max_speed_mps"),
+            lap.get("avg_speed_mps"),
+            lap.get("max_decel_mps2"),
+            lap.get("max_accel_mps2"),
             len(samples),
-            lap.get("f3"), lap.get("f4"), lap.get("f5"),
-            lap.get("f6"), lap.get("f7"), lap.get("f8"), lap.get("f9"), lap.get("f10"),
         ))
         for s in samples:
             pos = s.get("position") or {}
             sample_rows.append((
-                sg, lap_idx, int(s.get("t_s", 0)), s.get("seq"),
+                sg, lap_idx,
+                int(s.get("distance_m", 0)),
+                s.get("time_ms"),
                 pos.get("lat"), pos.get("lon"),
-                s.get("f4"), s.get("f5"), s.get("f6"), s.get("f7"),
-                s.get("f8"), s.get("f9"), s.get("f10"), s.get("f11"),
-                s.get("f12"), s.get("f13"), s.get("f14"), s.get("f15"),
+                s.get("gnss_speed_mps"),
+                s.get("gnss_heading_deg"),
+                s.get("gnss_heading_deriv_dps"),
+                s.get("gnss_accuracy_m"),
+                s.get("gnss_altitude_m"),
+                s.get("accel_x_mps2"),
+                s.get("accel_y_mps2"),
+                s.get("accel_z_mps2"),
+                s.get("gyro_roll_dps"),
+                s.get("gyro_pitch_dps"),
+                s.get("gyro_yaw_dps"),
+                s.get("lateral_position"),
             ))
 
     if lap_rows:
         con.executemany(
-            "INSERT OR REPLACE INTO laps VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO laps VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             lap_rows,
         )
 
@@ -231,9 +247,13 @@ def load_session(con: duckdb.DuckDBPyConnection, session_dir: Path) -> int:
         # list-of-tuples as a relation and INSERT FROM it in a single statement.
         # This is ~100x faster than per-row inserts for sample-scale loads.
         con.execute("DELETE FROM samples WHERE session_guid = ?", [sg])
-        cols = ["session_guid", "lap_index", "dist_idx", "seq",
-                "lat", "lon", "f4", "f5", "f6", "f7", "f8", "f9",
-                "f10", "f11", "f12", "f13", "f14", "f15"]
+        cols = ["session_guid", "lap_index", "distance_m", "time_ms",
+                "lat", "lon",
+                "gnss_speed_mps", "gnss_heading_deg", "gnss_heading_deriv_dps",
+                "gnss_accuracy_m", "gnss_altitude_m",
+                "accel_x_mps2", "accel_y_mps2", "accel_z_mps2",
+                "gyro_roll_dps", "gyro_pitch_dps", "gyro_yaw_dps",
+                "lateral_position"]
         # Build a single Arrow table by column for fastest ingest
         import pyarrow as pa
         cols_data = list(zip(*sample_rows))
