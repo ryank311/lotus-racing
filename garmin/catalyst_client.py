@@ -46,6 +46,15 @@ DEFAULT_DATA_DIR = SCRIPT_DIR / "data" / "sessions"
 GCS_SUBDOMAIN = "api.gcs"            # → https://api.gcs.garmin.com/
 AUTOSPORT_PREFIX = "/autosport/api/v1"
 
+# The Catalyst Android app's OAuth client ID. Discovered by string-searching
+# libgecko.so in the decompiled APK. The autosport API rejects tokens issued
+# under the default Garmin Connect mobile client_id — we have to exchange our
+# token for one issued under this Catalyst-specific client_id.
+CATALYST_CLIENT_ID = "GARMIN_MOBILE_CATALYST_ANDROID"
+# Endpoint discovered by strings-analysis of libgecko.so (the native auth library)
+SSO_TOKEN_URL = "https://services.garmin.com/api/oauth/token"
+CATALYST_TOKEN_CACHE = SCRIPT_DIR / ".catalyst_token.json"
+
 # Browser UA to bypass Cloudflare block on garth's default mobile UA.
 BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -69,62 +78,245 @@ def load_config() -> dict:
 # Auth
 # ---------------------------------------------------------------------------
 
-def init_garmin(email: str, password: str) -> "object":
+def init_garth(email: str, password: str):
     """
-    Log in to Garmin SSO and return a Garmin client. The client's underlying
-    `.garth` attribute is what we use for all API calls — it handles token
-    refresh and Bearer header injection automatically.
+    Authenticate with Garmin SSO via garth and return (garth_client, had_fresh_login).
 
-    First call: tries to restore tokens from TOKEN_STORE. If that fails,
-    prompts for credentials (and MFA if configured on the account) and saves
-    fresh tokens to TOKEN_STORE.
+    On first run: performs a full SSO form login (sets SSO TGT cookies in the
+    session), saves garth OAuth1+OAuth2 tokens to TOKEN_STORE, and returns
+    had_fresh_login=True so the caller can immediately use the live SSO session
+    to get a Catalyst service ticket before the cookies expire.
 
-    Subsequent calls: just restores from TOKEN_STORE. Tokens auto-refresh.
+    On subsequent runs: loads tokens from TOKEN_STORE (no SSO cookies in
+    session) and returns had_fresh_login=False.
     """
     try:
-        from garminconnect import (
-            Garmin,
-            GarminConnectAuthenticationError,
-            GarminConnectConnectionError,
-            GarminConnectTooManyRequestsError,
-        )
+        import garth
     except ImportError:
-        print("[ERROR] garminconnect not installed. Run: pip install garminconnect")
+        print("[ERROR] garth not installed. Run: pip install garth")
         sys.exit(1)
 
     tokenstore = str(TOKEN_STORE)
+    garth.client.sess.headers.update({"User-Agent": BROWSER_UA})
 
-    # Try saved tokens first
     try:
-        garmin = Garmin()
-        garmin.garth.sess.headers.update({"User-Agent": BROWSER_UA})
-        garmin.login(tokenstore)
+        garth.resume(tokenstore)
         print("[auth] Resumed session from saved tokens")
-        return garmin
-    except (GarminConnectAuthenticationError, GarminConnectConnectionError, FileNotFoundError):
-        print("[auth] No valid saved tokens — performing fresh login")
-    except Exception as e:
-        print(f"[auth] Token restore failed ({type(e).__name__}: {e}); doing fresh login")
-
-    # Fresh login
-    garmin = Garmin(
-        email=email,
-        password=password,
-        prompt_mfa=lambda: input("MFA code (from Garmin app/email): ").strip(),
-    )
-    garmin.garth.sess.headers.update({"User-Agent": BROWSER_UA})
+        return garth.client, False
+    except (FileNotFoundError, Exception) as e:
+        if isinstance(e, FileNotFoundError):
+            print("[auth] No saved tokens — performing fresh login")
+        else:
+            print(f"[auth] Token restore failed ({type(e).__name__}: {e}); fresh login")
 
     try:
-        garmin.login(tokenstore)
+        garth.login(
+            email,
+            password,
+            prompt_mfa=lambda: input("MFA code (from Garmin app/email): ").strip(),
+        )
+        garth.save(tokenstore)
         print(f"[auth] Login successful; tokens saved to {tokenstore}/")
-    except GarminConnectAuthenticationError as e:
-        print(f"[ERROR] Wrong credentials: {e}")
-        sys.exit(1)
-    except GarminConnectTooManyRequestsError as e:
-        print(f"[ERROR] Rate limited: {e}")
+    except Exception as e:
+        print(f"[ERROR] Login failed ({type(e).__name__}): {e}")
         sys.exit(1)
 
-    return garmin
+    return garth.client, True  # fresh login — SSO TGT cookies are live
+
+
+def _get_catalyst_ticket_via_sso_session(garth_client) -> Tuple[Optional[str], str]:
+    """
+    Use the live SSO session (TGT cookies in garth_client.sess) to request a
+    Catalyst-scoped CAS service ticket without re-entering credentials.
+
+    Returns (ticket, service_url). Ticket is None on any failure.
+    """
+    import re
+
+    sso_base = f"https://sso.{garth_client.domain}"
+    service_url = f"{sso_base}/sso/embed"
+
+    try:
+        resp = garth_client.sess.get(
+            f"{sso_base}/sso/login",
+            params={
+                "service": service_url,
+                "mobile": "true",
+                "clientId": CATALYST_CLIENT_ID,
+            },
+            timeout=30,
+            allow_redirects=False,
+        )
+        print(f"[auth] SSO ticket request: {resp.status_code} "
+              f"Location={resp.headers.get('Location','')[:100]}")
+
+        location = resp.headers.get("Location", "")
+        m = re.search(r"[?&]ticket=([^&\s]+)", location)
+        if m:
+            return m.group(1), service_url
+
+        if resp.status_code == 200:
+            m = re.search(r"[?&]ticket=([^&\"'\s]+)", resp.text)
+            if m:
+                return m.group(1), service_url
+    except Exception as e:
+        print(f"[auth] SSO session ticket request failed: {e}")
+
+    return None, service_url
+
+
+def browser_login_fallback(garth_client) -> Optional[Tuple[str, str]]:
+    """
+    Open a browser to let the user complete login (MFA, captcha, etc.).
+    Spins up a tiny localhost HTTP server to capture the ticket from the
+    redirect back. Returns (ticket, service_url) on success, None on cancel.
+    """
+    import http.server
+    import socketserver
+    import threading
+    import urllib.parse
+    import webbrowser
+
+    sso_base = f"https://sso.{garth_client.domain}"
+    # Use localhost as the service URL — the SSO will redirect there with
+    # ?ticket=ST-... after successful login.
+    callback_port = 8765
+    service_url = f"http://localhost:{callback_port}/callback"
+
+    login_url = (
+        f"{sso_base}/sso/embed?"
+        + urllib.parse.urlencode({
+            "id": "gauth-widget",
+            "embedWidget": "true",
+            "gauthHost": sso_base,
+            "service": service_url,
+            "source": service_url,
+            "redirectAfterAccountLoginUrl": service_url,
+            "redirectAfterAccountCreationUrl": service_url,
+            "mobile": "true",
+            "clientId": CATALYST_CLIENT_ID,
+        })
+    )
+
+    captured: dict = {}
+    done = threading.Event()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "ticket" in qs:
+                captured["ticket"] = qs["ticket"][0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<h1>Login complete</h1>"
+                    b"<p>You can close this tab and return to the terminal.</p>"
+                )
+                done.set()
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"<h1>Waiting for ticket...</h1>"
+                    b"<p>This page should be reached after completing login. "
+                    b"If you see this without logging in, something went wrong.</p>"
+                )
+
+        def log_message(self, *args, **kwargs):
+            pass  # silence noisy default access log
+
+    try:
+        server = socketserver.TCPServer(("127.0.0.1", callback_port), Handler)
+    except OSError as e:
+        print(f"[ERROR] Could not bind port {callback_port}: {e}")
+        return None
+
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    print(f"\n[auth] Opening browser for MFA/manual login...")
+    print(f"       If the browser doesn't open, visit this URL manually:")
+    print(f"       {login_url}\n")
+    webbrowser.open(login_url)
+
+    print(f"[auth] Waiting for login callback on http://localhost:{callback_port}/callback")
+    print(f"       (Ctrl-C to cancel)")
+    try:
+        if not done.wait(timeout=300):
+            print("[auth] Browser login timed out after 5 minutes")
+            return None
+    except KeyboardInterrupt:
+        print("[auth] Cancelled")
+        return None
+    finally:
+        server.shutdown()
+
+    ticket = captured.get("ticket")
+    if not ticket:
+        return None
+    print(f"[auth] Captured ticket: {ticket[:25]}...")
+    return ticket, service_url
+
+
+def load_catalyst_token() -> Optional[str]:
+    """Load cached Catalyst token if it hasn't expired."""
+    if not CATALYST_TOKEN_CACHE.exists():
+        return None
+    try:
+        with open(CATALYST_TOKEN_CACHE) as f:
+            data = json.load(f)
+        expires_at = data.get("expires_at", 0)
+        if time.time() < expires_at - 300:  # 5-min buffer
+            return data["access_token"]
+    except Exception:
+        pass
+    return None
+
+
+def save_catalyst_token(access_token: str, expires_in: int) -> None:
+    with open(CATALYST_TOKEN_CACHE, "w") as f:
+        json.dump({
+            "access_token": access_token,
+            "expires_at": time.time() + expires_in,
+        }, f)
+
+
+def _exchange_ticket_for_token(sess: requests.Session, ticket: str,
+                               service_url: str) -> str:
+    """
+    POST a CAS service ticket to /api/oauth/token to get a Catalyst-scoped
+    OAuth2 access token. Format reverse-engineered from libgecko.so:
+        grant_type=service_ticket&client_id=GARMIN_MOBILE_CATALYST_ANDROID
+        &service_ticket=ST-...&service_url=<service used to mint ticket>
+    """
+    resp = sess.post(
+        SSO_TOKEN_URL,
+        data={
+            "grant_type": "service_ticket",
+            "client_id": CATALYST_CLIENT_ID,
+            "service_ticket": ticket,
+            "service_url": service_url,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=30,
+    )
+    print(f"[auth] token exchange: {resp.status_code}")
+    if not resp.ok:
+        print(f"       body: {resp.text[:500]}")
+        resp.raise_for_status()
+    payload = resp.json()
+    token = payload.get("access_token")
+    if not token:
+        raise RuntimeError(f"No access_token in response: {payload}")
+    expires_in = int(payload.get("expires_in", 7776000))
+    save_catalyst_token(token, expires_in)
+    print(f"[auth] Catalyst token obtained "
+          f"(expires_in={expires_in}s ≈ {expires_in // 86400}d); "
+          f"cached to {CATALYST_TOKEN_CACHE.name}")
+    return token
 
 
 # ---------------------------------------------------------------------------
@@ -157,14 +349,14 @@ class CatalystAPI:
 
     def __init__(
         self,
-        garmin: Optional["object"] = None,
+        garth_client=None,
         bearer_token: Optional[str] = None,
         extra_headers: Optional[dict] = None,
     ):
-        if garmin is None and not bearer_token:
-            raise ValueError("Must provide either garmin client or bearer_token")
+        if garth_client is None and not bearer_token:
+            raise ValueError("Must provide either garth_client or bearer_token")
 
-        self.garmin = garmin
+        self.garth_client = garth_client
         self.bearer_token = bearer_token
         self.extra_headers = extra_headers or {}
         self.customer_id = ""
@@ -185,9 +377,9 @@ class CatalystAPI:
         """
         full_path = f"{AUTOSPORT_PREFIX}/{path.lstrip('/')}"
 
-        if self.garmin is not None:
-            # Use garth — token refresh and Bearer header are handled internally
-            resp = self.garmin.garth.request(
+        if self.garth_client is not None:
+            # Garth handles token refresh and Bearer header automatically
+            resp = self.garth_client.request(
                 "GET", GCS_SUBDOMAIN, full_path,
                 api=True,
                 params=params,
@@ -196,8 +388,8 @@ class CatalystAPI:
         else:
             url = f"https://api.gcs.garmin.com{full_path}"
             resp = self._session.get(url, params=params, timeout=30)
-            resp.raise_for_status()
 
+        resp.raise_for_status()
         if resp.status_code == 204:
             return None
         return resp.json()
@@ -486,10 +678,14 @@ def main():
     pretty = out_cfg.get("pretty_json", True)
     data_dir = Path(args.data_dir or out_cfg.get("data_dir", DEFAULT_DATA_DIR))
 
-    if args.clear_tokens and TOKEN_STORE.exists():
+    if args.clear_tokens:
         import shutil
-        shutil.rmtree(TOKEN_STORE)
-        print(f"[auth] Cleared token store at {TOKEN_STORE}")
+        if TOKEN_STORE.exists():
+            shutil.rmtree(TOKEN_STORE)
+            print(f"[auth] Cleared garth token store at {TOKEN_STORE}")
+        if CATALYST_TOKEN_CACHE.exists():
+            CATALYST_TOKEN_CACHE.unlink()
+            print(f"[auth] Cleared Catalyst token cache")
 
     # Decide auth path
     raw_token = (args.token or auth_cfg.get("bearer_token", "")).strip()
@@ -514,8 +710,38 @@ def main():
                 "  Option C: use --token <raw_token> on the CLI"
             )
             sys.exit(1)
-        garmin = init_garmin(email, password)
-        api = CatalystAPI(garmin=garmin)
+        # Try cached Catalyst token first (90-day lifetime)
+        catalyst_token = load_catalyst_token()
+        if catalyst_token:
+            print("[auth] Using cached Catalyst token")
+        else:
+            garth_client, fresh_login = init_garth(email, password)
+            if not fresh_login:
+                # Resumed session has no SSO cookies — force a fresh login to
+                # get TGT cookies in the live session.
+                print("[auth] Need fresh SSO session to mint Catalyst ticket; "
+                      "clearing garth tokens and re-logging in...")
+                import shutil
+                if TOKEN_STORE.exists():
+                    shutil.rmtree(TOKEN_STORE)
+                garth_client, _ = init_garth(email, password)
+
+            ticket, service_url = _get_catalyst_ticket_via_sso_session(garth_client)
+            if not ticket:
+                print("[auth] Headless SSO ticket request failed "
+                      "(may require MFA or extra verification). "
+                      "Falling back to browser login.")
+                result = browser_login_fallback(garth_client)
+                if not result:
+                    print("[ERROR] Browser login failed or was cancelled.")
+                    sys.exit(1)
+                ticket, service_url = result
+
+            catalyst_token = _exchange_ticket_for_token(
+                garth_client.sess, ticket, service_url
+            )
+
+        api = CatalystAPI(bearer_token=catalyst_token)
 
     api._page_size = cfg.get("api", {}).get("page_size", 50)
 

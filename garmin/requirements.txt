@@ -1,2 +1,2 @@
-garminconnect>=0.2.19
+garth>=0.4.45
 requests>=2.31.0

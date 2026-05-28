@@ -2,6 +2,7 @@ config.json
 .garth/
 .garth_cache/
 .token_cache.json
+.catalyst_token.json
 data/
 __pycache__/
 *.pyc
