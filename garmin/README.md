@@ -54,9 +54,30 @@ X-Garmin-Unit-Id:          <device unit ID>
 ```
 
 The `python-garminconnect` library (`pip install garminconnect`) implements the full Garmin SSO
-flow and handles token refresh automatically. It is the recommended auth path. (Note: the older
-`garth` library is deprecated; `python-garminconnect` is its active successor and embeds garth
-internally.)
+flow and handles token refresh automatically. Under the hood it wraps `garth`, which is the
+actual auth + HTTP backend.
+
+### How auth works in our client
+
+1. **First run**: prompts for credentials (and MFA code if your account has it enabled), logs in
+   via garth, and saves OAuth1 + OAuth2 tokens to `garmin/.garth/`.
+2. **Subsequent runs**: loads tokens from `.garth/`. The OAuth2 refresh token is good for ~1 year,
+   so the access token auto-refreshes on use — no re-login until the refresh token itself expires.
+3. **API requests** go through `garmin.garth.request("GET", "api.gcs", path, api=True)`, which
+   targets `https://api.gcs.garmin.com/` (not the standard `connectapi.garmin.com`) and attaches
+   the Bearer token automatically.
+
+### Cloudflare User-Agent workaround
+
+Garmin's Cloudflare setup blocks garth's default mobile User-Agent (`GCM-iOS-...`). The client
+overrides it with a desktop Chrome UA before calling `login()`:
+
+```python
+garmin.garth.sess.headers.update({"User-Agent": "Mozilla/5.0 ... Chrome/131.0.0.0 ..."})
+```
+
+Without this override, login fails with a Cloudflare challenge. See
+[matin/garth issue #217](https://github.com/matin/garth/issues) for the upstream tracker.
 
 ---
 

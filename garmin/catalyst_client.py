@@ -12,14 +12,21 @@ Usage:
     python catalyst_client.py --probe          # hit endpoints and print raw JSON (debug)
     python catalyst_client.py --token <tok>    # override auth with a raw Bearer token
 
-Auth: reads config.json. Uses python-garminconnect for Garmin SSO login.
-Tokens are cached in .token_cache.json so subsequent runs skip re-authentication.
-If garminconnect login fails, fall back to a raw Bearer token from config or --token.
+Auth: uses python-garminconnect (which wraps garth) for Garmin SSO login.
+Tokens are saved to .garth/ in this directory and auto-refresh on use, so
+subsequent runs skip re-authentication.
+
+Garth's default mobile User-Agent is blocked by Garmin's Cloudflare setup, so
+we override it with a desktop browser UA before login. See:
+https://github.com/matin/garth/issues for the upstream tracker.
+
+API requests go through garmin.garth.request() with subdomain="api.gcs", which
+routes to https://api.gcs.garmin.com/ — the host that serves Catalyst data,
+not the standard connectapi.garmin.com that Garmin Connect uses.
 """
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -33,11 +40,18 @@ import requests
 
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
-TOKEN_CACHE_PATH = SCRIPT_DIR / ".token_cache.json"
+TOKEN_STORE = SCRIPT_DIR / ".garth"
 DEFAULT_DATA_DIR = SCRIPT_DIR / "data" / "sessions"
 
-API_BASE = "https://api.gcs.garmin.com"
-AUTOSPORT = "/autosport/api/v1"
+GCS_SUBDOMAIN = "api.gcs"            # → https://api.gcs.garmin.com/
+AUTOSPORT_PREFIX = "/autosport/api/v1"
+
+# Browser UA to bypass Cloudflare block on garth's default mobile UA.
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 def load_config() -> dict:
@@ -55,137 +69,62 @@ def load_config() -> dict:
 # Auth
 # ---------------------------------------------------------------------------
 
-def _save_token_cache(access_token: str, customer_id: str) -> None:
-    with open(TOKEN_CACHE_PATH, "w") as f:
-        json.dump({"access_token": access_token, "customer_id": customer_id}, f)
-
-
-def _load_token_cache() -> Tuple[str, str]:
-    if TOKEN_CACHE_PATH.exists():
-        try:
-            with open(TOKEN_CACHE_PATH) as f:
-                data = json.load(f)
-            return data.get("access_token", ""), data.get("customer_id", "")
-        except Exception:
-            pass
-    return "", ""
-
-
-def build_session_garminconnect(email: str, password: str) -> Tuple[requests.Session, str]:
+def init_garmin(email: str, password: str) -> "object":
     """
-    Authenticate via python-garminconnect. Returns a requests.Session with the
-    Authorization header pre-set and the customerId string.
+    Log in to Garmin SSO and return a Garmin client. The client's underlying
+    `.garth` attribute is what we use for all API calls — it handles token
+    refresh and Bearer header injection automatically.
 
-    Caches the token in .token_cache.json so subsequent runs skip login.
+    First call: tries to restore tokens from TOKEN_STORE. If that fails,
+    prompts for credentials (and MFA if configured on the account) and saves
+    fresh tokens to TOKEN_STORE.
+
+    Subsequent calls: just restores from TOKEN_STORE. Tokens auto-refresh.
     """
     try:
-        from garminconnect import Garmin, GarminConnectAuthenticationError
+        from garminconnect import (
+            Garmin,
+            GarminConnectAuthenticationError,
+            GarminConnectConnectionError,
+            GarminConnectTooManyRequestsError,
+        )
     except ImportError:
         print("[ERROR] garminconnect not installed. Run: pip install garminconnect")
         sys.exit(1)
 
-    # Try cached token first
-    cached_token, cached_customer_id = _load_token_cache()
-    if cached_token:
-        print("[auth] Using cached access token")
-        session = build_session_token(cached_token)
-        return session, cached_customer_id
+    tokenstore = str(TOKEN_STORE)
 
-    print(f"[auth] Logging in as {email} via Garmin SSO...")
+    # Try saved tokens first
     try:
-        client = Garmin(email, password)
-        client.login()
-        print("[auth] Login successful")
+        garmin = Garmin()
+        garmin.garth.sess.headers.update({"User-Agent": BROWSER_UA})
+        garmin.login(tokenstore)
+        print("[auth] Resumed session from saved tokens")
+        return garmin
+    except (GarminConnectAuthenticationError, GarminConnectConnectionError, FileNotFoundError):
+        print("[auth] No valid saved tokens — performing fresh login")
+    except Exception as e:
+        print(f"[auth] Token restore failed ({type(e).__name__}: {e}); doing fresh login")
+
+    # Fresh login
+    garmin = Garmin(
+        email=email,
+        password=password,
+        prompt_mfa=lambda: input("MFA code (from Garmin app/email): ").strip(),
+    )
+    garmin.garth.sess.headers.update({"User-Agent": BROWSER_UA})
+
+    try:
+        garmin.login(tokenstore)
+        print(f"[auth] Login successful; tokens saved to {tokenstore}/")
     except GarminConnectAuthenticationError as e:
-        print(f"[ERROR] Garmin login failed (wrong credentials?): {e}")
+        print(f"[ERROR] Wrong credentials: {e}")
         sys.exit(1)
-    except Exception as e:
-        print(f"[ERROR] Garmin login failed: {e}")
-        sys.exit(1)
-
-    # python-garminconnect stores a requests.Session internally.
-    # We want the raw access token so we can use our own session for the GCS API.
-    access_token = ""
-    customer_id = ""
-
-    try:
-        # The client session has the Garmin auth cookies/headers baked in.
-        # Extract the Bearer token from the underlying session headers or client state.
-        if hasattr(client, "garth"):
-            # newer versions embed garth
-            access_token = client.garth.oauth2_token.access_token
-            customer_id = str(getattr(client.garth, "display_name", "") or "")
-        elif hasattr(client, "session") and hasattr(client.session, "headers"):
-            auth_header = client.session.headers.get("Authorization", "")
-            if auth_header.startswith("Bearer "):
-                access_token = auth_header.split(" ", 1)[1]
-        if not access_token and hasattr(client, "oauth_token"):
-            access_token = client.oauth_token
-    except Exception as e:
-        print(f"[WARN] Could not extract access token from garminconnect client: {e}")
-
-    if not access_token:
-        # Fall back: use the client's internal session directly for GCS calls.
-        # This won't work against api.gcs.garmin.com unless it shares the same
-        # SSO cookie domain — but worth trying.
-        print("[WARN] Could not extract raw Bearer token; will try using garminconnect session directly.")
-        http_session = client.session if hasattr(client, "session") else requests.Session()
-        http_session.headers.update({"Accept": "application/json"})
-        return http_session, customer_id
-
-    _save_token_cache(access_token, customer_id)
-    session = build_session_token(access_token)
-    return session, customer_id
-
-
-def build_session_token(token: str) -> requests.Session:
-    """Build a requests.Session using a raw Bearer token (e.g. from mitmproxy capture)."""
-    session = requests.Session()
-    session.headers.update({
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    })
-    return session
-
-
-def get_auth_session(cfg: dict, token_override: Optional[str]) -> Tuple[requests.Session, str]:
-    """
-    Returns (requests.Session with auth headers, customer_id).
-
-    Priority:
-      1. --token CLI flag (raw Bearer token, no customer_id lookup)
-      2. config.json bearer_token field (same)
-      3. garminconnect login via config.json email/password
-    """
-    auth = cfg.get("auth", {})
-
-    raw_token = (token_override or auth.get("bearer_token", "")).strip()
-    if raw_token:
-        print("[auth] Using raw Bearer token")
-        session = build_session_token(raw_token)
-        customer_id = auth.get("customer_id", "").strip()
-        if auth.get("x_garmin_client_id"):
-            session.headers["X-Garmin-Client-Id"] = auth["x_garmin_client_id"]
-        if auth.get("x_garmin_unit_id"):
-            session.headers["X-Garmin-Unit-Id"] = auth["x_garmin_unit_id"]
-        return session, customer_id
-
-    email = auth.get("email", "").strip()
-    password = auth.get("password", "").strip()
-    if not email or not password:
-        print(
-            "[ERROR] No auth configured.\n"
-            "  Option A: set email + password in config.json\n"
-            "  Option B: set bearer_token to a token captured from mitmproxy/Charles Proxy\n"
-            "  Option C: use --token <raw_token> on the CLI"
-        )
+    except GarminConnectTooManyRequestsError as e:
+        print(f"[ERROR] Rate limited: {e}")
         sys.exit(1)
 
-    session, customer_id = build_session_garminconnect(email, password)
-    if not customer_id:
-        customer_id = auth.get("customer_id", "").strip()
-    return session, customer_id
+    return garmin
 
 
 # ---------------------------------------------------------------------------
@@ -199,30 +138,68 @@ class CatalystAPI:
     All endpoints live at:
         https://api.gcs.garmin.com/autosport/api/v1/<resource>
 
-    Authentication is a Bearer token in the Authorization header, set on the
-    requests.Session passed to __init__.
+    There are two ways this class can be initialized:
 
-    customerId is the Garmin account UUID — required for most list endpoints.
-    It is discovered automatically via GET /customer if not provided.
+    1. From a logged-in Garmin client (preferred):
+           api = CatalystAPI(garmin=garmin)
+       All requests go through garmin.garth.request(), which attaches the
+       Bearer token and auto-refreshes it on expiry.
 
-    NOTE: Field names in API responses are unconfirmed until real traffic is
-    captured. The code is annotated where assumptions are made — inspect the
-    raw probe output and update field names as needed.
+    2. From a raw Bearer token (e.g. captured from mitmproxy):
+           api = CatalystAPI(bearer_token="...")
+       Uses plain requests.Session with the token in the Authorization header.
+       No auto-refresh — token will eventually expire.
+
+    NOTE: API response field names are unconfirmed until real traffic is
+    captured. Code is annotated where assumptions are made — run --probe
+    first and inspect the raw output before relying on field names.
     """
 
-    def __init__(self, session: requests.Session, customer_id: str = "", base_url: str = API_BASE):
-        self.session = session
-        self.base_url = base_url.rstrip("/")
-        self.customer_id = customer_id
+    def __init__(
+        self,
+        garmin: Optional["object"] = None,
+        bearer_token: Optional[str] = None,
+        extra_headers: Optional[dict] = None,
+    ):
+        if garmin is None and not bearer_token:
+            raise ValueError("Must provide either garmin client or bearer_token")
+
+        self.garmin = garmin
+        self.bearer_token = bearer_token
+        self.extra_headers = extra_headers or {}
+        self.customer_id = ""
         self._page_size = 50
 
-    def _url(self, path: str) -> str:
-        return f"{self.base_url}{AUTOSPORT}/{path.lstrip('/')}"
+        if bearer_token:
+            self._session = requests.Session()
+            self._session.headers.update({
+                "Authorization": f"Bearer {bearer_token}",
+                "Accept": "application/json",
+                "User-Agent": BROWSER_UA,
+                **self.extra_headers,
+            })
 
     def _get(self, path: str, params: Optional[dict] = None) -> object:
-        url = self._url(path)
-        resp = self.session.get(url, params=params, timeout=30)
-        resp.raise_for_status()
+        """
+        GET an autosport endpoint. `path` is relative to /autosport/api/v1/.
+        """
+        full_path = f"{AUTOSPORT_PREFIX}/{path.lstrip('/')}"
+
+        if self.garmin is not None:
+            # Use garth — token refresh and Bearer header are handled internally
+            resp = self.garmin.garth.request(
+                "GET", GCS_SUBDOMAIN, full_path,
+                api=True,
+                params=params,
+                headers=self.extra_headers,
+            )
+        else:
+            url = f"https://api.gcs.garmin.com{full_path}"
+            resp = self._session.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+
+        if resp.status_code == 204:
+            return None
         return resp.json()
 
     # ------------------------------------------------------------------
@@ -231,14 +208,15 @@ class CatalystAPI:
 
     def get_customer(self) -> dict:
         """
-        Fetch account/customer record. Sets self.customer_id as a side effect.
-        NOTE: Inspect the raw response from --probe to find the correct ID field name.
+        Fetch account record. Sets self.customer_id as a side effect.
+        Inspect probe output to confirm the correct ID field name.
         """
         data = self._get("customer")
-        for field in ("customerId", "id", "customerNumber", "uuid", "guid"):
-            if isinstance(data, dict) and data.get(field):
-                self.customer_id = str(data[field])
-                break
+        if isinstance(data, dict):
+            for field in ("customerId", "id", "customerNumber", "uuid", "guid"):
+                if data.get(field):
+                    self.customer_id = str(data[field])
+                    break
         return data
 
     def get_user(self) -> dict:
@@ -249,8 +227,7 @@ class CatalystAPI:
     # ------------------------------------------------------------------
 
     def get_sessions_count(self, **filters) -> int:
-        params = self._filter_params(**filters)
-        data = self._get("sessions/count", params=params)
+        data = self._get("sessions/count", params=self._filter_params(**filters))
         if isinstance(data, int):
             return data
         if isinstance(data, dict):
@@ -261,20 +238,18 @@ class CatalystAPI:
 
     def get_sessions(self, limit: Optional[int] = None, offset: int = 0, **filters) -> List[dict]:
         """
-        Fetch sessions. Pass limit=None to auto-paginate all sessions.
-        filters: start, end, track_config_id, reverse (see _filter_params)
+        Fetch sessions. Pass limit=None to auto-paginate.
+        Filter kwargs: start, end, track_config_id, reverse (see _filter_params).
         """
         if limit is not None:
-            params = {"limit": limit, "offset": offset}
-            params.update(self._filter_params(**filters))
+            params = {"limit": limit, "offset": offset, **self._filter_params(**filters)}
             result = self._get("sessions", params=params)
             return result if isinstance(result, list) else []
 
         all_sessions = []
         page_offset = 0
         while True:
-            params = {"limit": self._page_size, "offset": page_offset}
-            params.update(self._filter_params(**filters))
+            params = {"limit": self._page_size, "offset": page_offset, **self._filter_params(**filters)}
             page = self._get("sessions", params=params)
             if not page or not isinstance(page, list):
                 break
@@ -287,21 +262,17 @@ class CatalystAPI:
         return all_sessions
 
     def get_sessions_metadata(self, **filters) -> list:
-        params = self._filter_params(**filters)
-        return self._get("sessions/metadata", params=params)
+        return self._get("sessions/metadata", params=self._filter_params(**filters))
 
     def get_session(self, session_id: str) -> dict:
         """
-        Fetch full detail for a single session by GUID.
-        The detail response should include lap list, performance data, weather, and
-        the optimal lap composition. Inspect session_detail.json to understand the
-        full schema before building analysis on top of it.
+        Full detail for one session: lap list, performance data, weather, optimal lap.
+        Inspect session_detail.json after first probe to learn the full schema.
         """
         return self._get("session", params={"sessionId": session_id})
 
     def get_session_track_days(self, **filters) -> list:
-        params = self._filter_params(**filters)
-        return self._get("session-track-days", params=params)
+        return self._get("session-track-days", params=self._filter_params(**filters))
 
     # ------------------------------------------------------------------
     # Telemetry
@@ -309,13 +280,10 @@ class CatalystAPI:
 
     def get_mean_line(self, session_id: str) -> dict:
         """
-        Fetch the mean driven GPS line for a session. Contains the reference
-        lat/lon path that the Catalyst uses to calculate lateral position and
-        draw the track map.
-
-        The query param name is unconfirmed. sessionId is the best guess.
-        The meanline_guid field in a session response may be the correct key.
-        Inspect mean_line.json after first run.
+        Reference GPS line for a session — the lat/lon path the Catalyst uses
+        to compute lateral position and draw the track map. Query param name
+        unconfirmed; the meanline_guid field in a session response may be the
+        right key. Inspect mean_line.json after first run.
         """
         return self._get("meanLine", params={"sessionId": session_id})
 
@@ -324,12 +292,10 @@ class CatalystAPI:
     # ------------------------------------------------------------------
 
     def get_track(self, track_id: Optional[str] = None) -> dict:
-        params = {"trackId": track_id} if track_id else None
-        return self._get("track", params=params)
+        return self._get("track", params={"trackId": track_id} if track_id else None)
 
     def get_track_configurations(self, track_id: Optional[str] = None) -> list:
-        params = {"trackId": track_id} if track_id else None
-        return self._get("trackConfigurations", params=params)
+        return self._get("trackConfigurations", params={"trackId": track_id} if track_id else None)
 
     def get_track_facilities(self) -> list:
         return self._get("trackFacilities", params={"limit": self._page_size})
@@ -352,19 +318,14 @@ class CatalystAPI:
     # ------------------------------------------------------------------
 
     def _filter_params(self, **kwargs) -> dict:
-        """Map friendly keyword args to API query param names, drop None values."""
+        """Map friendly kwargs to API query param names, drop None values."""
         mapping = {
             "start": "filterStartDateTime",
             "end": "filterEndDateTime",
             "track_config_id": "filterTrackConfigurationId",
             "reverse": "filterTrackIsReverse",
         }
-        params = {}
-        for k, v in kwargs.items():
-            if v is None:
-                continue
-            params[mapping.get(k, k)] = v
-        return params
+        return {mapping.get(k, k): v for k, v in kwargs.items() if v is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -378,56 +339,46 @@ def save_json(data: object, path: Path, pretty: bool = True) -> None:
 
 
 def extract_session_id(s: dict) -> Optional[str]:
-    """
-    Extract the session ID from a session record.
-    Field name is unconfirmed — update this list once real responses are seen.
-    """
+    """Extract session ID from a record. Field name unconfirmed — update after probe."""
     for field in ("sessionId", "id", "guid", "uuid"):
-        val = s.get(field)
-        if val:
-            return str(val)
+        if s.get(field):
+            return str(s[field])
     return None
 
 
 def fetch_and_save_session(api: CatalystAPI, session_id: str, data_dir: Path, pretty: bool) -> None:
     """
-    Fetch all available data for one session and write to data_dir/<session_id>/.
+    Fetch one session's data and write to data_dir/<session_id>/.
 
     Files written:
-        session_detail.json  — full session + lap list from GET /session
-        mean_line.json       — reference GPS path from GET /meanLine
-        leaderboard.json     — session leaderboard position
+        session_detail.json  — full session + lap list (GET /session)
+        mean_line.json       — reference GPS path (GET /meanLine)
+        leaderboard.json     — session leaderboard
     """
     out = data_dir / session_id
     out.mkdir(parents=True, exist_ok=True)
     print(f"  [session] {session_id}")
 
-    try:
-        detail = api.get_session(session_id)
-        save_json(detail, out / "session_detail.json", pretty)
-        print(f"    wrote session_detail.json")
-    except requests.HTTPError as e:
-        print(f"    [WARN] session detail failed ({e.response.status_code}): {e}")
-
-    try:
-        mean_line = api.get_mean_line(session_id)
-        save_json(mean_line, out / "mean_line.json", pretty)
-        print(f"    wrote mean_line.json")
-    except requests.HTTPError as e:
-        print(f"    [WARN] mean line failed ({e.response.status_code}): {e}")
-
-    try:
-        lb = api.get_leaderboard_session(session_id)
-        save_json(lb, out / "leaderboard.json", pretty)
-        print(f"    wrote leaderboard.json")
-    except requests.HTTPError as e:
-        print(f"    [WARN] leaderboard failed ({e.response.status_code}): {e}")
+    for label, fetch, filename in [
+        ("session detail", lambda: api.get_session(session_id), "session_detail.json"),
+        ("mean line",      lambda: api.get_mean_line(session_id), "mean_line.json"),
+        ("leaderboard",    lambda: api.get_leaderboard_session(session_id), "leaderboard.json"),
+    ]:
+        try:
+            data = fetch()
+            save_json(data, out / filename, pretty)
+            print(f"    wrote {filename}")
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            print(f"    [WARN] {label} failed ({code}): {e}")
+        except Exception as e:
+            print(f"    [WARN] {label} failed ({type(e).__name__}): {e}")
 
 
 def fetch_all_sessions(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
     """
-    Fetch every session. Already-downloaded sessions (session_detail.json exists) are skipped.
-    Writes sessions_index.json to data_dir/../ as a master manifest.
+    Fetch every session. Already-downloaded sessions (session_detail.json exists)
+    are skipped. Writes sessions_index.json as a master manifest.
     """
     print("[sessions] Fetching session list...")
     sessions = api.get_sessions()
@@ -439,13 +390,11 @@ def fetch_all_sessions(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
     for s in sessions:
         session_id = extract_session_id(s)
         if not session_id:
-            print(f"  [WARN] Could not find session ID in record: {json.dumps(s)[:200]}")
+            print(f"  [WARN] No session ID in record: {json.dumps(s)[:200]}")
             continue
-
         if (data_dir / session_id / "session_detail.json").exists():
             print(f"  [skip] {session_id} (already downloaded)")
             continue
-
         fetch_and_save_session(api, session_id, data_dir, pretty)
         time.sleep(0.3)
 
@@ -457,20 +406,20 @@ def fetch_all_sessions(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
 def probe_endpoints(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
     """
     Hit each key endpoint and write the raw response to data_dir/../probe/.
-    This is the most important step when running for the first time — the raw
-    responses reveal the actual field names, which may differ from our guesses.
+    Run this first — the raw responses reveal the actual field names which
+    may differ from our guesses.
     """
     probe_dir = data_dir.parent / "probe"
     probe_dir.mkdir(parents=True, exist_ok=True)
     print(f"[probe] Writing raw API responses to {probe_dir}")
 
     endpoints = [
-        ("customer", "customer", {}),
-        ("user", "user", {}),
-        ("sessions_count", "sessions/count", {}),
-        ("sessions_first_5", "sessions", {"limit": 5}),
+        ("customer",          "customer",         {}),
+        ("user",              "user",             {}),
+        ("sessions_count",    "sessions/count",   {}),
+        ("sessions_first_5",  "sessions",         {"limit": 5}),
         ("sessions_metadata", "sessions/metadata", {}),
-        ("track_facilities", "trackFacilities", {"limit": 5}),
+        ("track_facilities",  "trackFacilities",  {"limit": 5}),
         ("leaderboard_annual", "leaderboard/annual", {}),
     ]
 
@@ -483,14 +432,15 @@ def probe_endpoints(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
             preview = json.dumps(data, default=str)[:300]
             print(f"    -> {out_path.name}  preview: {preview}")
         except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
             body = ""
             try:
                 body = e.response.text[:300]
             except Exception:
                 pass
-            print(f"    FAILED {e.response.status_code}: {body}")
+            print(f"    FAILED {code}: {body}")
         except Exception as e:
-            print(f"    FAILED: {e}")
+            print(f"    FAILED ({type(e).__name__}): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -521,8 +471,8 @@ examples:
                    help="Raw Bearer token (overrides config auth, useful with mitmproxy capture)")
     p.add_argument("--data-dir", metavar="PATH",
                    help=f"Output directory (default: {DEFAULT_DATA_DIR})")
-    p.add_argument("--clear-cache", action="store_true",
-                   help="Delete cached token and re-authenticate")
+    p.add_argument("--clear-tokens", action="store_true",
+                   help="Delete the garth token store and force a fresh login")
     return p.parse_args()
 
 
@@ -530,27 +480,50 @@ def main():
     args = parse_args()
     cfg = load_config()
 
-    api_cfg = cfg.get("api", {})
     out_cfg = cfg.get("output", {})
+    auth_cfg = cfg.get("auth", {})
 
-    base_url = api_cfg.get("base_url", API_BASE)
     pretty = out_cfg.get("pretty_json", True)
     data_dir = Path(args.data_dir or out_cfg.get("data_dir", DEFAULT_DATA_DIR))
 
-    if args.clear_cache and TOKEN_CACHE_PATH.exists():
-        TOKEN_CACHE_PATH.unlink()
-        print("[auth] Cleared token cache")
+    if args.clear_tokens and TOKEN_STORE.exists():
+        import shutil
+        shutil.rmtree(TOKEN_STORE)
+        print(f"[auth] Cleared token store at {TOKEN_STORE}")
 
-    http_session, customer_id = get_auth_session(cfg, args.token)
+    # Decide auth path
+    raw_token = (args.token or auth_cfg.get("bearer_token", "")).strip()
 
-    api = CatalystAPI(http_session, customer_id=customer_id, base_url=base_url)
-    api._page_size = api_cfg.get("page_size", 50)
+    if raw_token:
+        print("[auth] Using raw Bearer token (skipping garth)")
+        extra_headers = {}
+        if auth_cfg.get("x_garmin_client_id"):
+            extra_headers["X-Garmin-Client-Id"] = auth_cfg["x_garmin_client_id"]
+        if auth_cfg.get("x_garmin_unit_id"):
+            extra_headers["X-Garmin-Unit-Id"] = auth_cfg["x_garmin_unit_id"]
+        api = CatalystAPI(bearer_token=raw_token, extra_headers=extra_headers)
+        api.customer_id = auth_cfg.get("customer_id", "").strip()
+    else:
+        email = auth_cfg.get("email", "").strip()
+        password = auth_cfg.get("password", "").strip()
+        if not email or not password:
+            print(
+                "[ERROR] No auth configured.\n"
+                "  Option A: set email + password in config.json (recommended)\n"
+                "  Option B: set bearer_token to a token captured from mitmproxy/Charles\n"
+                "  Option C: use --token <raw_token> on the CLI"
+            )
+            sys.exit(1)
+        garmin = init_garmin(email, password)
+        api = CatalystAPI(garmin=garmin)
+
+    api._page_size = cfg.get("api", {}).get("page_size", 50)
 
     if not api.customer_id:
         print("[account] Fetching customer ID from API...")
         try:
             api.get_customer()
-            print(f"[account] customer_id = {api.customer_id}")
+            print(f"[account] customer_id = {api.customer_id or '(not found in response)'}")
         except Exception as e:
             print(f"[WARN] Could not fetch customer ID: {e}")
 
