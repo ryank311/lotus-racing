@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .. import paths
+from .. import paths, profiles
 
 
 def _ms_to_lap(ms: int | None) -> str:
@@ -75,8 +75,25 @@ class BriefDialog(QDialog):
         self._scope = QComboBox()
         self._scope.addItems(["overview", "compare", "corner"])
 
+        # Profile picker — defaults to Garage's saved active profile
+        self._profile = QComboBox()
+        active = profiles.get_active_profile_name()
+        for p in profiles.discover_profiles():
+            self._profile.addItem(p.name, p)
+            if p.name == active:
+                self._profile.setCurrentIndex(self._profile.count() - 1)
+
+        from PySide6.QtWidgets import QCheckBox
+        self._csv = QCheckBox("Also export CSV companion files")
+        self._csv.setChecked(False)
+        self._include_guides = QCheckBox("Inline setup/handling guides from profile folder")
+        self._include_guides.setChecked(False)
+
+        form.addRow("Profile:", self._profile)
         form.addRow("Last N:", self._last_n)
         form.addRow("Scope:", self._scope)
+        form.addRow("", self._csv)
+        form.addRow("", self._include_guides)
         layout.addLayout(form)
 
         # Session table (for "Selected" mode)
@@ -153,6 +170,15 @@ class BriefDialog(QDialog):
         from garmin import prompt_pack
         argv: list[str] = ["--scope", self._scope.currentText()]
 
+        profile = self._profile.currentData()
+        profile_name = profile.name if profile else self._profile.currentText()
+        if profile_name:
+            argv.extend(["--profile", profile_name])
+        if self._csv.isChecked():
+            argv.append("--csv")
+        if self._include_guides.isChecked():
+            argv.append("--include-guides")
+
         if self._mode_last.isChecked():
             argv.extend(["--last", self._last_n.currentText()])
         elif self._mode_all.isChecked():
@@ -167,8 +193,10 @@ class BriefDialog(QDialog):
                 guid = self._table.item(idx.row(), 4).text()
                 argv.extend(["--session", guid])
 
+        # Filename includes profile so Lotus and Vette briefs don't collide
+        slug = (profile_name or "car").lower()
         out_path = paths.REPO_ROOT / "coaching" / (
-            f"{date.today().isoformat()}-{self._scope.currentText()}-brief.md"
+            f"{date.today().isoformat()}-{slug}-{self._scope.currentText()}-brief.md"
         )
         argv.extend(["--output", str(out_path)])
 

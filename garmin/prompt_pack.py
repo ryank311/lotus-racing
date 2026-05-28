@@ -1,40 +1,38 @@
 #!/usr/bin/env python3
 """
-Generate an LLM coaching-brief from selected Catalyst sessions.
+Generate a data-dense LLM coaching brief from selected Catalyst sessions.
 
-The brief is a self-contained markdown document containing:
+Default output is one self-contained markdown file at coaching/<date>-<scope>-brief.md.
+With --csv, also writes a parallel coaching/<date>-<scope>-data/ folder containing
+CSV exports of every lap, segment, corner, and downsampled sample so a code-execution
+LLM (Claude Code, ChatGPT with Code Interpreter) can crunch the raw numbers.
 
-  1. Your car/setup context (inlined from lotus/Lotus.md)
-  2. Driver-improvement guide + track guide (inlined from lotus/*.md)
-  3. Track reference: official Garmin reference segments + named corners
-  4. Session summaries (date, weather, best lap)
-  5. Per-lap aggregates (duration, max speed, max G, etc.)
-  6. Per-segment splits per lap (THE coaching gold — which sectors lose time)
-  7. Per-corner samples around each detected apex (for deep-dives)
-  8. Field-label heuristics (which f4..f15 we think are speed/G-force/etc.)
-  9. A "Your Task" instruction block telling the LLM to emit a coaching .md
+Brief contents (lean by default):
+  1. Car context (lotus/Lotus.md only — full car spec)
+  2. Track reference: Garmin segments + named corners + segment naming
+  3. Sessions analysed: date, conditions, best lap, lap count
+  4. ALL laps × per-segment splits (one row per lap)
+  5. ALL laps × per-corner stats (entry/apex/exit speed, max G, brake/throttle)
+  6. Personal-best baselines per segment + per corner (for delta computation)
+  7. Best-lap sample trace at fixed distance intervals (~50 m)
+  8. Field-label heuristics for f4..f15
+  9. Coaching task instructions
 
-Paste the resulting brief into Claude Desktop / Code / web and the LLM will
-produce a coaching analysis in coaching/<date>-<topic>.md.
-
-Note on Garmin's reference segments: they're coarse — one segment can span
-multiple racing corners (e.g. at VIR Full Course, segment 4 covers both the
-Snake AND the Climbing Esses). For corner-level granularity, use the named
-corner list from tracks/<config>.yaml.
+Add --include-guides to inline the HPDE / suspension / track guides too (adds
+~50 KB of text but useful when asking for setup/alignment advice).
 
 Usage:
     catalyst-prompt --last 5
-    catalyst-prompt --session <guid1> --session <guid2>
-    catalyst-prompt --all --scope overview
-    catalyst-prompt --last 3 --scope compare --output coaching/may-vir.md
+    catalyst-prompt --last 10 --csv --include-guides
+    catalyst-prompt --session <guid> --scope corner
 """
 from __future__ import annotations
 
 import argparse
-import json
+import csv
 import sys
 import textwrap
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -44,28 +42,53 @@ SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent
 DATA_DIR = SCRIPT_DIR / "data"
 DB_PATH = DATA_DIR / "catalyst.duckdb"
-LOTUS_DIR = REPO_ROOT / "lotus"
 TRACKS_DIR = REPO_ROOT / "tracks"
 COACHING_DIR = REPO_ROOT / "coaching"
 
 
-# Heuristic labels for f4..f15. These are best guesses based on value ranges
-# (speed_mph at lap start ≈ 50, heading ≈ 80° east, longitudinal G near zero
-# on straights, etc.) and the labeled string constants in libgecko.so. Mark
-# all as PROVISIONAL in the brief so the LLM can flag inconsistencies.
+def resolve_profile_dir(name: str | None) -> Path:
+    """
+    Resolve a profile name (e.g. "Lotus", "Vette") to its garage directory.
+
+    If `name` is None, auto-detect: prefer 'Lotus' if present, then 'Vette',
+    then the first directory containing a Car.md.
+    """
+    if name:
+        d = REPO_ROOT / name
+        if d.is_dir() and (d / "Car.md").exists():
+            return d
+        # Case-insensitive fallback for macOS users typing lowercase
+        for child in REPO_ROOT.iterdir():
+            if child.is_dir() and child.name.lower() == name.lower() \
+               and (child / "Car.md").exists():
+                return child
+        raise SystemExit(f"[ERROR] no profile '{name}' (missing {name}/Car.md)")
+
+    for candidate in ("Lotus", "Vette"):
+        d = REPO_ROOT / candidate
+        if (d / "Car.md").exists():
+            return d
+    for child in sorted(REPO_ROOT.iterdir()):
+        if child.is_dir() and (child / "Car.md").exists():
+            return child
+    raise SystemExit("[ERROR] no profile found — need a folder with Car.md")
+
+
+# Heuristic labels for f4..f15. Marked PROVISIONAL. Verified labels (cross-
+# referenced with observed value ranges) are flagged "(observed-confirmed)".
 PROVISIONAL_FIELD_LABELS = {
-    "f4":  ("speed_mph",          "GPS speed in mph (best guess — 50.46 at lap start matches typical Exige T1 entry)"),
-    "f5":  ("speed_kph_or_wheel", "speed in kph, or wheel-speed (slightly differs from GPS at limit)"),
-    "f6":  ("unknown_a",          ""),
-    "f7":  ("throttle_norm",      "throttle position, normalized [0,1] (matches 0.42 at low-speed start)"),
-    "f8":  ("heading_deg",        "GPS heading 0-360° (80° at VIR start = ENE, matches geometry)"),
-    "f9":  ("brake_norm",         "brake position, normalized [0,1] (or some related normalized signal)"),
-    "f10": ("unknown_b",          ""),
-    "f11": ("altitude_or_lat_pos","altitude_m relative-to-reference OR lateral_position_m from meanline"),
-    "f12": ("accel_g_x",          "longitudinal accel G (braking negative, accel positive)"),
-    "f13": ("accel_g_y",          "lateral / cornering G (large at apex)"),
-    "f14": ("accel_g_z",          "vertical G or another axis"),
-    "f15": ("unknown_c",          "small positive float, possibly slip angle or steering normalized"),
+    "f4":  ("speed_mps",          "GPS speed in METRES PER SECOND. Peak ~53 m/s = 120 mph matches Catalyst top speed. Multiply by 2.237 for mph."),
+    "f5":  ("heading_deg",        "GPS heading 0-360° (observed-confirmed — full 0-360 range across a lap)"),
+    "f6":  ("unknown_a",          "small float, often 3-6 — possibly lateral_position_m from meanline or vertical speed"),
+    "f7":  ("throttle_norm",      "best-guess throttle position; check that max across lap is near 1.0"),
+    "f8":  ("unknown_b",          "value 80-100 in mid-lap — could be wheel_speed_mph, or another heading channel"),
+    "f9":  ("brake_norm_or_g",    "peaks >1 in places — may be a G-force, not a normalized brake signal"),
+    "f10": ("unknown_c",          ""),
+    "f11": ("altitude_or_pos",    "negative ~-10 — likely altitude_m relative-to-reference OR lateral offset from meanline"),
+    "f12": ("accel_g_long",       "longitudinal accel G — braking negative, accel positive (best-guess by value range)"),
+    "f13": ("accel_g_lat",        "lateral / cornering G — biggest at apex (best-guess by value range)"),
+    "f14": ("accel_g_vert",       "small negative — vertical G or vertical-speed-derivative"),
+    "f15": ("unknown_d",          "near 1.0 sometimes — gear, slip angle, or steering normalized"),
 }
 
 
@@ -74,31 +97,20 @@ PROVISIONAL_FIELD_LABELS = {
 # ---------------------------------------------------------------------------
 
 def load_track_yaml(path: Path) -> dict:
-    """Minimal YAML loader that handles the structure detect_corners.py emits.
-
-    We deliberately avoid pulling in PyYAML for one file. Only handles:
-      - top-level scalar key: value
-      - top-level list: 'segments:' / 'corners:' followed by '  - key: val' items
-    """
     out: dict[str, Any] = {"segments": [], "corners": []}
     if not path.exists():
         return out
-
     current_list: list | None = None
     current_item: dict | None = None
     for raw in path.read_text().splitlines():
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
-
-        # New top-level list section
         if line in ("segments:", "corners:"):
             current_list = []
             out[line[:-1]] = current_list
             current_item = None
             continue
-
-        # New list item
         if line.startswith("  - "):
             current_item = {}
             current_list.append(current_item)
@@ -107,16 +119,12 @@ def load_track_yaml(path: Path) -> dict:
                 k, v = tail.split(":", 1)
                 current_item[k.strip()] = _coerce(v.strip())
             continue
-
-        # Continuation of list item
         if line.startswith("    ") and current_item is not None:
             tail = line.strip()
             if ":" in tail:
                 k, v = tail.split(":", 1)
                 current_item[k.strip()] = _coerce(v.strip())
             continue
-
-        # Top-level scalar
         if ":" in line and not line.startswith(" "):
             k, v = line.split(":", 1)
             out[k.strip()] = _coerce(v.strip())
@@ -143,92 +151,123 @@ def _coerce(s: str):
 
 
 # ---------------------------------------------------------------------------
-# DB queries
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _ms_to_lap(ms: int | float | None) -> str:
+    if ms is None:
+        return "—"
+    s = ms / 1000.0 if ms > 1000 else ms
+    if s <= 0:
+        return "—"
+    m = int(s // 60)
+    return f"{m}:{s - m*60:06.3f}"
+
+
+def _inline_md(path: Path, heading_demote: int = 1) -> str:
+    if not path.exists():
+        return f"_(missing: {path.name})_"
+    text = path.read_text(encoding="utf-8")
+    if heading_demote > 0:
+        text = "\n".join(
+            ("#" * heading_demote + line) if line.startswith("#") else line
+            for line in text.splitlines()
+        )
+    return text
+
+
+def _rows_to_dicts(cursor) -> list[dict]:
+    cols = [d[0] for d in cursor.description]
+    return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Data fetchers
 # ---------------------------------------------------------------------------
 
 def fetch_sessions(con, guids: list[str] | None, last_n: int | None) -> list[dict]:
-    """Return sessions sorted by start time descending, with track config joined."""
     if guids:
-        q = """
+        rows = con.execute("""
             SELECT s.*, tc.track_name, tc.track_configuration_name, tc.reverse
             FROM sessions s
             LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
             WHERE s.session_guid = ANY(?)
             ORDER BY s.session_start DESC
-        """
-        rows = con.execute(q, [guids]).fetchall()
+        """, [guids])
     else:
         limit = last_n if last_n else 50
-        q = """
+        rows = con.execute("""
             SELECT s.*, tc.track_name, tc.track_configuration_name, tc.reverse
             FROM sessions s
             LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
             ORDER BY s.session_start DESC
             LIMIT ?
-        """
-        rows = con.execute(q, [limit]).fetchall()
-    cols = [d[0] for d in con.description]
-    return [dict(zip(cols, r)) for r in rows]
+        """, [limit])
+    return _rows_to_dicts(rows)
 
 
-def fetch_laps(con, session_guid: str) -> list[dict]:
+def fetch_lap_table(con, session_guids: list[str]) -> list[dict]:
+    """One row per lap across all selected sessions, with aggregates joined."""
     rows = con.execute("""
-        SELECT lap_index, lap_number_raw, duration_ms, sample_count
-        FROM laps WHERE session_guid = ?
-        ORDER BY lap_index
-    """, [session_guid]).fetchall()
-    return [dict(zip([d[0] for d in con.description], r)) for r in rows]
-
-
-def fetch_lap_speed_stats(con, session_guid: str) -> dict[int, dict]:
-    """Per-lap max/min/avg of f4 (speed) and f13 (lateral G), keyed by lap_index."""
-    rows = con.execute("""
+        WITH stats AS (
+          SELECT
+            session_guid,
+            lap_index,
+            MAX(f4)  AS max_speed,
+            MIN(f4)  AS min_speed,
+            AVG(f4)  AS avg_speed,
+            MAX(ABS(f13)) AS max_lat_g,
+            MAX(f12) AS max_accel_g,
+            MIN(f12) AS min_accel_g,
+            MAX(f7)  AS max_throttle,
+            MAX(f9)  AS max_brake
+          FROM samples WHERE session_guid = ANY(?)
+          GROUP BY session_guid, lap_index
+        )
         SELECT
-          lap_index,
-          MAX(f4)  AS max_speed,
-          MIN(f4)  AS min_speed,
-          AVG(f4)  AS avg_speed,
-          MAX(ABS(f13)) AS max_lat_g,
-          MAX(f12) AS max_accel_g,
-          MIN(f12) AS min_accel_g
-        FROM samples
-        WHERE session_guid = ?
-        GROUP BY lap_index
-        ORDER BY lap_index
-    """, [session_guid]).fetchall()
-    return {r[0]: dict(zip([d[0] for d in con.description], r)) for r in rows}
+          s.session_guid,
+          CAST(s.session_start AS VARCHAR) AS session_start,
+          tc.track_configuration_name      AS config,
+          l.lap_index,
+          l.lap_number_raw,
+          l.duration_ms,
+          l.sample_count,
+          st.max_speed, st.min_speed, st.avg_speed,
+          st.max_lat_g, st.max_accel_g, st.min_accel_g,
+          st.max_throttle, st.max_brake
+        FROM laps l
+        JOIN sessions s ON s.session_guid = l.session_guid
+        LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
+        LEFT JOIN stats st
+          ON st.session_guid = l.session_guid AND st.lap_index = l.lap_index
+        WHERE l.session_guid = ANY(?)
+        ORDER BY s.session_start DESC, l.lap_index
+    """, [session_guids, session_guids])
+    return _rows_to_dicts(rows)
 
 
-def fetch_segment_splits(con, session_guid: str, segments: list[dict]) -> list[list[float]]:
+def fetch_segment_splits(con, session_guid: str, segments: list[dict]) -> list[list[float | None]]:
     """
     Per-lap, per-segment estimated split times in seconds.
 
-    Method: each sample's dist_idx is approximately meters along the track
-    (verified: 5256 samples ≈ 5255m for VIR Full Course). We approximate the
-    time-share of each sample as 1 / speed_field, then scale so the per-lap
-    total equals duration_ms exactly. This gives accurate proportional splits
-    even if f4's unit is uncertain.
-
-    Returns: rows[lap_index] = [seg1_sec, seg2_sec, ...] (None if missing data).
+    For each sample, weight ∝ 1/f4 (slower samples = more time). Scale so the
+    per-lap weighted sum equals duration_ms / 1000. This gives accurate
+    proportional splits even if f4's unit is uncertain.
     """
     if not segments:
         return []
-
-    lap_durations: dict[int, int] = {
+    lap_durations = {
         r[0]: r[1] for r in con.execute(
             "SELECT lap_index, duration_ms FROM laps WHERE session_guid = ?",
             [session_guid],
         ).fetchall()
     }
-
-    # Pull samples grouped by lap; we need only dist_idx and a speed signal
     rows = con.execute("""
-        SELECT lap_index, dist_idx, f4
-        FROM samples WHERE session_guid = ? AND f4 IS NOT NULL AND f4 > 0
+        SELECT lap_index, dist_idx, f4 FROM samples
+        WHERE session_guid = ? AND f4 IS NOT NULL AND f4 > 0
         ORDER BY lap_index, dist_idx
     """, [session_guid]).fetchall()
 
-    # Group by lap
     by_lap: dict[int, list[tuple[int, float]]] = {}
     for lap_idx, d, sp in rows:
         by_lap.setdefault(lap_idx, []).append((d, sp))
@@ -240,33 +279,33 @@ def fetch_segment_splits(con, session_guid: str, segments: list[dict]) -> list[l
         if not lap_ms or not samples:
             out.append([None] * len(segments))
             continue
-
-        # Per-sample weight ∝ 1/speed (slow points = more time)
         weights = [1.0 / sp for _, sp in samples]
         total_w = sum(weights)
         if total_w <= 0:
             out.append([None] * len(segments))
             continue
-        scale = (lap_ms / 1000.0) / total_w  # seconds per unit weight
-
-        seg_times: list[float] = [0.0] * len(segments)
-        for (d, _sp), w in zip(samples, weights):
+        scale = (lap_ms / 1000.0) / total_w
+        seg_times: list[float | None] = [0.0] * len(segments)
+        for (d, _), w in zip(samples, weights):
             for i, seg in enumerate(segments):
                 if seg["start_dist_m"] <= d < seg["end_dist_m"]:
-                    seg_times[i] += w * scale
+                    seg_times[i] += w * scale  # type: ignore
                     break
         out.append(seg_times)
     return out
 
 
-def fetch_corner_traces(con, session_guid: str, lap_idx: int,
-                        corners: list[dict], every_n: int = 5) -> dict[str, list[dict]]:
+def fetch_corner_stats(con, session_guid: str, lap_idx: int,
+                       corners: list[dict]) -> dict[str, dict]:
     """
-    For one lap, sample telemetry inside each corner zone.
+    Per-corner aggregates for one lap. Returns {turn_key: {entry, apex, exit, max_lat_g, ...}}.
 
-    Returns: { "T12 Oak Tree": [ {dist, speed, lat_g, ...}, ... ], ... }
+    Approximations:
+      - entry_speed = avg(f4) for the first 5 samples in the corner zone
+      - apex_speed  = min(f4) within the corner
+      - exit_speed  = avg(f4) for the last 5 samples in the corner zone
     """
-    out: dict[str, list[dict]] = {}
+    out: dict[str, dict] = {}
     for c in corners:
         lo, hi = c.get("dist_idx_start"), c.get("dist_idx_end")
         if lo is None or hi is None:
@@ -280,224 +319,359 @@ def fetch_corner_traces(con, session_guid: str, lap_idx: int,
         """, [session_guid, lap_idx, lo, hi]).fetchall()
         if not rows:
             continue
-        # Downsample to keep brief size sane
-        rows = rows[::every_n] or rows[:1]
-        label = f"{c.get('turn', '')} {c.get('name', '')}".strip()
-        out[label] = [
-            {
-                "dist": r[0], "speed": r[1], "throttle": r[2],
-                "brake": r[3], "accel_g": r[4], "lat_g": r[5],
-            } for r in rows
-        ]
+        speeds = [r[1] for r in rows if r[1] is not None]
+        throttles = [r[2] for r in rows if r[2] is not None]
+        brakes = [r[3] for r in rows if r[3] is not None]
+        accels = [r[4] for r in rows if r[4] is not None]
+        lats = [abs(r[5]) for r in rows if r[5] is not None]
+        if not speeds:
+            continue
+        n_edge = min(5, max(1, len(speeds) // 8))
+        out[c.get("turn", "?")] = {
+            "name": c.get("name", ""),
+            "n_samples": len(rows),
+            "entry_speed": sum(speeds[:n_edge]) / n_edge,
+            "apex_speed":  min(speeds),
+            "exit_speed":  sum(speeds[-n_edge:]) / n_edge,
+            "speed_drop":  (sum(speeds[:n_edge]) / n_edge) - min(speeds),
+            "max_lat_g":   max(lats) if lats else 0.0,
+            "max_brake":   max(brakes) if brakes else 0.0,
+            "max_throttle":max(throttles) if throttles else 0.0,
+            "min_accel_g": min(accels) if accels else 0.0,
+        }
     return out
+
+
+def fetch_best_lap_trace(con, session_guid: str, lap_idx: int,
+                         stride_m: int = 50, max_dist_m: int | None = None
+                         ) -> list[dict]:
+    """
+    One sample every ~stride_m metres on the chosen lap. Returns a compact
+    list of dicts suitable for inline markdown.
+    """
+    where_max = "AND dist_idx <= ?" if max_dist_m else ""
+    params: list = [session_guid, lap_idx, stride_m]
+    if max_dist_m:
+        params.append(max_dist_m)
+    rows = con.execute(f"""
+        SELECT dist_idx, f4, f7, f9, f12, f13, f8
+        FROM samples
+        WHERE session_guid = ? AND lap_index = ?
+          AND dist_idx % ? = 0
+          {where_max}
+        ORDER BY dist_idx
+    """, params).fetchall()
+    return [
+        {
+            "dist": r[0], "speed": r[1], "throttle": r[2],
+            "brake": r[3], "accel_g": r[4], "lat_g": r[5], "heading": r[6],
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Brief assembly
 # ---------------------------------------------------------------------------
 
-def _ms_to_lap(ms: int | float | None) -> str:
-    if not ms:
-        return "—"
-    s = ms / 1000.0 if ms > 1000 else ms
-    m = int(s // 60)
-    return f"{m}:{s - m*60:06.3f}"
-
-
-def _inline_md(path: Path, heading_demote: int = 1) -> str:
-    """Inline a markdown file, optionally demoting its headings by N levels."""
-    if not path.exists():
-        return f"_(missing: {path.name})_"
-    text = path.read_text(encoding="utf-8")
-    if heading_demote > 0:
-        text = "\n".join(
-            ("#" * heading_demote + line) if line.startswith("#") else line
-            for line in text.splitlines()
-        )
-    return text
-
-
 def build_brief(
     sessions: list[dict],
     track_yaml: dict,
     scope: str,
     con,
+    profile_dir: Path,
+    include_guides: bool = False,
+    data_dir_relpath: str | None = None,
 ) -> str:
     today = date.today().isoformat()
     config_name = track_yaml.get("track_configuration_name", "Unknown")
     segments = track_yaml.get("segments", [])
     corners = track_yaml.get("corners", [])
+    sg_list = [s["session_guid"] for s in sessions]
 
     parts: list[str] = []
     parts.append(f"# Coaching Brief — {config_name} ({scope})")
-    parts.append(f"_Generated: {today}_  ·  _Sessions covered: {len(sessions)}_")
-    parts.append("")
+    parts.append(f"_Generated: {today}_  ·  _Sessions: {len(sessions)}_")
     if sessions:
-        dates = [s["session_start"] for s in sessions if s.get("session_start")]
+        dates = [str(s["session_start"]) for s in sessions if s.get("session_start")]
         if dates:
             parts.append(f"_Date range: {min(dates)} — {max(dates)}_")
+    if data_dir_relpath:
+        parts.append("")
+        parts.append(f"**Raw data CSVs in `{data_dir_relpath}/`** "
+                     f"(laps.csv, segment_splits.csv, corner_stats.csv, "
+                     f"best_lap_trace.csv). Use them if you have code execution.")
     parts.append("")
     parts.append("---")
     parts.append("")
 
-    # ── Car & driver ────────────────────────────────────────────────────
-    parts.append("## Car & driver context")
-    parts.append(_inline_md(LOTUS_DIR / "Lotus.md", heading_demote=2))
+    # ── Car context (compact) ───────────────────────────────────────────
+    parts.append(f"## Car & driver — {profile_dir.name}")
+    parts.append(_inline_md(profile_dir / "Car.md", heading_demote=2))
     parts.append("")
 
     # ── Track reference ─────────────────────────────────────────────────
-    parts.append(f"## Track reference — {config_name}")
-    parts.append(f"_Total distance: {track_yaml.get('total_dist_m', '?')} m_")
+    parts.append(f"## Track — {config_name}")
+    parts.append(f"_{track_yaml.get('total_dist_m', '?')} m total_")
     parts.append("")
-    parts.append("### Garmin official reference segments")
-    parts.append("Use these as the **primary unit for per-sector pacing analysis.** "
-                 "Note that segments are coarse: at VIR Full Course, segment 4 spans "
-                 "both the Snake and the Climbing Esses — use the corner list below "
-                 "for finer-grained per-corner analysis.")
+    parts.append("### Garmin reference segments (primary unit for pacing analysis)")
     parts.append("")
-    parts.append("| # | Start (m) | End (m) | Length (m) | Flag |")
-    parts.append("|---|----------:|--------:|-----------:|:----:|")
+    parts.append("| # | Start m | End m | Length m | Flag |")
+    parts.append("|---|--------:|------:|---------:|:----:|")
     for s in segments:
-        parts.append(f"| {s.get('id','?')} | {s.get('start_dist_m','?')} | "
+        parts.append(f"| S{s.get('id','?')} | {s.get('start_dist_m','?')} | "
                      f"{s.get('end_dist_m','?')} | {s.get('length_m','?')} | "
                      f"{s.get('flag','?')} |")
     parts.append("")
 
     if corners:
         parts.append("### Named corners (canonical, in driving order)")
-        parts.append("`dist_idx` ranges match the per-sample `dist_idx` in performance data "
-                     "(each unit ≈ 1 m at VIR Full Course).")
+        parts.append("Each corner's `range` is a dist_idx range; per-sample dist_idx "
+                     "in the data ≈ metres along the track.")
         parts.append("")
-        parts.append("| Turn | Name | Dir | Apex idx | Range | Radius (m) | Character |")
-        parts.append("|------|------|-----|---------:|------:|-----------:|-----------|")
+        parts.append("| Turn | Name | Dir | Apex | Range | R(m) | Notes |")
+        parts.append("|------|------|-----|-----:|------:|-----:|-------|")
         for c in corners:
             rng = f"{c.get('dist_idx_start','?')}-{c.get('dist_idx_end','?')}"
             parts.append(
                 f"| {c.get('turn','?')} | {c.get('name','?')} | "
-                f"{c.get('direction','')} | {c.get('apex_idx','?')} | "
-                f"{rng} | {c.get('apex_radius_m','?')} | {c.get('character','')} |"
+                f"{c.get('direction','')} | {c.get('apex_idx','?')} | {rng} | "
+                f"{c.get('apex_radius_m','?')} | {c.get('character','')} |"
             )
         parts.append("")
 
-    # ── Guides ──────────────────────────────────────────────────────────
-    parts.append("## Driver improvement guide")
-    parts.append(_inline_md(LOTUS_DIR / "Driver-Improvement-Guide.md", heading_demote=2))
+    # ── Sessions ────────────────────────────────────────────────────────
+    parts.append("## Sessions")
     parts.append("")
-    parts.append("## Alignment & handling guide")
-    parts.append(_inline_md(LOTUS_DIR / "Alignment-and-Handling-Guide.md", heading_demote=2))
-    parts.append("")
-    parts.append("## Suspension tuning guide")
-    parts.append(_inline_md(LOTUS_DIR / "Suspension-Tuning-Guide.md", heading_demote=2))
-    parts.append("")
-    if "Full Course" in config_name:
-        parts.append("## VIR Full Course guide")
-        parts.append(_inline_md(LOTUS_DIR / "VIR-Full-Course-Guide.md", heading_demote=2))
-        parts.append("")
-
-    # ── Session data ────────────────────────────────────────────────────
-    parts.append("## Sessions analysed")
-    parts.append("")
-    parts.append("| Date | Track / Config | Weather | Best Lap | Laps |")
-    parts.append("|------|----------------|---------|---------:|-----:|")
+    parts.append("| Date | Config | Weather | Temp °C | Best Lap | Laps |")
+    parts.append("|------|--------|---------|--------:|---------:|-----:|")
     for s in sessions:
         nlaps = con.execute(
             "SELECT COUNT(*) FROM laps WHERE session_guid = ?",
             [s["session_guid"]],
         ).fetchone()[0]
-        weather = s.get("weather_description") or ""
-        temp = s.get("temperature_c")
-        if temp is not None:
-            weather += f" {temp:.0f}°C"
         parts.append(
             f"| {s.get('session_start','?')} | "
-            f"{s.get('track_name','?')} / {s.get('track_configuration_name','?')} | "
-            f"{weather.strip()} | "
+            f"{s.get('track_configuration_name','?')} | "
+            f"{s.get('weather_description','') or ''} | "
+            f"{s.get('temperature_c','') or ''} | "
             f"{_ms_to_lap(s.get('best_lap_ms'))} | {nlaps} |"
         )
     parts.append("")
 
-    # ── Per-lap stats per session ───────────────────────────────────────
-    parts.append("## Per-lap details")
-    for s in sessions:
-        sg = s["session_guid"]
-        parts.append("")
-        parts.append(f"### {s.get('session_start','?')}  ·  "
-                     f"{s.get('track_configuration_name','?')}  ·  "
-                     f"best {_ms_to_lap(s.get('best_lap_ms'))}")
-        parts.append(f"_session: `{sg}`_")
-        parts.append("")
-        laps = fetch_laps(con, sg)
-        stats = fetch_lap_speed_stats(con, sg)
-        parts.append("| Lap | Duration | Δ best | Max f4 | Max |f13| | Min f12 | Max f12 |")
-        parts.append("|----:|---------:|-------:|-------:|---------:|--------:|--------:|")
-        best_ms = s.get("best_lap_ms") or 0
+    # ── ALL laps table ──────────────────────────────────────────────────
+    parts.append("## All laps")
+    parts.append("One row per lap across every selected session. "
+                 "Δ best = duration minus the session's best lap.")
+    parts.append("")
+    lap_rows = fetch_lap_table(con, sg_list)
+    # group by session for readability
+    by_session: dict[str, list[dict]] = {}
+    for L in lap_rows:
+        by_session.setdefault(L["session_guid"], []).append(L)
+
+    parts.append("| Session | Lap | Duration | Δ best | Max f4 | Max |f13| | Min f12 | Max f12 | Max f7 | Max f9 |")
+    parts.append("|---------|----:|---------:|-------:|-------:|---------:|--------:|--------:|-------:|-------:|")
+    for sg, laps in by_session.items():
+        best_ms = min((L["duration_ms"] for L in laps if L["duration_ms"]), default=0)
         for L in laps:
-            st = stats.get(L["lap_index"], {})
-            delta = (L["duration_ms"] - best_ms) / 1000.0 if best_ms else 0
+            delta = (L["duration_ms"] - best_ms) / 1000.0 if best_ms and L["duration_ms"] else 0.0
             parts.append(
-                f"| {L['lap_index']+1} | {_ms_to_lap(L['duration_ms'])} | "
-                f"{delta:+.3f}s | "
-                f"{st.get('max_speed',0):.1f} | "
-                f"{st.get('max_lat_g',0):.2f} | "
-                f"{st.get('min_accel_g',0):.2f} | "
-                f"{st.get('max_accel_g',0):.2f} |"
+                f"| {sg[:8]}… | {L['lap_index']+1} | "
+                f"{_ms_to_lap(L['duration_ms'])} | {delta:+.3f}s | "
+                f"{(L.get('max_speed') or 0):.1f} | "
+                f"{(L.get('max_lat_g') or 0):.2f} | "
+                f"{(L.get('min_accel_g') or 0):+.2f} | "
+                f"{(L.get('max_accel_g') or 0):+.2f} | "
+                f"{(L.get('max_throttle') or 0):.2f} | "
+                f"{(L.get('max_brake') or 0):.2f} |"
             )
+    parts.append("")
 
-        # Per-segment splits — only for sessions on a track config we know
-        if segments and s.get("track_configuration_name") == config_name:
-            parts.append("")
-            parts.append("**Per-segment estimated splits (seconds)** "
-                         f"— segments 1–{len(segments)} from meanline:")
-            parts.append("")
-            splits = fetch_segment_splits(con, sg, segments)
-            hdr_cols = "|".join(f" S{seg['id']} " for seg in segments)
-            sep_cols = "|".join("------:" for _ in segments)
-            parts.append(f"| Lap |{hdr_cols}|")
-            parts.append(f"|----:|{sep_cols}|")
-            for lap_idx, row in enumerate(splits):
-                cells = []
-                for v in row:
-                    cells.append(f"{v:6.2f}" if v is not None else "  —  ")
-                parts.append(f"| {lap_idx+1} | " + " | ".join(cells) + " |")
+    # ── Per-segment splits across every lap ─────────────────────────────
+    parts.append(f"## Per-segment splits (sec) — all laps")
+    parts.append("Computed by integrating 1/f4 over distance, scaled so the "
+                 "per-lap sum equals lap duration. Lap-relative; comparable "
+                 "across laps and sessions.")
+    parts.append("")
+    seg_ids = [seg["id"] for seg in segments]
+    hdr = " | ".join(f"S{i}" for i in seg_ids)
+    sep = "|".join(["------:"] * (len(seg_ids) + 2))
+    parts.append(f"| Session | Lap | {hdr} |")
+    parts.append(f"|{sep}|")
 
-    # ── Best-lap corner trace (1 session, 1 lap) ────────────────────────
-    if scope in ("corner", "compare") and sessions and corners:
-        best = min(sessions, key=lambda s: s.get("best_lap_ms") or 1e12)
-        # Find the lap_index of the best lap in this session
-        laps = fetch_laps(con, best["session_guid"])
-        best_lap_idx = min(laps, key=lambda L: L["duration_ms"] or 1e12)["lap_index"]
-        parts.append("")
-        parts.append(f"## Best-lap corner traces — session {best['session_guid'][:8]}…  "
-                     f"lap {best_lap_idx+1}")
-        parts.append(f"Downsampled to every 5th sample.")
-        traces = fetch_corner_traces(con, best["session_guid"], best_lap_idx, corners, every_n=5)
-        for label, pts in traces.items():
-            if not pts:
+    # Track per-segment personal bests for the baseline section
+    pb_per_segment = [float("inf")] * len(segments)
+
+    for sg in sg_list:
+        splits = fetch_segment_splits(con, sg, segments)
+        sess_laps_dur = {
+            L["lap_index"]: L["duration_ms"]
+            for L in by_session.get(sg, [])
+        }
+        for lap_idx, row in enumerate(splits):
+            if all(v is None for v in row):
                 continue
-            parts.append("")
-            parts.append(f"### {label}")
-            parts.append("| dist_idx | speed (f4) | throttle (f7) | brake (f9) | accel_g (f12) | lat_g (f13) |")
-            parts.append("|---------:|-----------:|--------------:|-----------:|--------------:|------------:|")
-            for p in pts:
-                parts.append(
-                    f"| {p['dist']} | {p.get('speed') or 0:.1f} | "
-                    f"{p.get('throttle') or 0:.3f} | {p.get('brake') or 0:.3f} | "
-                    f"{p.get('accel_g') or 0:+.3f} | {p.get('lat_g') or 0:+.3f} |"
-                )
+            cells = []
+            for i, v in enumerate(row):
+                if v is None:
+                    cells.append("  —  ")
+                else:
+                    cells.append(f"{v:6.2f}")
+                    if v < pb_per_segment[i]:
+                        pb_per_segment[i] = v
+            parts.append(f"| {sg[:8]}… | {lap_idx+1} | " + " | ".join(cells) + " |")
+    parts.append("")
 
-    # ── Field labels (heuristic) ────────────────────────────────────────
+    # ── Personal-best baselines (segment) ───────────────────────────────
+    parts.append("### Personal-best per segment (this brief's data)")
     parts.append("")
-    parts.append("## Field label heuristics  ⚠ PROVISIONAL")
+    parts.append("| Metric | " + " | ".join(f"S{i}" for i in seg_ids) + " |")
+    parts.append("|---|" + "|".join(["----:"] * len(seg_ids)) + "|")
+    parts.append("| PB sec | " + " | ".join(
+        f"{v:6.2f}" if v < float("inf") else "  —  " for v in pb_per_segment
+    ) + " |")
     parts.append("")
-    parts.append("Each sample has 12 float fields whose names Garmin doesn't expose. "
-                 "Below are best-guess labels from value-range analysis (e.g. f4 = 50.46 at lap "
-                 "start matches a typical Exige in low gear). **Trust the relative trends "
-                 "between samples and laps, not the absolute units.** Flag any inconsistencies.")
+
+    # ── Per-corner stats × all laps ─────────────────────────────────────
+    if corners:
+        parts.append("## Per-corner stats — every lap")
+        parts.append("**entry**=avg speed first 5 samples of zone, **apex**=min speed in zone, "
+                     "**exit**=avg speed last 5 samples, **drop**=entry-apex. "
+                     "max_lat_g uses |f13|. Use these to find late-braking opportunities "
+                     "(low apex speed + high entry speed = high drop) and missed pickup "
+                     "(low exit speed relative to others).")
+        parts.append("")
+
+        # Build personal-best per (corner, metric) maps
+        all_corner_rows = []
+        for sg in sg_list:
+            sess_laps = by_session.get(sg, [])
+            for L in sess_laps:
+                stats = fetch_corner_stats(con, sg, L["lap_index"], corners)
+                for turn_key, st in stats.items():
+                    all_corner_rows.append({
+                        "sg": sg, "lap": L["lap_index"] + 1, "turn": turn_key, **st,
+                    })
+
+        # Compute corner-level PBs
+        pb_corner: dict[str, dict] = {}
+        for row in all_corner_rows:
+            tk = row["turn"]
+            cur = pb_corner.setdefault(tk, {
+                "best_apex_speed": 0.0,    # max apex = best
+                "best_exit_speed": 0.0,    # max exit  = best
+                "best_min_accel":  0.0,    # most negative = hardest braking
+                "best_max_lat_g":  0.0,    # most lat G = best grip use
+            })
+            cur["best_apex_speed"] = max(cur["best_apex_speed"], row["apex_speed"])
+            cur["best_exit_speed"] = max(cur["best_exit_speed"], row["exit_speed"])
+            cur["best_min_accel"]  = min(cur["best_min_accel"],  row["min_accel_g"])
+            cur["best_max_lat_g"]  = max(cur["best_max_lat_g"],  row["max_lat_g"])
+
+        parts.append("### One row per (lap, corner)")
+        parts.append("| Sess | Lap | Turn | Name | Entry | Apex | Exit | Drop | LatG | Brake | Thr | MinAcc |")
+        parts.append("|------|----:|------|------|------:|-----:|-----:|-----:|-----:|------:|----:|-------:|")
+        for row in all_corner_rows:
+            parts.append(
+                f"| {row['sg'][:8]}… | {row['lap']} | {row['turn']} | "
+                f"{row['name']} | "
+                f"{row['entry_speed']:.1f} | {row['apex_speed']:.1f} | "
+                f"{row['exit_speed']:.1f} | {row['speed_drop']:.1f} | "
+                f"{row['max_lat_g']:.2f} | {row['max_brake']:.2f} | "
+                f"{row['max_throttle']:.2f} | {row['min_accel_g']:+.2f} |"
+            )
+        parts.append("")
+
+        parts.append("### Personal-best per corner")
+        parts.append("| Turn | Name | Best apex | Best exit | Hardest braking (min f12) | Max LatG |")
+        parts.append("|------|------|----------:|----------:|--------------------------:|---------:|")
+        for c in corners:
+            tk = c.get("turn", "?")
+            if tk not in pb_corner:
+                continue
+            pb = pb_corner[tk]
+            parts.append(
+                f"| {tk} | {c.get('name','?')} | "
+                f"{pb['best_apex_speed']:.1f} | {pb['best_exit_speed']:.1f} | "
+                f"{pb['best_min_accel']:+.2f} | {pb['best_max_lat_g']:.2f} |"
+            )
+        parts.append("")
+
+    # ── Best lap trace ──────────────────────────────────────────────────
+    if sessions:
+        best_session = min(sessions, key=lambda s: s.get("best_lap_ms") or 1e12)
+        sess_laps = by_session.get(best_session["session_guid"], [])
+        best_lap = min(sess_laps, key=lambda L: L["duration_ms"] or 1e12)
+        parts.append(f"## Best-lap trace — every ~50 m")
+        parts.append(f"_{best_session['session_guid'][:8]}… lap "
+                     f"{best_lap['lap_index']+1} ({_ms_to_lap(best_lap['duration_ms'])})_")
+        parts.append("")
+        trace = fetch_best_lap_trace(con, best_session["session_guid"],
+                                     best_lap["lap_index"], stride_m=50)
+        parts.append("| dist_m | speed (f4) | throttle (f7) | brake (f9) | accel_g (f12) | lat_g (f13) | heading (f8) |")
+        parts.append("|-------:|-----------:|--------------:|-----------:|--------------:|------------:|-------------:|")
+        for p in trace:
+            parts.append(
+                f"| {p['dist']} | {p.get('speed') or 0:.1f} | "
+                f"{p.get('throttle') or 0:.3f} | {p.get('brake') or 0:.3f} | "
+                f"{p.get('accel_g') or 0:+.3f} | {p.get('lat_g') or 0:+.3f} | "
+                f"{p.get('heading') or 0:.1f} |"
+            )
+        parts.append("")
+
+    # ── Optional setup / improvement guides ─────────────────────────────
+    if include_guides:
+        # Pull every .md from the profile dir except Car.md (already inlined above).
+        # This makes guides automatically profile-specific — a vette/ folder with
+        # Aero-Guide.md and Brake-Guide.md will inline those instead of the Lotus ones.
+        parts.append("## Setup & improvement guides (from profile)")
+        guides = sorted(p for p in profile_dir.glob("*.md") if p.name.lower() != "car.md")
+        if guides:
+            for g in guides:
+                parts.append(f"### {g.name}")
+                parts.append(_inline_md(g, heading_demote=3))
+                parts.append("")
+        else:
+            parts.append(f"_(no additional .md files in {profile_dir.name}/)_")
+            parts.append("")
+
+    # ── Field labels + observed value ranges ────────────────────────────
+    parts.append("## Field labels — PROVISIONAL")
     parts.append("")
-    parts.append("| Field | Best-guess name | Notes |")
-    parts.append("|-------|-----------------|-------|")
-    for f, (name, note) in PROVISIONAL_FIELD_LABELS.items():
-        parts.append(f"| `{f}` | `{name}` | {note} |")
+    parts.append("Each sample has 12 floats whose names Garmin doesn't expose. Best-guess "
+                 "labels from value-range analysis are below. The **observed value "
+                 "ranges across this brief's data** are also tabulated — use them to "
+                 "sanity-check labels and convert units yourself if needed (e.g. "
+                 "f4 peak ≈ 53 strongly implies m/s).")
+    parts.append("")
+
+    # Compute per-field stats across the selected sessions
+    field_stats = con.execute("""
+        SELECT
+          MIN(f4),  MAX(f4),  AVG(f4),
+          MIN(f5),  MAX(f5),  AVG(f5),
+          MIN(f6),  MAX(f6),  AVG(f6),
+          MIN(f7),  MAX(f7),  AVG(f7),
+          MIN(f8),  MAX(f8),  AVG(f8),
+          MIN(f9),  MAX(f9),  AVG(f9),
+          MIN(f10), MAX(f10), AVG(f10),
+          MIN(f11), MAX(f11), AVG(f11),
+          MIN(f12), MAX(f12), AVG(f12),
+          MIN(f13), MAX(f13), AVG(f13),
+          MIN(f14), MAX(f14), AVG(f14),
+          MIN(f15), MAX(f15), AVG(f15)
+        FROM samples WHERE session_guid = ANY(?)
+    """, [sg_list]).fetchone()
+
+    parts.append("| Field | Best-guess | Notes | min | max | avg |")
+    parts.append("|-------|------------|-------|----:|----:|----:|")
+    for i, (f, (name, note)) in enumerate(PROVISIONAL_FIELD_LABELS.items()):
+        mn, mx, av = field_stats[i*3:i*3+3]
+        parts.append(
+            f"| `{f}` | `{name}` | {note} | "
+            f"{mn:.2f} | {mx:.2f} | {av:.2f} |"
+        )
     parts.append("")
 
     # ── Task ────────────────────────────────────────────────────────────
@@ -506,55 +680,155 @@ def build_brief(
     parts.append("## Your task")
     parts.append("")
     parts.append(textwrap.dedent(f"""
-        You are acting as a **professional HPDE coach** with deep knowledge of
-        Lotus Exige dynamics and Virginia International Raceway. The driver
-        (Ryan) is an intermediate HPDE driver targeting 2:14 at VIR Full Course.
+        You are a **professional HPDE coach** analyzing this driver's Catalyst
+        telemetry. The driver (Ryan) is intermediate. The car for this brief is
+        described in the "Car & driver — {profile_dir.name}" section above —
+        use its specs, mods, and driver notes as primary context (handling
+        tendencies, target lap times, modification history all matter).
 
-        Analyse the data above and produce a coaching report covering:
+        Use the tables above to produce a **data-grounded coaching report**.
+        Every claim must cite a specific lap, segment, or corner from the
+        data — do not generalize. Computation is encouraged: deltas vs PB,
+        consistency variance per segment, correlations.
 
-        1. **Headline assessment** — overall pace vs. potential, biggest single
-           opportunity.
-        2. **Per-segment analysis** — for each Garmin segment 1–{len(segments) or 'N'},
-           identify whether the driver is at, near, or away from their personal best.
-           Specifically call out segments where there's consistent time loss
-           across laps (vs. random one-lap variance).
-        3. **Per-corner analysis** — for the named corners, use the corner trace
-           tables to find: late braking opportunities, early-throttle pickup
-           candidates, mid-corner speed deficits.
-        4. **Cross-lap consistency** — flag laps that are outliers in either
-           direction; describe what they're doing differently.
-        5. **Cross-session trends** — if multiple sessions are included, find
-           directional improvement or regression; correlate to weather where
-           possible.
-        6. **Prioritised recommendations** — top 3 concrete things to work on
-           next session, with the expected lap-time gain if each is fixed.
-        7. **Drills** — specific exercises the driver can do at the next track
-           day to address each priority.
+        **Required sections** (markdown headings):
 
-        **Output format**: write your analysis as a Markdown file at:
+        1. **Headline** — overall pace vs PB potential. Compute: best
+           theoretical lap = sum of best splits per segment. Compare to actual
+           best lap. The gap is "consistency loss." Quote the number.
+        2. **Per-segment analysis** — for each S1..S{len(segments) or 'N'} segment,
+           identify (a) whether the driver is consistent, (b) average gap to
+           PB, (c) which corners live in that segment and what's happening
+           there. Specifically call out the 3 segments with largest avg gap-to-PB.
+        3. **Per-corner analysis** — for each named corner with notable data,
+           cite entry/apex/exit speeds vs PB. Identify:
+             - Late-braking opportunities (low apex + high entry on PB lap
+               but consistently higher apex on other laps)
+             - Missed throttle pickup (lower exit speed vs PB)
+             - Mid-corner deficit (lower apex vs PB)
+        4. **Cross-lap consistency** — which laps are outliers; describe what
+           is different (which segments/corners drove the variance).
+        5. **Cross-session trends** — if multiple sessions, find improvement
+           or regression; correlate to weather (temp/conditions table above)
+           if there's a clear pattern.
+        6. **Prioritised recommendations** — top 3 concrete changes to work
+           on. For each: which corner/segment, what specifically to change,
+           expected lap-time gain in seconds (with reasoning).
+        7. **Drills** — specific exercises for next track day, one per priority.
+
+        **Output format**: write your analysis to:
 
             coaching/{today}-{scope}.md
 
-        Use this structure (you may add subsections):
-
-            # {config_name} coaching — {today}
-
-            ## Headline
-            ## Per-segment analysis
-            ## Per-corner analysis
-            ## Cross-lap consistency
-            ## Cross-session trends
-            ## Recommendations (prioritised)
-            ## Drills
-
-        Be specific: cite exact lap numbers, segment IDs, and dist_idx ranges.
-        When you flag a problem, propose a concrete fix and an estimated
-        lap-time gain. Don't pad with generic HPDE advice — every paragraph
-        should reference real data from above.
+        Be terse and specific. Cite lap numbers, segment IDs, dist_idx ranges,
+        and exact deltas (e.g. "Lap 4 S6 31.50s vs PB 30.70s = +0.80s").
+        Skip generic HPDE advice — only conclusions that follow from the
+        data above are useful.
     """).strip())
     parts.append("")
 
     return "\n".join(parts) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Optional CSV exports — same data, machine-friendly
+# ---------------------------------------------------------------------------
+
+def write_csv_pack(out_dir: Path, sessions: list[dict], track_yaml: dict,
+                   con) -> dict[str, int]:
+    """
+    Write CSV companion files into `out_dir`. Returns row counts per file.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    segments = track_yaml.get("segments", [])
+    corners = track_yaml.get("corners", [])
+    sg_list = [s["session_guid"] for s in sessions]
+    counts: dict[str, int] = {}
+
+    # 1. sessions.csv
+    with (out_dir / "sessions.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["session_guid", "session_start", "config", "best_lap_ms",
+                    "weather", "temperature_c", "humidity_pct",
+                    "wind_speed_mps", "wind_direction_deg"])
+        for s in sessions:
+            w.writerow([s["session_guid"], s.get("session_start"),
+                        s.get("track_configuration_name"), s.get("best_lap_ms"),
+                        s.get("weather_description"), s.get("temperature_c"),
+                        s.get("humidity_pct"), s.get("wind_speed_mps"),
+                        s.get("wind_direction_deg")])
+        counts["sessions.csv"] = len(sessions)
+
+    # 2. laps.csv
+    laps = fetch_lap_table(con, sg_list)
+    with (out_dir / "laps.csv").open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(laps[0].keys()) if laps else ["session_guid"])
+        w.writeheader()
+        for row in laps:
+            w.writerow(row)
+        counts["laps.csv"] = len(laps)
+
+    # 3. segment_splits.csv (long format: one row per lap × segment)
+    with (out_dir / "segment_splits.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["session_guid", "lap_index", "segment_id",
+                    "start_m", "end_m", "split_sec"])
+        rows = 0
+        for sg in sg_list:
+            splits = fetch_segment_splits(con, sg, segments)
+            for lap_idx, row in enumerate(splits):
+                for seg, val in zip(segments, row):
+                    w.writerow([sg, lap_idx, seg["id"], seg["start_dist_m"],
+                                seg["end_dist_m"], val])
+                    rows += 1
+        counts["segment_splits.csv"] = rows
+
+    # 4. corner_stats.csv (long format: one row per lap × corner)
+    with (out_dir / "corner_stats.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["session_guid", "lap_index", "turn", "corner_name",
+                    "entry_speed", "apex_speed", "exit_speed", "speed_drop",
+                    "max_lat_g", "max_brake", "max_throttle", "min_accel_g"])
+        rows = 0
+        for sg in sg_list:
+            sess_laps = con.execute(
+                "SELECT lap_index FROM laps WHERE session_guid = ? ORDER BY lap_index",
+                [sg],
+            ).fetchall()
+            for (lap_idx,) in sess_laps:
+                stats = fetch_corner_stats(con, sg, lap_idx, corners)
+                for turn_key, st in stats.items():
+                    w.writerow([sg, lap_idx, turn_key, st["name"],
+                                st["entry_speed"], st["apex_speed"],
+                                st["exit_speed"], st["speed_drop"],
+                                st["max_lat_g"], st["max_brake"],
+                                st["max_throttle"], st["min_accel_g"]])
+                    rows += 1
+        counts["corner_stats.csv"] = rows
+
+    # 5. best_lap_trace.csv — every-50 m of every lap of every session
+    with (out_dir / "best_lap_trace.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["session_guid", "lap_index", "dist_m",
+                    "speed_f4", "throttle_f7", "brake_f9",
+                    "accel_g_f12", "lat_g_f13", "heading_f8"])
+        rows = 0
+        for sg in sg_list:
+            sess_laps = con.execute(
+                "SELECT lap_index FROM laps WHERE session_guid = ? ORDER BY lap_index",
+                [sg],
+            ).fetchall()
+            for (lap_idx,) in sess_laps:
+                trace = fetch_best_lap_trace(con, sg, lap_idx, stride_m=50)
+                for p in trace:
+                    w.writerow([sg, lap_idx, p["dist"], p.get("speed"),
+                                p.get("throttle"), p.get("brake"),
+                                p.get("accel_g"), p.get("lat_g"),
+                                p.get("heading")])
+                    rows += 1
+        counts["best_lap_trace.csv"] = rows
+
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -570,12 +844,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g.add_argument("--all", action="store_true", help="Include all sessions")
 
     ap.add_argument("--scope", choices=["overview", "corner", "compare"],
-                    default="overview",
-                    help="What to ask the LLM to focus on")
-    ap.add_argument("--track-yaml", default=None,
-                    help="Path to a tracks/*.yaml; auto-detected from sessions if omitted")
+                    default="overview")
+    ap.add_argument("--track-yaml", default=None)
     ap.add_argument("--output", "-o", default=None,
-                    help="Output path; default coaching/<date>-<scope>.md")
+                    help="Output .md path; default coaching/<date>-<scope>-brief.md")
+    ap.add_argument("--csv", action="store_true",
+                    help="Also write CSV companion files in a sibling data/ folder")
+    ap.add_argument("--include-guides", action="store_true",
+                    help="Inline every non-Car .md file from the profile folder")
+    ap.add_argument("--profile", default=None,
+                    help="Car profile name (folder name, e.g. 'Lotus', 'Vette'). "
+                         "Default: read from GUI's saved selection or auto-detect.")
     ap.add_argument("--db", default=str(DB_PATH))
     return ap.parse_args(argv)
 
@@ -600,8 +879,6 @@ def main(argv: list[str] | None = None) -> int:
         print("[ERROR] no sessions matched.")
         return 1
 
-    # Pick a track yaml. Prefer the configuration most-represented across the
-    # selected sessions.
     if args.track_yaml:
         track_path = Path(args.track_yaml)
     else:
@@ -610,28 +887,50 @@ def main(argv: list[str] | None = None) -> int:
         cfg = configs.most_common(1)[0][0]
         slug = cfg.lower().replace(" ", "-")
         track_path = TRACKS_DIR / f"vir-{slug}.yaml"
-
     track_yaml = load_track_yaml(track_path)
     if not track_yaml.get("segments"):
-        print(f"[warn] no track yaml at {track_path}; segments + corners will be empty",
-              file=sys.stderr)
+        print(f"[warn] no track yaml at {track_path}", file=sys.stderr)
 
-    brief = build_brief(sessions, track_yaml, args.scope, con)
-    con.close()
+    profile_dir = resolve_profile_dir(args.profile)
 
+    # Choose output path; CSV folder is sibling with -data suffix
     if args.output:
         out_path = Path(args.output)
     else:
         COACHING_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = COACHING_DIR / f"{date.today().isoformat()}-{args.scope}-brief.md"
+        slug = profile_dir.name.lower()
+        out_path = COACHING_DIR / f"{date.today().isoformat()}-{slug}-{args.scope}-brief.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data_dir: Path | None = None
+    data_relpath: str | None = None
+    if args.csv:
+        data_dir = out_path.with_name(out_path.stem.replace("-brief", "") + "-data")
+        data_relpath = data_dir.name
+
+    brief = build_brief(
+        sessions, track_yaml, args.scope, con,
+        profile_dir=profile_dir,
+        include_guides=args.include_guides,
+        data_dir_relpath=data_relpath,
+    )
     out_path.write_text(brief, encoding="utf-8")
+
+    csv_counts: dict[str, int] = {}
+    if data_dir is not None:
+        csv_counts = write_csv_pack(data_dir, sessions, track_yaml, con)
+    con.close()
 
     print(f"[ok] wrote {out_path} ({len(brief):,} chars, "
           f"{len(brief.encode('utf-8'))/1024:.1f} KB)")
+    if csv_counts:
+        print(f"     + CSVs in {data_dir.name}/:")
+        for fn, n in csv_counts.items():
+            print(f"       {fn}: {n:,} rows")
     print(f"     covering {len(sessions)} session(s), "
+          f"profile={profile_dir.name}, "
           f"config={track_yaml.get('track_configuration_name','?')}, "
-          f"scope={args.scope}")
+          f"scope={args.scope}, guides={'on' if args.include_guides else 'off'}")
     return 0
 
 
