@@ -2,14 +2,14 @@
     "_comment": "Copy this file to config.json and fill in your credentials. config.json is gitignored.",
 
     "auth": {
-        "_comment_garth": "Preferred: garth handles Garmin SSO login automatically. Provide email + password.",
+        "_comment_login": "Preferred: python-garminconnect handles Garmin SSO login automatically. Provide email + password.",
         "email": "your@email.com",
         "password": "your-garmin-password",
 
-        "_comment_token": "Alternative: paste a Bearer token captured via mitmproxy/Charles. Overrides garth auth.",
+        "_comment_token": "Alternative: paste a Bearer token captured via mitmproxy/Charles. Overrides email/password auth.",
         "bearer_token": "",
 
-        "_comment_customer": "Your Garmin account UUID. Fetched automatically on first run if using garth.",
+        "_comment_customer": "Your Garmin account UUID. Fetched automatically on first run via GET /customer.",
         "customer_id": "",
 
         "_comment_headers": "Optional: captured from proxy traffic. May be required if Garmin adds request validation.",

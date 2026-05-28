@@ -53,8 +53,10 @@ X-Garmin-Client-Platform:  Android
 X-Garmin-Unit-Id:          <device unit ID>
 ```
 
-The `garth` Python library (`pip install garth`) implements the full Garmin SSO flow and handles
-token refresh automatically. It is the recommended auth path.
+The `python-garminconnect` library (`pip install garminconnect`) implements the full Garmin SSO
+flow and handles token refresh automatically. It is the recommended auth path. (Note: the older
+`garth` library is deprecated; `python-garminconnect` is its active successor and embeds garth
+internally.)
 
 ---
 
