@@ -1,0 +1,6 @@
+# Reverse engineering artifacts — local only, do not commit
+*.apk
+catalyst-apk-decompiled/
+
+# OS
+.DS_Store

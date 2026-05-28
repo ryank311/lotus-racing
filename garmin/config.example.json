@@ -1,0 +1,30 @@
+{
+    "_comment": "Copy this file to config.json and fill in your credentials. config.json is gitignored.",
+
+    "auth": {
+        "_comment_garth": "Preferred: garth handles Garmin SSO login automatically. Provide email + password.",
+        "email": "your@email.com",
+        "password": "your-garmin-password",
+
+        "_comment_token": "Alternative: paste a Bearer token captured via mitmproxy/Charles. Overrides garth auth.",
+        "bearer_token": "",
+
+        "_comment_customer": "Your Garmin account UUID. Fetched automatically on first run if using garth.",
+        "customer_id": "",
+
+        "_comment_headers": "Optional: captured from proxy traffic. May be required if Garmin adds request validation.",
+        "x_garmin_client_id": "",
+        "x_garmin_unit_id": ""
+    },
+
+    "api": {
+        "base_url": "https://api.gcs.garmin.com",
+        "autosport_path": "/autosport/api/v1",
+        "page_size": 50
+    },
+
+    "output": {
+        "data_dir": "data/sessions",
+        "pretty_json": true
+    }
+}
