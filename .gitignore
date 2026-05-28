@@ -21,3 +21,6 @@ dist/
 
 # Generated coaching briefs are large + frequently regenerated
 coaching/*-brief.md
+
+# Generated coaching CSV data folders
+coaching/*-data/
