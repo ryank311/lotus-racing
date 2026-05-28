@@ -243,20 +243,31 @@ def decode_optimal_lap(buf: bytes) -> dict:
 
 def decode_mean_line(buf: bytes) -> dict:
     """
-    Mean-line files have device info + meanLineGuid + a config block that
-    contains track name, configuration name, and the GPS path as doubles.
+    Mean-line files: header (device + meanLineGuid + track config) followed
+    by ~5,256 GPS points at top-level field 8. Each point has:
+        field 1 = cumulative distance (float, meters)
+        field 2 = Position { lat: double, lon: double }
+        fields 3..8 = six per-point floats (curvature, altitude, heading,
+                      banking, etc. — exact mapping TBD)
+
+    The point count is the same as the per-lap sample count: each lap sample
+    aligns 1:1 to a meanline point by distance index along the track.
     """
     m = parse(buf)
     out: dict[str, Any] = {}
+
     di_b = get_one(m, 2)
     if isinstance(di_b, bytes):
+        di = parse(di_b)
         out["device"] = {
-            "unit_id": get_one(parse(di_b), 1),
-            "part_number": as_str(get_one(parse(di_b), 2, b"")),
+            "unit_id": get_one(di, 1),
+            "part_number": as_str(get_one(di, 2, b"")),
         }
+
     s3 = get_one(m, 3)
     if isinstance(s3, bytes):
         out["mean_line_guid"] = as_str(get_one(parse(s3), 1, b""))
+
     s4 = get_one(m, 4)
     if isinstance(s4, bytes):
         cfg = parse(s4)
@@ -265,22 +276,48 @@ def decode_mean_line(buf: bytes) -> dict:
         out["track_name"] = as_str(get_one(cfg, 3, b""))
         out["track_configuration_name"] = as_str(get_one(cfg, 4, b""))
         out["reverse"] = bool(get_one(cfg, 5, 0))
-        # Bounding box at field 6, mean-line points at field 7+
-        # Each point is a Position sub-message
-        for pf in (6, 7, 8, 9, 10):
-            for raw in get_all(cfg, pf):
-                if isinstance(raw, bytes):
-                    sub = parse(raw)
-                    # Points are repeated field 1..4 (position) + maybe a length
-                    pts = []
-                    for k in (1, 2, 3, 4):
-                        for pb in get_all(sub, k):
-                            if isinstance(pb, bytes):
-                                p = decode_position(pb)
-                                if p:
-                                    pts.append(p)
-                    if pts:
-                        out.setdefault(f"field_{pf}_points", []).extend(pts)
+
+    # Field 7 = ReferenceSegments — Garmin's pre-computed sector boundaries for
+    # the track. Each segment is { id, type, flag, start_dist_m, end_dist_m }.
+    # Flag (field 3) is likely sector category — 1=primary, 0=transition based
+    # on observed VIR Full Course pattern, but unverified for other tracks.
+    segments_raw = get_one(m, 7)
+    out["segments"] = []
+    if isinstance(segments_raw, bytes):
+        seg_msg = parse(segments_raw)
+        for raw in get_all(seg_msg, 1):
+            if not isinstance(raw, bytes):
+                continue
+            sm = parse(raw)
+            out["segments"].append({
+                "id":           get_one(sm, 1),
+                "type":         get_one(sm, 2),
+                "flag":         get_one(sm, 3),
+                "start_dist_m": get_one(sm, 4),
+                "end_dist_m":   get_one(sm, 5),
+            })
+
+    points: list[dict] = []
+    for raw in get_all(m, 8):
+        if not isinstance(raw, bytes):
+            continue
+        pm = parse(raw)
+        cumulative_dist = as_f32(get_one(pm, 1, 0))
+        pos = decode_position(get_one(pm, 2, b""))
+        if not pos:
+            continue
+        pt = {
+            "dist": cumulative_dist,
+            "lat": pos["lat"],
+            "lon": pos["lon"],
+        }
+        # Capture remaining per-point floats for diagnostic use
+        for fn in range(3, 9):
+            v = get_one(pm, fn)
+            if v is not None and isinstance(v, int):
+                pt[f"f{fn}"] = as_f32(v)
+        points.append(pt)
+    out["points"] = points
     return out
 
 
@@ -339,10 +376,13 @@ def main():
             if ol.get("samples"):
                 print(f"  first sample: {json.dumps(ol['samples'][0], indent=2)}")
         else:
-            print(json.dumps({k: v for k, v in data.items() if not k.startswith("field_")}, indent=2))
-            for k in data:
-                if k.startswith("field_"):
-                    print(f"  {k}: {len(data[k])} points")
+            pts = data.get("points", [])
+            summary = {k: v for k, v in data.items() if k != "points"}
+            print(json.dumps(summary, indent=2))
+            print(f"  points: {len(pts)}")
+            if pts:
+                print(f"  first: {json.dumps(pts[0], indent=2)}")
+                print(f"  last : {json.dumps(pts[-1], indent=2)}")
     else:
         print(json.dumps(data, indent=2, default=str))
 

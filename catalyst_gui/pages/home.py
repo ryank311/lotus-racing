@@ -55,6 +55,7 @@ class HomePage(QWidget):
 
     sync_requested = Signal()
     load_db_requested = Signal()
+    brief_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -96,8 +97,12 @@ class HomePage(QWidget):
         self._load_db_btn = QPushButton("Reload local database")
         self._load_db_btn.setMinimumHeight(36)
         self._load_db_btn.clicked.connect(self.load_db_requested.emit)
+        self._brief_btn = QPushButton("Generate coaching brief")
+        self._brief_btn.setMinimumHeight(36)
+        self._brief_btn.clicked.connect(self.brief_requested.emit)
         actions.addWidget(self._sync_btn)
         actions.addWidget(self._load_db_btn)
+        actions.addWidget(self._brief_btn)
         actions.addStretch()
         root.addLayout(actions)
 
@@ -143,4 +148,5 @@ class HomePage(QWidget):
         """Disable action buttons while a worker is running."""
         self._sync_btn.setEnabled(not busy)
         self._load_db_btn.setEnabled(not busy)
+        self._brief_btn.setEnabled(not busy)
         self._sync_btn.setText("Syncing…" if busy else "Sync sessions from Garmin")

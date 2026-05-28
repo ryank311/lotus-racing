@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import paths, state, workers
+from .pages.brief import BriefDialog
 from .pages.cars import CarsPage
 from .pages.home import HomePage
 from .pages.login import LoginDialog
@@ -82,6 +83,7 @@ class MainWindow(QMainWindow):
 
         self._home.sync_requested.connect(self.start_sync)
         self._home.load_db_requested.connect(self.start_load_db)
+        self._home.brief_requested.connect(self.show_brief_dialog)
 
         nav.setCurrentRow(0)
 
@@ -270,6 +272,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Export complete", f"Wrote {path}")
         except Exception as e:
             QMessageBox.critical(self, "Export failed", str(e))
+
+    def show_brief_dialog(self) -> None:
+        dlg = BriefDialog(self)
+        dlg.exec()
 
     def open_data_folder(self) -> None:
         import subprocess, sys as _sys

@@ -20,6 +20,8 @@ catalyst-gui = "catalyst_gui.__main__:main"
 catalyst-fetch = "garmin.catalyst_client:main"
 catalyst-decode = "garmin.decode_performance:main"
 catalyst-load = "garmin.load_to_db:main"
+catalyst-prompt = "garmin.prompt_pack:main"
+catalyst-corners = "garmin.detect_corners:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

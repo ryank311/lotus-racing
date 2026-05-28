@@ -24,7 +24,10 @@ from pathlib import Path
 
 import duckdb
 
-from decode_performance import decode_performance
+try:
+    from .decode_performance import decode_performance
+except ImportError:
+    from decode_performance import decode_performance
 
 
 SCRIPT_DIR = Path(__file__).parent

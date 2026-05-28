@@ -420,8 +420,45 @@ catalyst-decode data/mean_lines/<guid>.pb --inspect
 
 catalyst-load               # Decode all .pb and ingest into data/catalyst.duckdb
 
+catalyst-corners data/mean_lines/<guid>.pb   # Generate tracks/<config>.yaml
+catalyst-prompt --last 5 --scope overview    # Generate coaching brief
+catalyst-prompt --session GUID --scope corner
+
 catalyst-gui                # PySide6 desktop app — sync + browse + edit setup
 ```
+
+### Track reference data — `tracks/`
+
+Each track configuration gets a `tracks/<config>.yaml` file containing:
+
+- **Garmin's official 10 reference segments**, extracted from the meanline
+  protobuf field 7. These are the recommended unit for sector-level pacing
+  analysis (one segment can span multiple corners — e.g. VIR Full S4 covers
+  both the Snake and the Climbing Esses).
+- **Canonical named corners**, in driving order. Names sourced from Wikipedia,
+  RacingCircuits.info, and the Race Track Driving (formerly Win HPDE) guide.
+  Apex positions are detected from GPS curvature on the meanline; dist_idx
+  ranges align with the per-sample dist_idx in performance.pb.
+
+Garmin doesn't ship turn names — the API only returns the config name
+(`"Full Course"`). The named corner list is compiled and verified manually
+against public driver guides.
+
+### Coaching briefs — `coaching/`
+
+`catalyst-prompt` generates self-contained markdown briefs (~80–200 KB) for
+LLM-based analysis. The brief inlines:
+
+- Car/driver context (`lotus/Lotus.md`)
+- Driver improvement + setup + track-specific guides (`lotus/*.md`)
+- Track reference (segments + corners from `tracks/<config>.yaml`)
+- Sessions table, per-lap aggregates, **per-segment estimated splits**,
+  per-corner downsampled telemetry traces (in `--scope corner` mode)
+- Field-label heuristics for the still-unlabeled `f4`..`f15` floats
+- A "Your task" instruction block prescribing the LLM's output format
+
+The LLM writes its analysis to `coaching/<YYYY-MM-DD>-<topic>.md`. From the
+GUI: **Home → Generate coaching brief**.
 
 ## GUI (catalyst_gui/)
 
