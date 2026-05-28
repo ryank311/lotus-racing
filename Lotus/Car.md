@@ -33,11 +33,12 @@ Stock sizes:
   Front: 195/50/16
   Rear: 225/45/17
 
-Bridgestone Potenza RE-71RZ
+Bridgestone Potenza RE-71RZ  **(currently running, as of May 2026)**
   Front: 205/45R-16 XL
   Rear: 235/45R-17 SL
+  Hot pressures: 32 psi F / 34 psi R — confirmed via chalk-line rollover test at VIR (May 2026)
 
-Hoosier A8
+Hoosier A8  (mounted, not yet run)
   Front: 215/40ZR16
   Rear: 225/40ZR17
 
@@ -65,14 +66,15 @@ Aero:
 
 Handling:
   Nitron Race (46mm Piston) 3-way adjustable race suspension with 550 lbs front, 700 lbs rear spring rates
-    - current settings front/rear rebound: -10/-10, Front Hi/low compression -8/-8, Rear Hi/low compression -8/-8
+    - current settings (updated 2026-04): Front -12/-10/-10, Rear -8/-6/-8 (rebound / hi-comp / lo-comp)
+    - previous: Front rebound -10, Hi/low comp -8/-8; Rear rebound -10, Hi/low comp -8/-8
 
 
 ## Other Specs:
 
-Ride Height (measured 2026-03-27, settled -- parking brake off, neutral, rolled to settle suspension):
-  122mm all corners (level, no rake)
-  Target: 120mm front / 125mm rear (5mm positive rake for diffuser)
+Ride Height (set 2026-04, +5mm positive rake for diffuser):
+  120mm front / 125mm rear
+  Previous (measured 2026-03-27, settled -- parking brake off, neutral, rolled to settle suspension): 122mm all corners (level, no rake)
 
 Front Caster:
   3.2 degrees
@@ -191,7 +193,7 @@ The Difflow Railer 5-element diffuser has fins that sit approximately 4 inches (
 
 For the diffuser to produce meaningful downforce, you ideally want to be below 120mm, and sub-100mm is where effects become truly noticeable. However, going too low creates ride-height sensitivity where vortex breakdown can cause sudden, dramatic loss of downforce. The diffuser works best at a consistent, stable ride height, which is why stiff springs and good platform control matter so much when running aero.
 
-**Target: 120mm front / 125mm rear (5mm positive rake)**
+**Target: 120mm front / 125mm rear (5mm positive rake) — IMPLEMENTED 2026-04**
 
 This requires:
 - Lowering the front 2mm (from 122mm to 120mm)
@@ -249,8 +251,8 @@ Your current Nitron 3-way settings (all -8 compression, -10 rebound) appear to b
 
 **Updated with measured ride heights (2026-03-27).** Rear toe and camber are already in the recommended range (3.3mm toe-in, -2.8/-2.6 camber). All shims removed front and rear. Alignment is essentially maxed out without aftermarket parts.
 
-1. **ADJUST RIDE HEIGHT AND ADD RAKE** - Car is level at 122mm all corners. Target 120F/125R (5mm positive rake). The diffuser needs rake to work effectively. See Alignment-and-Handling-Guide.md for per-shock turn counts
-2. **Adjust damper settings** - More front compression, more rear rebound (see Suspension-Tuning-Guide.md)
+1. ~~**ADJUST RIDE HEIGHT AND ADD RAKE** - Car is level at 122mm all corners. Target 120F/125R (5mm positive rake).~~ **DONE 2026-04** — now at 120F/125R, +5mm positive rake
+2. ~~**Adjust damper settings** - More front compression, more rear rebound~~ **DONE 2026-04** — Front -12/-10/-10, Rear -8/-6/-8 (rebound / hi-comp / lo-comp)
 3. **Dial in tire pressures at VIR** - Start 26F/28R cold, target 32-34 hot, verify with pyrometer
 4. **Stiffen front ARB** if adjustable - Shifts balance toward understeer
 5. **Consider 500/700 spring rates** - Better front-rear ratio for weight distribution (lower priority -- evaluate after ride height and damper changes)
