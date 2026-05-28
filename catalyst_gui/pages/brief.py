@@ -1,19 +1,14 @@
 """
 Brief-generation dialog — pick sessions + scope, then write the brief.
 
-Generation itself is synchronous (DuckDB-only, ~1 second), so we don't bother
-with a QThread worker. If it ever gets slow we can move it.
+Generation is synchronous (DuckDB-only, ~1 second). On success the dialog
+accepts with `output_path` set so the caller can show the file inline.
 """
 from __future__ import annotations
 
-import subprocess
-import sys
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -24,7 +19,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
-    QPushButton,
     QRadioButton,
     QTableWidget,
     QTableWidgetItem,
@@ -52,6 +46,7 @@ class BriefDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Generate coaching brief")
         self.resize(820, 560)
+        self.output_path: Path | None = None
         self._build()
         self._load_sessions()
 
@@ -190,15 +185,5 @@ class BriefDialog(QDialog):
                                  "prompt_pack returned non-zero. See the terminal log.")
             return
 
-        size_kb = out_path.stat().st_size / 1024 if out_path.exists() else 0
-        r = QMessageBox.information(
-            self,
-            "Brief generated",
-            f"Wrote {out_path.name} ({size_kb:.1f} KB).\n\n"
-            f"Open it now? Copy/paste the whole file into your LLM "
-            f"of choice for analysis.",
-            QMessageBox.Open | QMessageBox.Close,
-        )
-        if r == QMessageBox.Open:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(out_path)))
+        self.output_path = out_path
         self.accept()

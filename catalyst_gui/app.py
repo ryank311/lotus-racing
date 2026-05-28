@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from . import paths, state, workers
 from .pages.brief import BriefDialog
+from .pages.briefs import BriefsPage
 from .pages.cars import CarsPage
 from .pages.home import HomePage
 from .pages.login import LoginDialog
@@ -64,11 +65,12 @@ class MainWindow(QMainWindow):
             "QListWidget::item { padding: 10px 18px; font-size: 14px; color: #ddd; }"
             "QListWidget::item:selected { background: #3b6ea5; color: white; }"
         )
-        for label in ("Home", "Sessions", "Garage"):
+        for label in ("Home", "Sessions", "Briefs", "Garage"):
             item = QListWidgetItem(label)
             nav.addItem(item)
         nav.currentRowChanged.connect(self._on_nav)
         layout.addWidget(nav)
+        self._nav = nav
 
         # Right stacked area
         self._stack = QStackedWidget()
@@ -76,14 +78,17 @@ class MainWindow(QMainWindow):
 
         self._home = HomePage()
         self._sessions = SessionsPage()
+        self._briefs = BriefsPage()
         self._cars = CarsPage()
         self._stack.addWidget(self._home)
         self._stack.addWidget(self._sessions)
+        self._stack.addWidget(self._briefs)
         self._stack.addWidget(self._cars)
 
         self._home.sync_requested.connect(self.start_sync)
         self._home.load_db_requested.connect(self.start_load_db)
         self._home.brief_requested.connect(self.show_brief_dialog)
+        self._briefs.new_brief_requested.connect(self.show_brief_dialog)
 
         nav.setCurrentRow(0)
 
@@ -126,11 +131,13 @@ class MainWindow(QMainWindow):
 
     def _on_nav(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)
-        # Refresh pages lazily — sessions table reflects latest DB state on view
+        # Refresh pages lazily so they reflect the latest on-disk state
         if idx == 0:
             self._home.refresh()
         elif idx == 1:
             self._sessions.refresh()
+        elif idx == 2:
+            self._briefs.refresh()
 
     # ── workers ────────────────────────────────────────────────────────
 
@@ -275,7 +282,10 @@ class MainWindow(QMainWindow):
 
     def show_brief_dialog(self) -> None:
         dlg = BriefDialog(self)
-        dlg.exec()
+        if dlg.exec() == BriefDialog.Accepted and dlg.output_path:
+            # Switch to the Briefs page and show the freshly-generated file.
+            self._nav.setCurrentRow(2)  # index of "Briefs" in the nav
+            self._briefs.select_file(dlg.output_path)
 
     def open_data_folder(self) -> None:
         import subprocess, sys as _sys
