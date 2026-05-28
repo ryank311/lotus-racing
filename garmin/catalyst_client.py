@@ -371,79 +371,73 @@ class CatalystAPI:
                 **self.extra_headers,
             })
 
-    def _get(self, path: str, params: Optional[dict] = None) -> object:
-        """
-        GET an autosport endpoint. `path` is relative to /autosport/api/v1/.
-        """
+    def _request(self, path: str, params: Optional[dict] = None,
+                 accept: str = "application/json") -> requests.Response:
+        """Low-level GET returning the raw Response."""
         full_path = f"{AUTOSPORT_PREFIX}/{path.lstrip('/')}"
+        headers = dict(self.extra_headers)
+        headers["Accept"] = accept
 
         if self.garth_client is not None:
-            # Garth handles token refresh and Bearer header automatically
             resp = self.garth_client.request(
                 "GET", GCS_SUBDOMAIN, full_path,
-                api=True,
-                params=params,
-                headers=self.extra_headers,
+                api=True, params=params, headers=headers,
             )
         else:
             url = f"https://api.gcs.garmin.com{full_path}"
-            resp = self._session.get(url, params=params, timeout=30)
-
+            resp = self._session.get(url, params=params, headers=headers, timeout=60)
         resp.raise_for_status()
+        return resp
+
+    def _get(self, path: str, params: Optional[dict] = None) -> object:
+        """GET an autosport endpoint and return decoded JSON."""
+        resp = self._request(path, params=params, accept="application/json")
         if resp.status_code == 204:
             return None
         return resp.json()
 
-    # ------------------------------------------------------------------
-    # Account
-    # ------------------------------------------------------------------
-
-    def get_customer(self) -> dict:
-        """
-        Fetch account record. Sets self.customer_id as a side effect.
-        Inspect probe output to confirm the correct ID field name.
-        """
-        data = self._get("customer")
-        if isinstance(data, dict):
-            for field in ("customerId", "id", "customerNumber", "uuid", "guid"):
-                if data.get(field):
-                    self.customer_id = str(data[field])
-                    break
-        return data
-
-    def get_user(self) -> dict:
-        return self._get("user")
+    def _get_bytes(self, path: str, params: Optional[dict] = None) -> bytes:
+        """GET an autosport endpoint and return the raw bytes (protobuf etc.)."""
+        resp = self._request(path, params=params, accept="*/*")
+        return resp.content
 
     # ------------------------------------------------------------------
     # Sessions
     # ------------------------------------------------------------------
 
-    def get_sessions_count(self, **filters) -> int:
-        data = self._get("sessions/count", params=self._filter_params(**filters))
-        if isinstance(data, int):
-            return data
-        if isinstance(data, dict):
-            for field in ("count", "total", "totalCount"):
-                if field in data:
-                    return int(data[field])
-        return 0
+    def get_sessions(self,
+                     limit: Optional[int] = None,
+                     offset: int = 0,
+                     sort_type: str = "SESSION_START_TIME",
+                     sort_order: str = "DESCENDING",
+                     **filters) -> List[dict]:
+        """
+        Fetch session summaries. `sort_type` ∈ {SESSION_START_TIME, TRACK_NAME, BEST_LAP}.
+        `sort_order` ∈ {ASCENDING, DESCENDING}. Pass limit=None to auto-paginate.
+        Filter kwargs: start, end, track_config_id, reverse, vehicle_aliases.
+        """
+        base_params = {
+            "sortType": sort_type,
+            "sortOrder": sort_order,
+            **self._filter_params(**filters),
+        }
 
-    def get_sessions(self, limit: Optional[int] = None, offset: int = 0, **filters) -> List[dict]:
-        """
-        Fetch sessions. Pass limit=None to auto-paginate.
-        Filter kwargs: start, end, track_config_id, reverse (see _filter_params).
-        """
-        if limit is not None:
-            params = {"limit": limit, "offset": offset, **self._filter_params(**filters)}
-            result = self._get("sessions", params=params)
+        def _page(page_offset: int, page_limit: int) -> list:
+            result = self._get("sessions", params={
+                **base_params, "limit": page_limit, "offset": page_offset,
+            })
+            if isinstance(result, dict):
+                return result.get("sessionsSummaries", [])
             return result if isinstance(result, list) else []
 
-        all_sessions = []
-        page_offset = 0
+        if limit is not None:
+            return _page(offset, limit)
+
+        all_sessions: list = []
+        page_offset = offset
         while True:
-            params = {"limit": self._page_size, "offset": page_offset, **self._filter_params(**filters)}
-            page = self._get("sessions", params=params)
-            if not page or not isinstance(page, list):
+            page = _page(page_offset, self._page_size)
+            if not page:
                 break
             all_sessions.extend(page)
             print(f"  [sessions] fetched {len(all_sessions)} so far...")
@@ -453,61 +447,53 @@ class CatalystAPI:
             time.sleep(0.2)
         return all_sessions
 
-    def get_sessions_metadata(self, **filters) -> list:
-        return self._get("sessions/metadata", params=self._filter_params(**filters))
+    def get_sessions_count(self, **filters) -> int:
+        data = self._get("sessions/count", params=self._filter_params(**filters))
+        if isinstance(data, dict):
+            for field in ("sessionsCount", "count", "total"):
+                if field in data:
+                    return int(data[field])
+        return int(data) if isinstance(data, int) else 0
 
-    def get_session(self, session_id: str) -> dict:
-        """
-        Full detail for one session: lap list, performance data, weather, optimal lap.
-        Inspect session_detail.json after first probe to learn the full schema.
-        """
-        return self._get("session", params={"sessionId": session_id})
+    def get_session_metadata(self, session_guid: str) -> dict:
+        """JSON metadata for one session: garminGuid, productIdentifier, etc."""
+        return self._get(f"session/{session_guid}/metadata")
 
-    def get_session_track_days(self, **filters) -> list:
-        return self._get("session-track-days", params=self._filter_params(**filters))
+    def get_session_weather(self, session_guid: str) -> dict:
+        return self._get(f"session/{session_guid}/weather")
 
-    # ------------------------------------------------------------------
-    # Telemetry
-    # ------------------------------------------------------------------
+    def get_session_performance_data(self, session_guid: str) -> bytes:
+        """Protobuf blob: per-lap timing + GPS + speed + G-force telemetry."""
+        return self._get_bytes(f"session/{session_guid}/performanceData")
 
-    def get_mean_line(self, session_id: str) -> dict:
-        """
-        Reference GPS line for a session — the lat/lon path the Catalyst uses
-        to compute lateral position and draw the track map. Query param name
-        unconfirmed; the meanline_guid field in a session response may be the
-        right key. Inspect mean_line.json after first run.
-        """
-        return self._get("meanLine", params={"sessionId": session_id})
+    def get_session_optimal_lap(self, session_guid: str) -> bytes:
+        """Protobuf blob: composite 'best possible lap' assembled from best sectors."""
+        return self._get_bytes(f"session/{session_guid}/optimalLap")
 
-    # ------------------------------------------------------------------
-    # Tracks
-    # ------------------------------------------------------------------
+    def get_mean_line(self, mean_line_guid: str) -> bytes:
+        """Protobuf blob: reference GPS line for a track config."""
+        return self._get_bytes(f"meanLine/{mean_line_guid}")
 
-    def get_track(self, track_id: Optional[str] = None) -> dict:
-        return self._get("track", params={"trackId": track_id} if track_id else None)
+    def get_session_track_days(self, limit: int = 50, **filters) -> list:
+        data = self._get("session-track-days", params={
+            "limit": limit, **self._filter_params(**filters),
+        })
+        if isinstance(data, dict):
+            return data.get("sessionTrackDays", [])
+        return data if isinstance(data, list) else []
 
-    def get_track_configurations(self, track_id: Optional[str] = None) -> list:
-        return self._get("trackConfigurations", params={"trackId": track_id} if track_id else None)
+    def get_track_configurations(self, track_cartography_id: Optional[int] = None) -> list:
+        params = {"trackCartographyId": track_cartography_id} if track_cartography_id else None
+        data = self._get("trackConfigurations", params=params)
+        if isinstance(data, dict):
+            return data.get("trackConfigurations", [])
+        return data if isinstance(data, list) else []
 
     def get_track_facilities(self) -> list:
-        return self._get("trackFacilities", params={"limit": self._page_size})
-
-    # ------------------------------------------------------------------
-    # Leaderboards
-    # ------------------------------------------------------------------
-
-    def get_leaderboard_session(self, session_id: str) -> dict:
-        return self._get("leaderboard/session", params={"sessionId": session_id})
-
-    def get_leaderboard_day(self, track_day_id: str) -> dict:
-        return self._get("leaderboard/day", params={"trackDayId": track_day_id})
-
-    def get_leaderboard_annual(self) -> dict:
-        return self._get("leaderboard/annual")
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        data = self._get("trackFacilities", params={"limit": 100})
+        if isinstance(data, dict):
+            return data.get("trackFacilities", [])
+        return data if isinstance(data, list) else []
 
     def _filter_params(self, **kwargs) -> dict:
         """Map friendly kwargs to API query param names, drop None values."""
@@ -516,6 +502,7 @@ class CatalystAPI:
             "end": "filterEndDateTime",
             "track_config_id": "filterTrackConfigurationId",
             "reverse": "filterTrackIsReverse",
+            "vehicle_aliases": "filterVehicleAliases",
         }
         return {mapping.get(k, k): v for k, v in kwargs.items() if v is not None}
 
@@ -530,64 +517,107 @@ def save_json(data: object, path: Path, pretty: bool = True) -> None:
         json.dump(data, f, indent=2 if pretty else None, default=str)
 
 
-def extract_session_id(s: dict) -> Optional[str]:
-    """Extract session ID from a record. Field name unconfirmed — update after probe."""
-    for field in ("sessionId", "id", "guid", "uuid"):
-        if s.get(field):
-            return str(s[field])
-    return None
+def save_bytes(data: bytes, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
 
 
-def fetch_and_save_session(api: CatalystAPI, session_id: str, data_dir: Path, pretty: bool) -> None:
+def fetch_and_save_session(api: CatalystAPI, summary: dict,
+                           data_dir: Path, pretty: bool,
+                           mean_line_dir: Path) -> None:
     """
-    Fetch one session's data and write to data_dir/<session_id>/.
+    Fetch one session's data and write to data_dir/<sessionGuid>/.
 
     Files written:
-        session_detail.json  — full session + lap list (GET /session)
-        mean_line.json       — reference GPS path (GET /meanLine)
-        leaderboard.json     — session leaderboard
-    """
-    out = data_dir / session_id
-    out.mkdir(parents=True, exist_ok=True)
-    print(f"  [session] {session_id}")
+        summary.json         — the session-list summary record (track, best lap)
+        metadata.json        — GET /session/<guid>/metadata
+        weather.json         — GET /session/<guid>/weather
+        performance.pb       — GET /session/<guid>/performanceData (protobuf, ~3MB)
+        optimal_lap.pb       — GET /session/<guid>/optimalLap (protobuf)
 
-    for label, fetch, filename in [
-        ("session detail", lambda: api.get_session(session_id), "session_detail.json"),
-        ("mean line",      lambda: api.get_mean_line(session_id), "mean_line.json"),
-        ("leaderboard",    lambda: api.get_leaderboard_session(session_id), "leaderboard.json"),
-    ]:
+    Mean-line files are dedup'd into mean_line_dir/<meanLineGuid>.pb so multiple
+    sessions sharing the same track config don't re-download.
+    """
+    sg = summary.get("sessionGuid")
+    if not sg:
+        print(f"  [WARN] summary has no sessionGuid: {json.dumps(summary)[:200]}")
+        return
+
+    out = data_dir / sg
+    out.mkdir(parents=True, exist_ok=True)
+    save_json(summary, out / "summary.json", pretty)
+    print(f"  [session] {sg}  ({summary.get('trackName', '?')}, "
+          f"best={summary.get('bestLap', '?')})")
+
+    fetches = [
+        ("metadata",    "metadata.json",       lambda: api.get_session_metadata(sg),         "json"),
+        ("weather",     "weather.json",        lambda: api.get_session_weather(sg),          "json"),
+        ("optimal_lap", "optimal_lap.pb",      lambda: api.get_session_optimal_lap(sg),      "bytes"),
+        ("performance", "performance.pb",      lambda: api.get_session_performance_data(sg), "bytes"),
+    ]
+    for label, filename, fetch, kind in fetches:
+        path = out / filename
+        if path.exists() and path.stat().st_size > 0:
+            continue
         try:
             data = fetch()
-            save_json(data, out / filename, pretty)
-            print(f"    wrote {filename}")
+            if kind == "json":
+                save_json(data, path, pretty)
+            else:
+                save_bytes(data, path)
+            print(f"    wrote {filename} ({path.stat().st_size:,} bytes)")
         except requests.HTTPError as e:
             code = e.response.status_code if e.response is not None else "?"
-            print(f"    [WARN] {label} failed ({code}): {e}")
+            print(f"    [WARN] {label} failed ({code})")
         except Exception as e:
             print(f"    [WARN] {label} failed ({type(e).__name__}): {e}")
+
+    # Mean line (dedup'd by guid)
+    ml_guid = summary.get("meanLineGuid")
+    if ml_guid:
+        ml_path = mean_line_dir / f"{ml_guid}.pb"
+        if not ml_path.exists() or ml_path.stat().st_size == 0:
+            try:
+                save_bytes(api.get_mean_line(ml_guid), ml_path)
+                print(f"    wrote mean_line/{ml_guid}.pb ({ml_path.stat().st_size:,} bytes)")
+            except Exception as e:
+                print(f"    [WARN] mean line failed: {e}")
 
 
 def fetch_all_sessions(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
     """
-    Fetch every session. Already-downloaded sessions (session_detail.json exists)
-    are skipped. Writes sessions_index.json as a master manifest.
+    Download every session's metadata + performance + optimal-lap + mean-line.
+    Resume-safe: existing files are skipped.
     """
     print("[sessions] Fetching session list...")
     sessions = api.get_sessions()
     print(f"[sessions] Found {len(sessions)} sessions")
 
     save_json(sessions, data_dir.parent / "sessions_index.json", pretty)
-    print(f"[sessions] Wrote sessions_index.json")
 
-    for s in sessions:
-        session_id = extract_session_id(s)
-        if not session_id:
-            print(f"  [WARN] No session ID in record: {json.dumps(s)[:200]}")
+    # Also write a per-track index for convenience
+    facilities = api.get_track_facilities()
+    save_json(facilities, data_dir.parent / "track_facilities.json", pretty)
+    configs_by_track: dict = {}
+    for fac in facilities:
+        cid = fac.get("trackCartographyId")
+        if cid:
+            try:
+                configs_by_track[str(cid)] = api.get_track_configurations(cid)
+            except Exception as e:
+                print(f"  [WARN] configs for trackCartographyId={cid}: {e}")
+    save_json(configs_by_track, data_dir.parent / "track_configurations.json", pretty)
+
+    mean_line_dir = data_dir.parent / "mean_lines"
+    mean_line_dir.mkdir(parents=True, exist_ok=True)
+
+    for i, s in enumerate(sessions, 1):
+        sg = s.get("sessionGuid")
+        if not sg:
             continue
-        if (data_dir / session_id / "session_detail.json").exists():
-            print(f"  [skip] {session_id} (already downloaded)")
-            continue
-        fetch_and_save_session(api, session_id, data_dir, pretty)
+        print(f"\n[{i}/{len(sessions)}]")
+        fetch_and_save_session(api, s, data_dir, pretty, mean_line_dir)
         time.sleep(0.3)
 
 
@@ -606,13 +636,10 @@ def probe_endpoints(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
     print(f"[probe] Writing raw API responses to {probe_dir}")
 
     endpoints = [
-        ("customer",          "customer",         {}),
-        ("user",              "user",             {}),
-        ("sessions_count",    "sessions/count",   {}),
-        ("sessions_first_5",  "sessions",         {"limit": 5}),
-        ("sessions_metadata", "sessions/metadata", {}),
-        ("track_facilities",  "trackFacilities",  {"limit": 5}),
-        ("leaderboard_annual", "leaderboard/annual", {}),
+        ("sessions_count",       "sessions/count",    {}),
+        ("sessions_first_5",     "sessions",          {"sortType": "SESSION_START_TIME", "sortOrder": "DESCENDING", "limit": 5}),
+        ("track_facilities",     "trackFacilities",   {"limit": 100}),
+        ("session_track_days",   "session-track-days", {"limit": 5}),
     ]
 
     for name, path, params in endpoints:
@@ -633,6 +660,40 @@ def probe_endpoints(api: CatalystAPI, data_dir: Path, pretty: bool) -> None:
             print(f"    FAILED {code}: {body}")
         except Exception as e:
             print(f"    FAILED ({type(e).__name__}): {e}")
+
+    # Pull one session's binary blobs as a sanity check
+    print("\n[probe] Pulling first session's binaries...")
+    try:
+        first = api.get_sessions(limit=1)
+        if first:
+            s = first[0]
+            sg = s["sessionGuid"]
+            print(f"  session {sg}")
+            for label, fn in [
+                ("metadata.json", lambda: ("json", api.get_session_metadata(sg))),
+                ("weather.json", lambda: ("json", api.get_session_weather(sg))),
+                ("performance.pb", lambda: ("bytes", api.get_session_performance_data(sg))),
+                ("optimal_lap.pb", lambda: ("bytes", api.get_session_optimal_lap(sg))),
+            ]:
+                try:
+                    kind, data = fn()
+                    out_path = probe_dir / label
+                    if kind == "json":
+                        save_json(data, out_path, pretty=True)
+                    else:
+                        save_bytes(data, out_path)
+                    print(f"    wrote {label} ({out_path.stat().st_size:,} bytes)")
+                except Exception as e:
+                    print(f"    FAILED {label}: {e}")
+            ml = s.get("meanLineGuid")
+            if ml:
+                try:
+                    save_bytes(api.get_mean_line(ml), probe_dir / "mean_line.pb")
+                    print(f"    wrote mean_line.pb")
+                except Exception as e:
+                    print(f"    FAILED mean_line.pb: {e}")
+    except Exception as e:
+        print(f"  [WARN] {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +759,6 @@ def main():
         if auth_cfg.get("x_garmin_unit_id"):
             extra_headers["X-Garmin-Unit-Id"] = auth_cfg["x_garmin_unit_id"]
         api = CatalystAPI(bearer_token=raw_token, extra_headers=extra_headers)
-        api.customer_id = auth_cfg.get("customer_id", "").strip()
     else:
         email = auth_cfg.get("email", "").strip()
         password = auth_cfg.get("password", "").strip()
@@ -745,33 +805,36 @@ def main():
 
     api._page_size = cfg.get("api", {}).get("page_size", 50)
 
-    if not api.customer_id:
-        print("[account] Fetching customer ID from API...")
-        try:
-            api.get_customer()
-            print(f"[account] customer_id = {api.customer_id or '(not found in response)'}")
-        except Exception as e:
-            print(f"[WARN] Could not fetch customer ID: {e}")
-
     if args.probe:
         probe_endpoints(api, data_dir, pretty)
         return
 
     if args.list:
         sessions = api.get_sessions()
-        print(f"\n{'ID':<40} {'Date':<25} {'Track':<30} {'Best Lap'}")
-        print("-" * 110)
+        print(f"\n{'sessionGuid':<40} {'Date':<25} {'Track':<32} {'Config':<14} {'Best Lap'}")
+        print("-" * 130)
         for s in sessions:
-            sid = extract_session_id(s) or "?"
-            date = s.get("startDateTime") or s.get("startTime") or s.get("date") or ""
-            track = s.get("trackName") or s.get("track_name") or s.get("trackConfigurationName") or ""
-            best = s.get("bestLapDurationNormal") or s.get("bestLap") or ""
-            print(f"{sid:<40} {str(date):<25} {str(track):<30} {best}")
+            sid = s.get("sessionGuid", "?")
+            date = s.get("sessionStart", "")
+            track = s.get("trackName", "")
+            cfg_name = s.get("trackConfigurationName", "")
+            best = s.get("bestLap", "")
+            print(f"{sid:<40} {str(date):<25} {str(track):<32} {str(cfg_name):<14} {best}")
         print(f"\nTotal: {len(sessions)} sessions")
         return
 
     if args.session:
-        fetch_and_save_session(api, args.session, data_dir, pretty)
+        # Fetch a single session by GUID. Build a minimal summary from what
+        # the API gives us — we'll fetch metadata to learn the meanLineGuid.
+        summary = {"sessionGuid": args.session}
+        try:
+            meta = api.get_session_metadata(args.session)
+            summary["meanLineGuid"] = meta.get("meanLineGuid")
+        except Exception:
+            pass
+        mean_line_dir = data_dir.parent / "mean_lines"
+        mean_line_dir.mkdir(parents=True, exist_ok=True)
+        fetch_and_save_session(api, summary, data_dir, pretty, mean_line_dir)
         return
 
     fetch_all_sessions(api, data_dir, pretty)

@@ -2,5 +2,19 @@
 *.apk
 catalyst-apk-decompiled/
 
+# Charles/mitmproxy cert artifacts
+*.p12
+*.pem
+4697cb62.0
+logs/
+
+# Python build / install
+*.egg-info/
+__pycache__/
+*.pyc
+.eggs/
+build/
+dist/
+
 # OS
 .DS_Store

@@ -14,38 +14,91 @@ subset of working endpoints have been confirmed via `catalyst_client.py --probe`
 
 ---
 
-## Status as of 2026-05-28
+## Status as of 2026-05-28 (afternoon)
 
-### ✅ Working
+### ✅ Working end-to-end
 
-- **Authentication** — full 3-step SSO flow returns a 90-day Catalyst-scoped Bearer token.
-- **Endpoints confirmed returning 200:**
-  - `GET /autosport/api/v1/sessions/count` → `{"sessionsCount": N}`
-  - `GET /autosport/api/v1/trackFacilities` → list of tracks the account has driven
-  - `GET /autosport/api/v1/session-track-days?limit=N` → list of track days w/ best lap, GUIDs
-  - `GET /autosport/api/v1/trackConfigurations?trackCartographyId=N` → track layout variants
-- **Token caching** — Catalyst token cached to `.catalyst_token.json` (90-day TTL); fresh garth
-  login is only needed once every 90 days.
-- **Browser fallback** — `--probe` opens a local browser if headless SSO fails (MFA, captcha).
+- **Authentication** — 3-step SSO service_ticket flow → 90-day Catalyst Bearer token.
+- **Bulk download** — `catalyst-fetch` pulls all sessions (50 sessions, 205 MB).
+- **Protobuf decoder** — `decode_performance.py` parses the binary lap/sample files
+  with zero schema (hand-rolled wire-format reader).
+- **DuckDB loader** — `catalyst-load` ingests sessions/laps/samples into
+  `data/catalyst.duckdb`. Currently: 50 sessions, 392 laps, 2,035,080 samples.
+- **PySide6 GUI** — `catalyst-gui` shows account, sync status, sessions table,
+  car-setup markdown viewer/editor.
 
-### ❌ Returns 400 (params still unknown)
+### ✅ Endpoints (verified against production)
 
-- `/autosport/api/v1/sessions` — endpoint exists, params unconfirmed.
-  Tried `filterTrackConfigurationId`, `filterStartDateTime`, `sort`, `sortOrder` — all 400.
-  App calls this via three subcontrollers: `GetSessionsByStartTime`,
-  `GetSessionsByTrackName`, `GetSessionsByBestLapTime`. Likely needs a specific
-  `sort` enum value the server accepts.
-- `/autosport/api/v1/sessions/metadata` — same.
-- `/autosport/api/v1/track` — needs different param than `trackCartographyId`.
+**Discovery method:** all path constants pulled from `libgecko.so` strings; required
+param names + enum values found by string-grepping the binary; verified by hitting
+production and inspecting JSON / protobuf responses.
 
-### ❌ Returns 404 (path is wrong or doesn't exist on production)
+| Method | Path | Params | Returns |
+|--------|------|--------|---------|
+| GET | `/autosport/api/v1/sessions/count` | filterTrackConfigurationId? | JSON `{sessionsCount}` |
+| GET | `/autosport/api/v1/sessions` | **sortType** ∈ {`SESSION_START_TIME`, `TRACK_NAME`, `BEST_LAP`}, **sortOrder** ∈ {`ASCENDING`, `DESCENDING`}, `limit`, `offset` | JSON `{sessionsSummaries: [...]}` |
+| GET | `/autosport/api/v1/session-track-days` | `limit`, filters | JSON `{sessionTrackDays: [...]}` |
+| GET | `/autosport/api/v1/trackFacilities` | `limit` | JSON `{trackFacilities: [...]}` |
+| GET | `/autosport/api/v1/trackConfigurations` | `trackCartographyId` | JSON `{trackConfigurations: [...]}` |
+| GET | `/autosport/api/v1/session/<sessionGuid>/metadata` | — | JSON (garminGuid, productIdentifier, meanLineGuid) |
+| GET | `/autosport/api/v1/session/<sessionGuid>/weather` | — | JSON (description, temp, humidity, wind) |
+| GET | `/autosport/api/v1/session/<sessionGuid>/performanceData` | — | **protobuf** (~3-6 MB) — all laps + per-sample telemetry |
+| GET | `/autosport/api/v1/session/<sessionGuid>/optimalLap` | — | **protobuf** — composite optimal lap |
+| GET | `/autosport/api/v1/meanLine/<meanLineGuid>` | — | **protobuf** — reference GPS line for a track config |
 
-- `/autosport/api/v1/customer`, `/user`, `/users/me`, `/profile`, `/account` — none exist.
-  These were guessed; the app probably uses a different service entirely for user/profile
-  data (possibly via `automotive.garmin.com` or via the SSO/profile services on
-  `services.garmin.com`).
-- `/autosport/api/v1/leaderboard/annual` — not a real path. The app may construct leaderboard
-  paths with extra segments (e.g. `leaderboard/annual/{trackConfigurationId}`).
+### ⚠ Endpoints discovered but not needed (or still unmapped)
+
+- `/autosport/api/v1/sessions/metadata` — 400; requires a `modifiedAfterDate` ISO param (used
+  by the app for incremental sync, not needed for full pulls). Not blocking anything.
+- `/autosport/api/v1/track` — 400; not needed since trackFacilities + trackConfigurations
+  give everything we need.
+- `/autosport/api/v1/leaderboard/{session,day,annual}` — all 404 when we tried.
+  String constants confirm they exist; the app constructs URLs with a required
+  `criteria` (`leaderboardCriteriaType`) plus `vehicleType` / `startDateTime` /
+  `endDateTime`. Worth a follow-up but not in the critical path.
+- `/autosport/api/v1/customer`, `/user`, `/connections` — 404. The user/profile
+  data is available from `/session/<guid>/metadata.garminGuid` which is enough
+  to identify your account.
+
+## Protobuf schema (reverse-engineered)
+
+We don't have `.proto` files (Garmin compiled them into libgecko.so). Instead
+`decode_performance.py` reads the wire format directly. Discovered structure:
+
+```
+PerformanceData (and OptimalLap, same Lap schema):
+  field 2  = DeviceInfo { unit_id, part_number, version }
+  field 3.1 = session_guid (string)
+  field 4.1 = mean_line_guid (string)
+  field 5..10 = session-level summary scalars (not yet labeled)
+
+  field 11 = first/warm-up Lap     ← single
+  field 12 = subsequent timed Laps ← repeated
+
+  Lap {
+    field 1  = lap_number_raw   (jumps 2,4,6,... — semantic unclear)
+    field 2  = duration_ms       ← VERIFIED (107106 = 1:47.106)
+    field 3..10 = lap aggregates (one of: min/max/avg speed)
+
+    field 11 = repeated Sample
+    Sample {
+      field 1  = dist_idx (float counter, integer-valued)
+      field 2  = seq (varint)
+      field 3  = Position { lat: double, lon: double }
+      field 4..15 = 12 floats per sample — speed, altitude, heading, accel_g,
+                    cornering_g, lateral_position, etc. (mapping TBD via value
+                    range analysis vs. libgecko.so field-name strings)
+    }
+  }
+
+MeanLine:
+  device + meanLineGuid + track config metadata + GPS path (lat/lon doubles)
+```
+
+**Critical insight:** every lap of a given track config has the **same sample
+count** (~5,256 for VIR Full Course). Samples are aligned by *distance along the
+meanline*, not time. This makes cross-lap comparison trivial — same `dist_idx`
+in two different sessions refers to the same physical point on the track.
 
 ---
 
@@ -353,11 +406,35 @@ garmin/
 
 ### Running
 
+After `pip install -e .` from the repo root, four console scripts are on PATH:
+
 ```bash
-# First run — interactively logs in to Garmin SSO, gets Catalyst token (90-day cache)
-python catalyst_client.py --probe       # Hit endpoints, write raw responses to data/probe/
-python catalyst_client.py --list        # List all sessions (will fail until /sessions works)
-python catalyst_client.py               # Download all sessions
-python catalyst_client.py --session GUID
-python catalyst_client.py --clear-tokens   # Force a full re-auth
+catalyst-fetch              # Download all sessions (resume-safe)
+catalyst-fetch --probe      # Hit each endpoint, write raw responses to data/probe/
+catalyst-fetch --list       # Table of all sessions (GUID, date, track, best lap)
+catalyst-fetch --session GUID
+catalyst-fetch --clear-tokens
+
+catalyst-decode data/sessions/<guid>/performance.pb --inspect
+catalyst-decode data/mean_lines/<guid>.pb --inspect
+
+catalyst-load               # Decode all .pb and ingest into data/catalyst.duckdb
+
+catalyst-gui                # PySide6 desktop app — sync + browse + edit setup
 ```
+
+## GUI (catalyst_gui/)
+
+PySide6 desktop app with three pages:
+
+- **Home** — account, sync status, token expiry, total data, last-sync time, big
+  "Sync now" button. Background worker runs the SSO flow and reports progress.
+- **Sessions** — sortable table from DuckDB: date, track, config, best lap,
+  laps, sample count, weather. Falls back to disk-scan when DB isn't loaded.
+- **Garage** — markdown viewer/editor for files in `../lotus/` (Lotus.md plus
+  setup guides). Same files will feed the LLM coach later.
+
+Sync runs `garmin.catalyst_client.fetch_all_sessions` on a `QThread`, captures
+stdout via a `_StreamToSignal`, and pipes lines to the status bar.
+
+Run with `catalyst-gui` (or `python -m catalyst_gui`).
