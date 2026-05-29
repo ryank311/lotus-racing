@@ -1,7 +1,7 @@
 # 2008 Lotus Exige Club Racer
 I own a track modified Lotus Exige that I take for track-day weekends to VIR (Virginia International Raceway). This car is no longer street-legal, as I have done semi-extensive modifications on it from stock to make it better for the track. I use my Rivian R1S with a Futura Super Sport trailer to tow it when I go to track events.
 
-A typical laptime for me is 2:15 on the VIR full course, and I have PB's in the low 2:14s. I have a garmin catalyst that I use to collect video and race data. 
+A typical laptime for me is 2:15 on the VIR full course, and I have PB's in the 2:13s. I have a garmin catalyst that I use to collect video and race data. 
 
 ## Car Stats
 

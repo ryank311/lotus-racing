@@ -85,6 +85,11 @@ export interface LapRow {
   min_long_accel: number | null
 }
 
+// Analysis page — chart-ready data shape.
+// (Keeping it as `unknown` here so the renderer can import the rich types
+// directly from src/garmin/analysisData.ts without main↔renderer drift.)
+export type AnalysisDataPayload = unknown
+
 // Bridge exposed on window via preload.
 export interface CatalystBridge {
   // Auth + state
@@ -117,6 +122,9 @@ export interface CatalystBridge {
   startSync(): Promise<void>
   startLoad(): Promise<void>
   onWorker(cb: (evt: WorkerEvent) => void): () => void
+
+  // Analysis (Plotly data)
+  buildAnalysis(sessionGuids: string[]): Promise<AnalysisDataPayload>
 }
 
 declare global {

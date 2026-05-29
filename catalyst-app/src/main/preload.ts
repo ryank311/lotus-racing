@@ -38,6 +38,8 @@ const bridge: CatalystBridge = {
     ipcRenderer.on('worker:event', handler)
     return () => ipcRenderer.off('worker:event', handler)
   },
+
+  buildAnalysis: (sessionGuids: string[]) => ipcRenderer.invoke('analysis:build', sessionGuids),
 }
 
 contextBridge.exposeInMainWorld('catalyst', bridge)

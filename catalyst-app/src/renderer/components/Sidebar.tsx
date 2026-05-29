@@ -63,7 +63,6 @@ export function Sidebar({ active, onChange, connected }: { active: NavKey; onCha
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark" />
         <div className="brand-title">Catalyst</div>
         <div className="brand-sub">// telemetry · vir</div>
       </div>

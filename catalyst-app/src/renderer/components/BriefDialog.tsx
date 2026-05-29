@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { api } from '../api'
-import type { CarProfile, BriefOptions } from '../../shared/types'
+import { useEffect, useMemo, useState } from 'react'
+import { api, msToLap } from '../api'
+import type { CarProfile, BriefOptions, DbSessionRow } from '../../shared/types'
 
 export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onGenerated?: () => void }) {
   const [profiles, setProfiles] = useState<CarProfile[]>([])
@@ -13,19 +13,61 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
+  // Session picker state (only used in mode === 'selected', but we load
+  // up front so switching modes is instant).
+  const [sessions, setSessions] = useState<DbSessionRow[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [filter, setFilter] = useState('')
+
   useEffect(() => {
     void (async () => {
-      const [list, active] = await Promise.all([api.listProfiles(), api.getActiveProfile()])
+      const [list, active, sess] = await Promise.all([
+        api.listProfiles(),
+        api.getActiveProfile(),
+        api.listSessions(),
+      ])
       setProfiles(list)
       setProfile(active ?? list[0]?.name ?? '')
+      setSessions(sess)
     })()
   }, [])
 
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return sessions
+    return sessions.filter(r =>
+      (r.track_name ?? '').toLowerCase().includes(q) ||
+      (r.track_configuration_name ?? '').toLowerCase().includes(q) ||
+      (r.session_start ?? '').toLowerCase().includes(q) ||
+      r.session_guid.toLowerCase().includes(q))
+  }, [sessions, filter])
+
+  const toggle = (guid: string) => {
+    const next = new Set(selected)
+    if (next.has(guid)) next.delete(guid); else next.add(guid)
+    setSelected(next)
+  }
+
+  const toggleAllVisible = () => {
+    const allChosen = filtered.every(s => selected.has(s.session_guid))
+    const next = new Set(selected)
+    for (const s of filtered) {
+      if (allChosen) next.delete(s.session_guid)
+      else next.add(s.session_guid)
+    }
+    setSelected(next)
+  }
+
   const onGenerate = async () => {
+    if (mode === 'selected' && selected.size === 0) {
+      setErr('Pick at least one session, or switch session-set mode.')
+      return
+    }
     setBusy(true); setErr(null)
     try {
       await api.generateBrief({
         profile, scope, mode, lastN,
+        sessionGuids: mode === 'selected' ? [...selected] : undefined,
         csv, includeGuides,
       })
       onGenerated?.()
@@ -37,14 +79,26 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
     }
   }
 
+  const isSelectedMode = mode === 'selected'
+  const allVisibleSelected = filtered.length > 0 && filtered.every(s => selected.has(s.session_guid))
+
   return (
     <div className="dialog-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="dialog">
+      <div
+        className="dialog"
+        style={{ width: isSelectedMode ? 'min(900px, 95vw)' : undefined }}
+      >
         <button className="dialog-close" onClick={onClose}>×</button>
         <div className="dialog-header">
           <div className="dialog-title">New brief</div>
           <span className="tag signal">{scope.toUpperCase()}</span>
+          {isSelectedMode && (
+            <span className="tag cyan" style={{ marginLeft: 'auto' }}>
+              {selected.size} SELECTED
+            </span>
+          )}
         </div>
+
         <div className="dialog-body">
           <div className="field">
             <div className="field-label">Profile (car)</div>
@@ -80,8 +134,85 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
             </div>
           )}
 
-          {mode === 'selected' && (
-            <div className="field-help">Selected-mode picker not yet implemented in dialog — use CLI for now, or pick "last N".</div>
+          {isSelectedMode && (
+            <div className="field">
+              <div className="row-center" style={{ marginBottom: 8, gap: 8 }}>
+                <input
+                  placeholder="filter by date, track, or guid…"
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                  style={{
+                    flex: 1,
+                    background: 'var(--bg-elev)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius)',
+                    padding: '8px 12px',
+                    color: 'var(--text)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 12,
+                  }}
+                />
+                <button className="btn ghost" style={{ padding: '8px 12px' }} onClick={toggleAllVisible}>
+                  {allVisibleSelected ? 'Clear visible' : 'Select visible'}
+                </button>
+                {selected.size > 0 && (
+                  <button className="btn ghost" style={{ padding: '8px 12px' }} onClick={() => setSelected(new Set())}>
+                    Reset
+                  </button>
+                )}
+              </div>
+
+              <div
+                className="tbl-wrap"
+                style={{ maxHeight: 320, overflow: 'auto' }}
+              >
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 32 }}></th>
+                      <th>Date</th>
+                      <th>Config</th>
+                      <th style={{ textAlign: 'right' }}>Best</th>
+                      <th style={{ textAlign: 'right' }}>Laps</th>
+                      <th>Weather</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.length === 0 && (
+                      <tr><td colSpan={6} className="muted">no sessions match</td></tr>
+                    )}
+                    {filtered.map(s => {
+                      const isOn = selected.has(s.session_guid)
+                      return (
+                        <tr
+                          key={s.session_guid}
+                          onClick={() => toggle(s.session_guid)}
+                          style={{
+                            cursor: 'pointer',
+                            background: isOn ? 'rgba(255,94,58,0.06)' : undefined,
+                          }}
+                        >
+                          <td style={{ textAlign: 'center' }}>
+                            <input
+                              type="checkbox"
+                              checked={isOn}
+                              onChange={() => toggle(s.session_guid)}
+                              onClick={e => e.stopPropagation()}
+                              style={{ accentColor: 'var(--signal)' }}
+                            />
+                          </td>
+                          <td className="small">{s.session_start ?? '—'}</td>
+                          <td className="muted">{s.track_configuration_name || '—'}</td>
+                          <td className="num laptime">{msToLap(s.best_lap_ms)}</td>
+                          <td className="num">{s.lap_count || '—'}</td>
+                          <td className="muted small">{s.weather_description || '—'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           <div className="row-center" style={{ gap: 18, marginTop: 8 }}>
@@ -91,9 +222,16 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
 
           {err && <div style={{ marginTop: 14, color: 'var(--red)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{err}</div>}
         </div>
+
         <div className="dialog-footer">
           <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn primary" onClick={onGenerate} disabled={busy || !profile}>{busy ? 'Generating…' : 'Generate'}</button>
+          <button
+            className="btn primary"
+            onClick={onGenerate}
+            disabled={busy || !profile || (isSelectedMode && selected.size === 0)}
+          >
+            {busy ? 'Generating…' : 'Generate'}
+          </button>
         </div>
       </div>
     </div>

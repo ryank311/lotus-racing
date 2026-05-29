@@ -20,6 +20,7 @@ import {
 } from '../garmin/catalystClient.js'
 import { loadAll, openDb } from '../garmin/loadToDb.js'
 import { runBrief } from '../garmin/promptPack.js'
+import { buildAnalysis } from '../garmin/analysisData.js'
 import {
   discoverProfiles,
   getActiveProfileName,
@@ -211,6 +212,10 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('shell:reveal', (_e, p: string) => {
     shell.showItemInFolder(p)
+  })
+
+  ipcMain.handle('analysis:build', async (_e, sessionGuids: string[]) => {
+    return buildAnalysis(sessionGuids)
   })
 
   // ---- workers ---------------------------------------------------------
