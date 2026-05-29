@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Catalyst Coach app icon.
+
+  One shape: a thick orange C that traces an ideal racing line through a
+  corner. One accent: a cyan dot pinned at the apex, the AI's verdict on
+  where the car should be. That's the whole icon.
+
+  Reads at 16px (orange silhouette + bright cyan pixel), still looks
+  intentional at 1024px. No text, no grid, no ornament.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 1024 1024" width="1024" height="1024">
+
+  <defs>
+    <!-- Carbon backdrop with a faint vignette toward the apex -->
+    <radialGradient id="bg" cx="62%" cy="50%" r="62%">
+      <stop offset="0%"  stop-color="#1d1d24"/>
+      <stop offset="60%" stop-color="#0f0f13"/>
+      <stop offset="100%" stop-color="#070708"/>
+    </radialGradient>
+
+    <!-- Brake-light orange. Hot rim at the top edge cooling toward the
+         bottom where the corner exits — gives the C subtle direction. -->
+    <linearGradient id="ring" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%"   stop-color="#ff8a5c"/>
+      <stop offset="45%"  stop-color="#ff5e3a"/>
+      <stop offset="100%" stop-color="#a82a14"/>
+    </linearGradient>
+
+    <!-- Cyan apex marker glow -->
+    <radialGradient id="apex" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="22%"  stop-color="#7dd3fc"/>
+      <stop offset="60%"  stop-color="#0891b2" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#0891b2" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Inner shadow on the C — fakes a tube/ribbon volume so the stroke
+         doesn't look like a flat sticker. -->
+    <filter id="curveDepth" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="blur"/>
+      <feOffset in="blur" dx="0" dy="10" result="dropped"/>
+      <feFlood flood-color="#000" flood-opacity="0.6"/>
+      <feComposite in2="dropped" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- macOS-style squircle clip so corners match Big Sur masking -->
+    <clipPath id="squircle">
+      <rect width="1024" height="1024" rx="232" ry="232"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+
+    <!-- The C. Thick stroked arc opening to the left, slightly heavier on
+         the top half (entry/braking side). Drawn with a single arc path
+         and stroked — keeps the silhouette dead simple. -->
+    <g filter="url(#curveDepth)">
+      <path d="M 760 240
+               A 320 320 0 1 0 760 784"
+            fill="none"
+            stroke="url(#ring)"
+            stroke-width="180"
+            stroke-linecap="round"/>
+    </g>
+
+    <!-- Apex glow ring -->
+    <circle cx="828" cy="512" r="170" fill="url(#apex)"/>
+
+    <!-- Hard apex dot — the AI verdict. Slightly off-centre on the C's
+         outer face so it sits exactly where peak lateral G would hit. -->
+    <circle cx="828" cy="512" r="62"  fill="#0a0a0e"/>
+    <circle cx="828" cy="512" r="56"  fill="#7dd3fc"/>
+    <circle cx="828" cy="512" r="22"  fill="#ffffff"/>
+
+    <!-- Subtle inner highlight on the top arc of the C — catches "light"
+         and adds a little dimension without complexity. -->
+    <path d="M 760 240 A 320 320 0 0 0 460 232"
+          fill="none"
+          stroke="#ffd6c2"
+          stroke-width="22"
+          stroke-linecap="round"
+          opacity="0.55"/>
+
+    <!-- 1px inner bezel along the squircle, brushed-aluminium feel -->
+    <rect x="2" y="2" width="1020" height="1020" rx="230" ry="230"
+          fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2"/>
+  </g>
+</svg>
