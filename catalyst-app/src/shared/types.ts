@@ -126,6 +126,27 @@ export interface LapRow {
 // directly from src/garmin/analysisData.ts without main↔renderer drift.)
 export type AnalysisDataPayload = unknown
 
+// Tracks editor types — kept loose for the same reason as AnalysisDataPayload;
+// the page imports concrete shapes from garmin/trackGeometry and trackYaml.
+export type TrackGeometryDetailed = unknown
+export type TrackCornerPayload = unknown
+export interface TrackListEntry {
+  trackName: string
+  configName: string
+  meanLineGuid: string | null
+  sessionCount: number
+  yamlPath: string | null
+  yamlExists: boolean
+  cornerCount: number
+  meanLineExists: boolean
+}
+export interface TrackDetail {
+  geometry: TrackGeometryDetailed
+  yamlPath: string
+  yamlExists: boolean
+  corners: TrackCornerPayload[]
+}
+
 // Bridge exposed on window via preload.
 export interface CatalystBridge {
   // Auth + state
@@ -173,6 +194,15 @@ export interface CatalystBridge {
 
   // Analysis (Plotly data)
   buildAnalysis(sessionGuids: string[]): Promise<AnalysisDataPayload>
+
+  // Tracks editor
+  listTracks(): Promise<TrackListEntry[]>
+  getTrack(meanLineGuid: string): Promise<TrackDetail | null>
+  saveTrackCorners(opts: {
+    yamlPath: string
+    meanLineGuid: string
+    corners: TrackCornerPayload[]
+  }): Promise<{ savedTo: string; cornerCount: number }>
 }
 
 declare global {

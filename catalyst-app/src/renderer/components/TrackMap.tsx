@@ -11,15 +11,46 @@
 // Pan = drag; zoom = wheel (anchored on the cursor); double-click = fit-to-track.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AnalysisData, RacingLineLap } from '../../garmin/analysisData'
+import type { AnalysisData, RacingLineLap, TrackGeometryPayload } from '../../garmin/analysisData'
+
+// Structural subset of AnalysisData that this component actually needs. Both
+// the Analysis page (passes its full AnalysisData) and the Tracks editor
+// (passes a hand-rolled object with no racing lines) satisfy this shape.
+export interface TrackMapInput {
+  trackGeometry: TrackGeometryPayload | null
+  racingLines: RacingLineLap[]
+  sessions: Array<{ sg: string }>
+}
+
+// In editing mode, the parent supplies the corner list + a selected turn key
+// and gets callbacks when the user clicks on the track (to set the apex of
+// the selected corner) or on an existing corner marker (to select it).
+export interface TrackMapEditState {
+  corners: Array<{
+    turn: string
+    name?: string
+    apex_idx?: number
+    dist_idx_start?: number
+    dist_idx_end?: number
+    direction?: string
+  }>
+  selectedTurn: string | null
+  onPickApex: (apexIdx: number) => void
+  onSelectTurn: (turn: string) => void
+}
 
 interface Props {
-  data: AnalysisData
+  data: TrackMapInput | AnalysisData
   height?: number
   // When set, a white crosshair is drawn on the best-lap racing line at this
   // cumulative distance. Lets the parent sync mouse-hover from other charts
   // (which use distance_m on x) onto the spatial track view.
   hoverDistanceM?: number | null
+  // When provided, the map enters editing mode: corner apex markers are drawn
+  // prominently, clicks on the track move the *selected* corner's apex, and
+  // clicks on a marker change which corner is selected. The racing-line speed
+  // heatmap is hidden in this mode to keep the visual focus on corners.
+  edit?: TrackMapEditState
 }
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -100,7 +131,7 @@ function SpeedHeatmapPath({ lap, smin, smax }: { lap: RacingLineLap; smin: numbe
   return <g>{segments}</g>
 }
 
-export function TrackMap({ data, height = 560, hoverDistanceM = null }: Props) {
+export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Props) {
   const { trackGeometry: geom, racingLines } = data
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -201,16 +232,25 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null }: Props) {
     zoomAt(r.left + r.width / 2, r.top + r.height / 2, factor)
   }
 
+  // Track whether the pointer moved meaningfully between down/up — separates
+  // a click (snap-to-apex in edit mode) from a drag (pan).
+  const moveSinceDownRef = useRef(0)
+
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (!vb) return
     svgRef.current?.setPointerCapture(e.pointerId)
     dragStateRef.current = { x: e.clientX, y: e.clientY, vb }
+    moveSinceDownRef.current = 0
   }
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
     const d = dragStateRef.current
     const svg = svgRef.current
     if (!d || !svg) return
     const rect = svg.getBoundingClientRect()
+    moveSinceDownRef.current = Math.max(
+      moveSinceDownRef.current,
+      Math.hypot(e.clientX - d.x, e.clientY - d.y),
+    )
     const dx = ((e.clientX - d.x) / rect.width) * d.vb.w
     const dy = ((e.clientY - d.y) / rect.height) * d.vb.h
     setVb({ x: d.vb.x - dx, y: d.vb.y - dy, w: d.vb.w, h: d.vb.h })
@@ -218,6 +258,22 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null }: Props) {
   function onPointerUp(e: React.PointerEvent<SVGSVGElement>) {
     svgRef.current?.releasePointerCapture(e.pointerId)
     dragStateRef.current = null
+    // In edit mode, a click (no real drag) sets the selected corner's apex.
+    if (edit && geom && moveSinceDownRef.current < 4) {
+      const w = screenToWorld(e.clientX, e.clientY)
+      if (w) {
+        // Find nearest centerline point. Our world y was flipped at render
+        // time (we negate y in path builders) so flip back here too.
+        const target = { x: w.x, y: -w.y }
+        let bestI = 0, bestD = Infinity
+        for (let i = 0; i < geom.centerline.length; i++) {
+          const c = geom.centerline[i]
+          const d = (c.x - target.x) ** 2 + (c.y - target.y) ** 2
+          if (d < bestD) { bestD = d; bestI = i }
+        }
+        edit.onPickApex(bestI)
+      }
+    }
   }
   function fitToTrack() { setVb(fitBox) }
 
@@ -282,7 +338,15 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null }: Props) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onDoubleClick={fitToTrack}
-        style={{ width: '100%', height: 'calc(100% - 44px)', cursor: dragStateRef.current ? 'grabbing' : 'grab' }}
+        style={{
+          width: '100%',
+          height: 'calc(100% - 44px)',
+          cursor: dragStateRef.current
+            ? 'grabbing'
+            : edit
+              ? 'crosshair'
+              : 'grab',
+        }}
       >
         {/* L1 — track surface ribbon */}
         {showRibbon && (
@@ -345,10 +409,48 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null }: Props) {
           />
         ))}
 
-        {/* L5 — best-lap racing line, speed-heatmap stroke */}
-        {showRacing && bestLap && (
+        {/* L5 — best-lap racing line, speed-heatmap stroke. Hidden in edit
+             mode so the corner markers below stay the visual focus. */}
+        {!edit && showRacing && bestLap && (
           <SpeedHeatmapPath lap={bestLap} smin={smin} smax={smax} />
         )}
+
+        {/* L5e — corner apex markers (editing mode). Each marker is a numbered
+             dot positioned at the centerline point indexed by `apex_idx`. The
+             selected corner gets a larger, signal-coloured marker. */}
+        {edit && edit.corners.map((c, idx) => {
+          if (c.apex_idx == null) return null
+          const p = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(c.apex_idx)))]
+          if (!p) return null
+          const isSelected = edit.selectedTurn === c.turn
+          return (
+            <g
+              key={`apex-${idx}-${c.turn}`}
+              onPointerDown={e => { e.stopPropagation(); edit.onSelectTurn(c.turn) }}
+              style={{ cursor: 'pointer' }}
+            >
+              <circle
+                cx={p.x} cy={-p.y}
+                r={isSelected ? 8 : 6}
+                fill={isSelected ? '#ff5e3a' : '#ffd700'}
+                stroke="#000"
+                strokeWidth={0.8}
+                vectorEffect="non-scaling-stroke"
+              />
+              <text
+                x={p.x} y={-p.y + 2}
+                textAnchor="middle"
+                fontSize={isSelected ? 9 : 7}
+                fontWeight={700}
+                fill="#000"
+                fontFamily="'JetBrains Mono', monospace"
+                pointerEvents="none"
+              >
+                {c.turn.replace(/^T/, '')}
+              </text>
+            </g>
+          )
+        })}
 
         {/* L6 — chart-hover crosshair: white pulse on the racing line at the
              cumulative distance the user is hovering on the time-series charts. */}

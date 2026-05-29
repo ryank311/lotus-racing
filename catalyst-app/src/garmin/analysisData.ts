@@ -76,7 +76,7 @@ export interface TrackGeometryPayload {
   totalDistM: number
   widthM: number
   bbox: { minX: number; maxX: number; minY: number; maxY: number }
-  centerline: { x: number; y: number; dist: number }[]
+  centerline: { x: number; y: number; dist: number; lat: number; lon: number }[]
   leftEdge: { x: number; y: number }[]
   rightEdge: { x: number; y: number }[]
   sectorMarks: { distM: number; type: 'start' | 'end' }[]
@@ -525,7 +525,7 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
         totalDistM: geom.totalDistM,
         widthM: geom.widthM,
         bbox: geom.bbox,
-        centerline: geom.centerline.map(p => ({ x: p.x, y: p.y, dist: p.dist })),
+        centerline: geom.centerline.map(p => ({ x: p.x, y: p.y, dist: p.dist, lat: p.lat, lon: p.lon })),
         leftEdge: geom.leftEdge,
         rightEdge: geom.rightEdge,
         sectorMarks: geom.sectorMarks,

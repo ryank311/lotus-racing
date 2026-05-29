@@ -28,7 +28,7 @@ export interface TrackGeometry {
   widthM: number
   projection: Projection
   // Track-local metres, y = north, x = east. We'll flip in the renderer.
-  centerline: { x: number; y: number; dist: number; heading: number }[]
+  centerline: { x: number; y: number; dist: number; heading: number; lat: number; lon: number }[]
   leftEdge: { x: number; y: number }[]
   rightEdge: { x: number; y: number }[]
   bbox: { minX: number; maxX: number; minY: number; maxY: number }
@@ -90,6 +90,8 @@ export function buildTrackGeometry(meanLineGuid: string): TrackGeometry | null {
     // Use the proto's heading_deg (compass-style) if present, else fall back
     // to derived tangent — but normalise everything to "radians CCW from +x".
     heading: p.f3 != null ? (90 - p.f3) * DEG : tangentRadians(projected, i),
+    lat: p.lat,
+    lon: p.lon,
   }))
 
   // Extrude ±half perpendicular to the tangent. Tangent CCW-from-+x = θ,

@@ -53,6 +53,12 @@ const bridge: CatalystBridge = {
   },
 
   buildAnalysis: (sessionGuids: string[]) => ipcRenderer.invoke('analysis:build', sessionGuids),
+
+  // Tracks editor
+  listTracks: () => ipcRenderer.invoke('tracks:listAll'),
+  getTrack: (meanLineGuid: string) => ipcRenderer.invoke('tracks:get', meanLineGuid),
+  saveTrackCorners: (opts: { yamlPath: string; meanLineGuid: string; corners: any[] }) =>
+    ipcRenderer.invoke('tracks:saveCorners', opts),
 }
 
 contextBridge.exposeInMainWorld('catalyst', bridge)

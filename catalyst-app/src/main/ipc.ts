@@ -27,7 +27,9 @@ import {
   loadTrackConfigs,
   openDb,
 } from '../garmin/loadToDb.js'
-import { MEAN_LINES_DIR } from '../garmin/paths.js'
+import { MEAN_LINES_DIR, TRACKS_DIR } from '../garmin/paths.js'
+import { buildTrackGeometry } from '../garmin/trackGeometry.js'
+import { loadTrackYaml, saveTrackYamlCorners, TrackCorner } from '../garmin/trackYaml.js'
 import { runBrief } from '../garmin/promptPack.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import {
@@ -284,6 +286,123 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   })
   ipcMain.handle('profiles:resolveForVehicle', (_e, vehicleGuid: string | null, make: string | null) => {
     return resolveVehicleProfile(vehicleGuid, make)
+  })
+
+  // ── Tracks editor ─────────────────────────────────────────────────────────
+  //
+  // The Tracks workspace tab is for cleaning up corner annotations. We expose:
+  //   tracks:listAll        — every (track, config, meanLineGuid) we have data
+  //                            for, paired with its YAML path (resolved or to-
+  //                            be-created), session count, and corner count.
+  //   tracks:get(guid)      — geometry (centerline + edges + sectors) plus the
+  //                            parsed YAML corners — everything the editor needs.
+  //   tracks:saveCorners    — rewrite just the corners block in the YAML; lat/
+  //                            lon are filled in from the mean_line's apex_idx
+  //                            so the renderer doesn't have to ship them back.
+
+  function slug(s: string): string {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  }
+
+  // Resolve the YAML file for a given (track_name, config_name, mean_line_guid).
+  // Strategy: scan tracks/*.yaml and match by mean_line_guid first (most
+  // reliable), then by track_configuration_name, then synthesize a path.
+  function resolveTrackYamlPath(
+    trackName: string, configName: string, meanLineGuid: string | null,
+  ): { path: string; exists: boolean } {
+    if (!fs.existsSync(TRACKS_DIR)) fs.mkdirSync(TRACKS_DIR, { recursive: true })
+    const yamls = fs.readdirSync(TRACKS_DIR).filter(n => n.toLowerCase().endsWith('.yaml'))
+    for (const fn of yamls) {
+      const p = path.join(TRACKS_DIR, fn)
+      const y = loadTrackYaml(p)
+      if (meanLineGuid && y.mean_line_guid === meanLineGuid) return { path: p, exists: true }
+    }
+    for (const fn of yamls) {
+      const p = path.join(TRACKS_DIR, fn)
+      const y = loadTrackYaml(p)
+      if (y.track_configuration_name === configName && y.track_name === trackName) {
+        return { path: p, exists: true }
+      }
+    }
+    // Best-effort default path: use the first word of the track name as alias.
+    const alias = slug(trackName).split('-')[0] || slug(trackName)
+    return { path: path.join(TRACKS_DIR, `${alias}-${slug(configName)}.yaml`), exists: false }
+  }
+
+  ipcMain.handle('tracks:listAll', async () => {
+    if (!fs.existsSync(DB_PATH)) return []
+    const { con } = await openDb(DB_PATH, true)
+    const reader = await con.runAndReadAll(`
+      SELECT tc.track_name, tc.track_configuration_name, s.mean_line_guid,
+             COUNT(*) AS session_count
+      FROM sessions s
+      LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
+      WHERE s.mean_line_guid IS NOT NULL
+      GROUP BY 1, 2, 3
+      ORDER BY session_count DESC
+    `)
+    const out = reader.getRowsJson().map((r: any) => {
+      const trackName = String(r[0] ?? 'Unknown')
+      const configName = String(r[1] ?? '')
+      const meanLineGuid = r[2] != null ? String(r[2]) : null
+      const sessionCount = Number(r[3] ?? 0)
+      const resolved = meanLineGuid ? resolveTrackYamlPath(trackName, configName, meanLineGuid) : null
+      const yaml = resolved?.exists ? loadTrackYaml(resolved.path) : null
+      return {
+        trackName, configName, meanLineGuid, sessionCount,
+        yamlPath: resolved?.path ?? null,
+        yamlExists: !!resolved?.exists,
+        cornerCount: yaml?.corners?.length ?? 0,
+        meanLineExists: meanLineGuid
+          ? fs.existsSync(path.join(MEAN_LINES_DIR, `${meanLineGuid}.pb`))
+          : false,
+      }
+    })
+    return out
+  })
+
+  ipcMain.handle('tracks:get', (_e, meanLineGuid: string) => {
+    const geom = buildTrackGeometry(meanLineGuid)
+    if (!geom) return null
+    const resolved = resolveTrackYamlPath(geom.trackName, geom.configName, meanLineGuid)
+    const yaml = resolved.exists ? loadTrackYaml(resolved.path) : null
+    return {
+      geometry: {
+        meanLineGuid: geom.meanLineGuid,
+        trackName: geom.trackName,
+        configName: geom.configName,
+        totalDistM: geom.totalDistM,
+        widthM: geom.widthM,
+        bbox: geom.bbox,
+        centerline: geom.centerline.map(p => ({ x: p.x, y: p.y, dist: p.dist, lat: p.lat, lon: p.lon })),
+        leftEdge: geom.leftEdge,
+        rightEdge: geom.rightEdge,
+        sectorMarks: geom.sectorMarks,
+      },
+      yamlPath: resolved.path,
+      yamlExists: resolved.exists,
+      corners: yaml?.corners ?? [],
+    }
+  })
+
+  // The renderer sends back corners without apex_lat/apex_lon — we fill those
+  // in from the mean-line geometry at apex_idx so the YAML stays authoritative.
+  ipcMain.handle('tracks:saveCorners', (_e, opts: {
+    yamlPath: string
+    meanLineGuid: string
+    corners: TrackCorner[]
+  }) => {
+    const geom = buildTrackGeometry(opts.meanLineGuid)
+    const enriched = opts.corners.map(c => {
+      if (geom && c.apex_idx != null) {
+        const i = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(c.apex_idx)))
+        const p = geom.centerline[i]
+        return { ...c, apex_lat: p.lat, apex_lon: p.lon }
+      }
+      return c
+    })
+    saveTrackYamlCorners(opts.yamlPath, enriched)
+    return { savedTo: opts.yamlPath, cornerCount: enriched.length }
   })
 
   ipcMain.handle('briefs:list', (): BriefFile[] => {
