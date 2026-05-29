@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" shape-rendering="geometricPrecision">
+  <!-- Catalyst Coach brand mark.
+       Two slanted shapes evoking motion / racing pylons.
+       Edit this file and re-run build/brand/build-icons.py to regenerate icon.png/icns/ico. -->
+  <rect width="1024" height="1024" fill="#0A0A0B"/>
+  <!-- Orange parallelogram (leans right) -->
+  <polygon points="262,822 372,822 432,202 322,202" fill="#E0683C"/>
+  <!-- Blue quadrilateral (top slopes down to the right) -->
+  <polygon points="472,822 800,822 800,420 472,202" fill="#5483A4"/>
+</svg>
