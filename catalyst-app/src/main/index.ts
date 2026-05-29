@@ -62,6 +62,7 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+// Quit on window-close on every platform. Standard macOS convention keeps the
+// process alive in the Dock for re-open-on-click; we override that — closing
+// the X is the way you quit this app.
+app.on('window-all-closed', () => app.quit())
