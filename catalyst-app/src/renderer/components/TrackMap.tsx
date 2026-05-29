@@ -178,8 +178,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
 
   // Layer toggles + metric selector
   const [showCenter,      setShowCenter]    = useState(false)
-  const [showRacing,      setShowRacing]    = useState(true)
-  const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set())
+  // Index 0 = best lap; indices 1+ = comparison laps. Best lap selected by default.
+  const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set([0]))
   const [metric,          setMetric]        = useState<TrackMetric>('speed_mph')
 
   // Hover state — index into bestLap arrays, plus container-relative position
@@ -187,7 +187,6 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
   const [tooltipPos,  setTooltipPos]  = useState<{ x: number; y: number } | null>(null)
 
   const bestLap = racingLines[0] ?? null
-  const compareLaps = racingLines.slice(1)
 
   // Value range for the current metric (used for heatmap colour scale + legend).
   const [vmin, vmax] = useMemo(() => {
@@ -215,12 +214,31 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
   }
 
   // ─── Interaction ────────────────────────────────────────────────────────────
-  function screenToWorld(clientX: number, clientY: number): { x: number; y: number } | null {
+
+  // Returns the rendered sub-rectangle of the SVG element.
+  // preserveAspectRatio="xMidYMid meet" fits the viewBox into the element while
+  // maintaining aspect ratio, centering it and leaving empty space on two sides.
+  // All hit-testing must map into this sub-rectangle, not the full element rect.
+  function renderedRect(): { left: number; top: number; w: number; h: number } | null {
     const svg = svgRef.current
     if (!svg || !vb) return null
-    const rect = svg.getBoundingClientRect()
-    const fx = (clientX - rect.left) / rect.width
-    const fy = (clientY - rect.top) / rect.height
+    const r = svg.getBoundingClientRect()
+    const scale = Math.min(r.width / vb.w, r.height / vb.h)
+    const rw = vb.w * scale
+    const rh = vb.h * scale
+    return {
+      left: r.left + (r.width - rw) / 2,
+      top:  r.top  + (r.height - rh) / 2,
+      w: rw,
+      h: rh,
+    }
+  }
+
+  function screenToWorld(clientX: number, clientY: number): { x: number; y: number } | null {
+    const rr = renderedRect()
+    if (!rr || !vb) return null
+    const fx = (clientX - rr.left) / rr.w
+    const fy = (clientY - rr.top)  / rr.h
     return { x: vb.x + fx * vb.w, y: vb.y + fy * vb.h }
   }
 
@@ -248,7 +266,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
       // Without a modifier we let the page scroll naturally.
       if (!(e.ctrlKey || e.metaKey)) return
       e.preventDefault()
-      const factor = Math.exp(e.deltaY * 0.0025)
+      const factor = Math.exp(e.deltaY * 0.008)
       zoomAt(e.clientX, e.clientY, factor)
     }
     svg.addEventListener('wheel', handler, { passive: false })
@@ -277,14 +295,17 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
     const svg = svgRef.current
     if (svg) {
       if (d) {
-        // Pan drag
-        const rect = svg.getBoundingClientRect()
+        // Pan drag — use rendered sub-rect so 1px drag = 1px pan
+        const r = svg.getBoundingClientRect()
         moveSinceDownRef.current = Math.max(
           moveSinceDownRef.current,
           Math.hypot(e.clientX - d.x, e.clientY - d.y),
         )
-        const dx = ((e.clientX - d.x) / rect.width) * d.vb.w
-        const dy = ((e.clientY - d.y) / rect.height) * d.vb.h
+        const scale = Math.min(r.width / d.vb.w, r.height / d.vb.h)
+        const rw = d.vb.w * scale
+        const rh = d.vb.h * scale
+        const dx = ((e.clientX - d.x) / rw) * d.vb.w
+        const dy = ((e.clientY - d.y) / rh) * d.vb.h
         setVb({ x: d.vb.x - dx, y: d.vb.y - dy, w: d.vb.w, h: d.vb.h })
       } else if (bestLap && vb) {
         // Hover detection — find nearest best-lap point in SVG space.
@@ -299,8 +320,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
             if (dist < nearD) { nearD = dist; nearI = i }
           }
           // Only show tooltip if within ~40 CSS pixels of a sample
-          const rect = svg.getBoundingClientRect()
-          const pxPerSvgUnit = rect.width / vb.w
+          const rr = renderedRect()
+          const pxPerSvgUnit = rr ? rr.w / vb.w : 1
           const threshold = (40 / pxPerSvgUnit) ** 2
           if (nearD < threshold) {
             setHoverIdx(nearI)
@@ -385,10 +406,9 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
       <div className="track-map-controls">
         <MetricDropdown metric={metric} onChange={setMetric} />
         <LayerToggle on={showCenter} onChange={setShowCenter}>centerline</LayerToggle>
-        <LayerToggle on={showRacing} onChange={setShowRacing}>best lap</LayerToggle>
-        {compareLaps.length > 0 && (
+        {racingLines.length > 0 && (
           <LapPickerDropdown
-            laps={compareLaps}
+            laps={racingLines}
             selected={selectedLapIdxs}
             onChange={setSelectedLapIdxs}
           />
@@ -465,8 +485,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           )
         })}
 
-        {/* L4 — individually selected comparison laps */}
-        {compareLaps.map((lap, i) => selectedLapIdxs.has(i) && (
+        {/* L4 — selected comparison laps (indices 1+) as solid coloured traces */}
+        {racingLines.slice(1).map((lap, i) => selectedLapIdxs.has(i + 1) && (
           <path
             key={`cmp-${lap.sg}-${lap.lapIdx}`}
             d={pathFromPoints(lap.x.map((x, k) => ({ x, y: lap.y[k] })))}
@@ -478,8 +498,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           />
         ))}
 
-        {/* L5 — best-lap heatmap coloured by the selected metric. */}
-        {!edit && showRacing && bestLap && (
+        {/* L5 — best lap (index 0) heatmap, shown when selected */}
+        {!edit && selectedLapIdxs.has(0) && bestLap && (
           <HeatmapPath lap={bestLap} values={getMetricValues(bestLap, metric)} vmin={vmin} vmax={vmax} />
         )}
 
@@ -605,23 +625,26 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           <div className="track-map-tooltip-dist">
             {Math.round(bestLap.dist[hoverIdx])} m
           </div>
-          {[{ lap: bestLap, label: `L${bestLap.lapIdx + 1} ★`, i: -1 },
-            ...compareLaps
-              .map((lap, i) => ({ lap, label: `L${lap.lapIdx + 1}`, i }))
-              .filter(({ i }) => selectedLapIdxs.has(i))
-          ].map(({ lap, label, i }) => {
-            const distM = bestLap.dist[hoverIdx]
-            const idx = i === -1 ? hoverIdx : nearestDistIdx(lap.dist, distM)
-            const color = i === -1 ? '#ff5e3a' : LAP_PALETTE[i % LAP_PALETTE.length]
-            return (
-              <div key={`${lap.sg}-${lap.lapIdx}`} className="track-map-tooltip-row">
-                <span className="track-map-tooltip-label" style={{ color }}>{label}</span>
-                <span>{lap.speed_mph[idx]?.toFixed(1)} mph</span>
-                <span>{lap.lat_g[idx]?.toFixed(2)}g lat</span>
-                <span>{lap.long_g[idx]?.toFixed(2)}g lng</span>
-              </div>
-            )
-          })}
+          {racingLines
+            .map((lap, i) => ({ lap, i }))
+            .filter(({ i }) => selectedLapIdxs.has(i))
+            .map(({ lap, i }) => {
+              const distM = bestLap.dist[hoverIdx]
+              const idx = i === 0 ? hoverIdx : nearestDistIdx(lap.dist, distM)
+              const color = i === 0 ? '#ff5e3a' : LAP_PALETTE[(i - 1) % LAP_PALETTE.length]
+              const label = `L${lap.lapIdx + 1}${i === 0 ? ' ★' : ''}`
+              const { unit } = METRIC_META[metric]
+              const raw = (lap[metric] as number[])[idx]
+              const val = raw != null
+                ? metric === 'speed_mph' ? `${raw.toFixed(1)} ${unit}` : `${raw.toFixed(2)} ${unit}`
+                : '—'
+              return (
+                <div key={`${lap.sg}-${lap.lapIdx}`} className="track-map-tooltip-row">
+                  <span className="track-map-tooltip-label" style={{ color }}>{label}</span>
+                  <span>{val}</span>
+                </div>
+              )
+            })}
         </div>
       )}
     </div>

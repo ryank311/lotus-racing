@@ -1320,6 +1320,8 @@ input, textarea, select { font-family: inherit; color: inherit; }
 /* ── lap picker dropdown ── */
 .lap-picker {
   position: relative;
+  display: flex;
+  align-items: center;
 }
 .lap-picker-caret {
   font-size: 7px;
@@ -1535,7 +1537,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 .track-map-tooltip-row {
   display: grid;
-  grid-template-columns: 52px 1fr 1fr 1fr;
+  grid-template-columns: 52px 1fr;
   gap: 4px 8px;
   align-items: center;
   padding: 2px 0;
