@@ -56,11 +56,21 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
       humidity_pct DOUBLE,
       wind_speed_mps DOUBLE,
       wind_direction_deg DOUBLE,
-      account VARCHAR
+      account VARCHAR,
+      vehicle_guid VARCHAR,
+      vehicle_make VARCHAR,
+      vehicle_model VARCHAR,
+      vehicle_year INTEGER,
+      vehicle_type VARCHAR
     );
 
-    -- Account column may be missing on older DBs; ADD IF NOT EXISTS is the migration.
+    -- IF NOT EXISTS migrations so older DBs pick up the new columns on next load.
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS account VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_guid VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_make VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_year INTEGER;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR;
 
     CREATE TABLE IF NOT EXISTS laps (
       session_guid VARCHAR,
@@ -156,7 +166,14 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
   const account = fs.existsSync(accountFile) ? fs.readFileSync(accountFile, 'utf-8').trim() || null : null
 
   await con.run(
-    'INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    `INSERT OR REPLACE INTO sessions
+       (session_guid, session_start, best_lap_ms, best_lap_normal_ms,
+        track_cartography_id, track_configuration_id, mean_line_guid,
+        garmin_guid, unit_id, product_part_number,
+        weather_description, temperature_c, humidity_pct,
+        wind_speed_mps, wind_direction_deg, account,
+        vehicle_guid, vehicle_make, vehicle_model, vehicle_year, vehicle_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       sg,
       summary.sessionStart ?? null,
@@ -174,6 +191,11 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
       nullIfNaN(weather.windSpeed),
       nullIfNaN(weather.windDirection),
       account,
+      metadata.vehicleGuid ?? null,
+      metadata.vehicleMake ?? null,
+      metadata.vehicleModel ?? null,
+      metadata.vehicleYear ?? null,
+      metadata.vehicleType ?? null,
     ] as any,
   )
 

@@ -19,15 +19,7 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
   const [briefOpen, setBriefOpen] = useState(false)
 
   const active = getActiveAccount(accounts)
-  const activeValid = tokenValid(active)
   const email = active?.label ?? null
-  const tokenStatus = activeValid
-    ? { cls: 'ok', text: `${daysRemaining(active)}d` }
-    : active
-      ? { cls: 'warn', text: 'expired' }
-      : auth?.tokenValid
-        ? { cls: 'ok', text: `${auth.tokenDaysRemaining}d` }
-        : { cls: 'err', text: 'no account' }
 
   return (
     <>
@@ -70,7 +62,7 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
         <div className="stat-grid">
           <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />
           <Tile label="Driven laps" value={(stats?.lapCount ?? 0).toLocaleString()} mono />
-          <Tile label="Token expires in" value={tokenStatus.text} valueClass={tokenStatus.cls} />
+          <Tile label="Tracks" value={String(stats?.trackCount ?? 0)} />
           <Tile label="Last sync" value={stats?.lastSyncAgoHuman ?? 'never'} mono />
         </div>
 

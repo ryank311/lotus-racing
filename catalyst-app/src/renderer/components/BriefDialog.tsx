@@ -19,6 +19,9 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
   const [sessions, setSessions] = useState<DbSessionRow[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [filter, setFilter] = useState('')
+  // True once the user has manually changed the profile dropdown; we stop
+  // auto-overriding after that so they aren't fighting the dialog.
+  const [profileTouched, setProfileTouched] = useState(false)
 
   useEffect(() => {
     void (async () => {
@@ -32,6 +35,35 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
       setSessions(sess)
     })()
   }, [])
+
+  // Auto-pick the profile from selected sessions' vehicles. Plurality vote:
+  // count vehicle_guids in the picked rows, resolve the winner via the
+  // vehicle→profile map, and snap the dropdown. Skips once the user has
+  // manually changed `profile`.
+  useEffect(() => {
+    if (profileTouched || mode !== 'selected' || selected.size === 0) return
+    const picked = sessions.filter(s => selected.has(s.session_guid))
+    if (!picked.length) return
+
+    const counts = new Map<string, { count: number; make: string | null }>()
+    for (const s of picked) {
+      if (!s.vehicle_guid) continue
+      const cur = counts.get(s.vehicle_guid) ?? { count: 0, make: s.vehicle_make ?? null }
+      cur.count++
+      counts.set(s.vehicle_guid, cur)
+    }
+    if (!counts.size) return
+    const [winnerGuid, winner] = [...counts.entries()].sort((a, b) => b[1].count - a[1].count)[0]
+
+    void api.resolveProfileForVehicle(winnerGuid, winner.make).then(r => {
+      if (r.profile) setProfile(r.profile)
+    })
+  }, [selected, sessions, mode, profileTouched])
+
+  const onPickProfile = (name: string) => {
+    setProfile(name)
+    setProfileTouched(true)
+  }
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -103,7 +135,7 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
         <div className="dialog-body">
           <div className="field">
             <div className="field-label">Profile (car)</div>
-            <select value={profile} onChange={e => setProfile(e.target.value)}>
+            <select value={profile} onChange={e => onPickProfile(e.target.value)}>
               {profiles.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
             </select>
           </div>

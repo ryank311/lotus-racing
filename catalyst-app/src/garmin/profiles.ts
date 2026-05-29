@@ -35,6 +35,10 @@ export function discoverProfiles(): CarProfile[] {
 
 interface Settings {
   active_profile?: string
+  // vehicleGuid → profile name. Persists user overrides for vehicles whose
+  // make doesn't fuzzy-match a profile folder (e.g. a Cayman mapped to a
+  // "Porsche" profile, when the vehicle make is "PORSCHE").
+  vehicle_profile_map?: Record<string, string>
 }
 
 function readSettings(): Settings {
@@ -62,6 +66,49 @@ export function setActiveProfileName(name: string): void {
   const s = readSettings()
   s.active_profile = name
   writeSettings(s)
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle ↔ profile mapping.
+//
+// Resolution order for a given vehicle (guid + make/model):
+//   1. Explicit override stored in settings.vehicle_profile_map[guid]
+//   2. Fuzzy match: profile whose name appears in (or vice-versa) the vehicle
+//      make string. E.g. make="LOTUS" → profile "Lotus".
+//   3. null — caller falls back to active profile.
+// ---------------------------------------------------------------------------
+
+export function getVehicleProfileMap(): Record<string, string> {
+  return readSettings().vehicle_profile_map ?? {}
+}
+
+export function setVehicleProfile(vehicleGuid: string, profileName: string | null): void {
+  const s = readSettings()
+  const map = s.vehicle_profile_map ?? {}
+  if (profileName) map[vehicleGuid] = profileName
+  else delete map[vehicleGuid]
+  s.vehicle_profile_map = map
+  writeSettings(s)
+}
+
+export function resolveVehicleProfile(
+  vehicleGuid: string | null,
+  make: string | null,
+): { profile: string | null; explicit: boolean } {
+  if (vehicleGuid) {
+    const explicit = readSettings().vehicle_profile_map?.[vehicleGuid]
+    if (explicit) return { profile: explicit, explicit: true }
+  }
+  if (make) {
+    const m = make.toLowerCase()
+    for (const p of discoverProfiles()) {
+      const pn = p.name.toLowerCase()
+      if (pn === m || pn.includes(m) || m.includes(pn)) {
+        return { profile: p.name, explicit: false }
+      }
+    }
+  }
+  return { profile: null, explicit: false }
 }
 
 export function resolveProfileDir(name?: string | null): CarProfile {

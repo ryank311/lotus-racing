@@ -33,7 +33,9 @@ import { buildAnalysis } from '../garmin/analysisData.js'
 import {
   discoverProfiles,
   getActiveProfileName,
+  resolveVehicleProfile,
   setActiveProfileName,
+  setVehicleProfile,
 } from '../garmin/profiles.js'
 import type {
   AuthState,
@@ -58,24 +60,27 @@ function humaniseTimeAgo(epochSec: number | null): string {
 
 async function readSyncStats(): Promise<SyncStats> {
   const empty: SyncStats = {
-    sessionCount: 0, lapCount: 0, sampleCount: 0,
+    sessionCount: 0, lapCount: 0, sampleCount: 0, trackCount: 0,
     totalSizeBytes: 0, lastSyncEpoch: null, lastSyncAgoHuman: 'never',
   }
   if (!fs.existsSync(DB_PATH)) return empty
 
-  let sessionCount = 0, lapCount = 0, sampleCount = 0
+  let sessionCount = 0, lapCount = 0, sampleCount = 0, trackCount = 0
   try {
     const { con } = await openDb(DB_PATH, true)
     const reader = await con.runAndReadAll(`
       SELECT
         (SELECT COUNT(*) FROM sessions),
         (SELECT COUNT(*) FROM laps),
-        (SELECT COUNT(*) FROM samples)
+        (SELECT COUNT(*) FROM samples),
+        (SELECT COUNT(DISTINCT track_configuration_id) FROM sessions
+            WHERE track_configuration_id IS NOT NULL)
     `)
     const row = reader.getRowsJson()[0] ?? []
     sessionCount = Number(row[0] ?? 0)
     lapCount = Number(row[1] ?? 0)
     sampleCount = Number(row[2] ?? 0)
+    trackCount = Number(row[3] ?? 0)
   } catch {
     // schema not initialised yet — treat as empty
     return empty
@@ -84,7 +89,7 @@ async function readSyncStats(): Promise<SyncStats> {
   const st = fs.statSync(DB_PATH)
   const lastSync = st.mtimeMs / 1000
   return {
-    sessionCount, lapCount, sampleCount,
+    sessionCount, lapCount, sampleCount, trackCount,
     totalSizeBytes: st.size,
     lastSyncEpoch: lastSync,
     lastSyncAgoHuman: humaniseTimeAgo(lastSync),
@@ -196,6 +201,11 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         if (!matchesAccount(acct)) continue
         try {
           const s = JSON.parse(fs.readFileSync(sp, 'utf-8'))
+          // metadata.json may also be on disk with vehicle info — pull it if so.
+          const mp = path.join(SESSIONS_DIR, name, 'metadata.json')
+          const m = fs.existsSync(mp)
+            ? (() => { try { return JSON.parse(fs.readFileSync(mp, 'utf-8')) } catch { return {} } })()
+            : {}
           rows.push({
             session_guid: s.sessionGuid ?? name,
             session_start: s.sessionStart ?? null,
@@ -206,6 +216,11 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
             sample_count: 0,
             weather_description: null,
             account: acct,
+            vehicle_guid: m.vehicleGuid ?? null,
+            vehicle_make: m.vehicleMake ?? null,
+            vehicle_model: m.vehicleModel ?? null,
+            vehicle_year: m.vehicleYear ?? null,
+            vehicle_type: m.vehicleType ?? null,
           })
         } catch { /* ignore */ }
       }
@@ -222,13 +237,53 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
         (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
         COALESCE(s.weather_description, '') AS weather_description,
-        s.account
+        s.account,
+        s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type
       FROM sessions s
       LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
       ${whereClause}
       ORDER BY s.session_start DESC NULLS LAST
     `, accountLabel ? [accountLabel] as any : undefined)
     return reader.getRowObjectsJson() as unknown as DbSessionRow[]
+  })
+
+  ipcMain.handle('db:listVehicles', async (): Promise<import('../shared/types.js').VehicleSummary[]> => {
+    if (!fs.existsSync(DB_PATH)) return []
+    const { con } = await openDb(DB_PATH, true)
+    let rows: any[] = []
+    try {
+      const reader = await con.runAndReadAll(`
+        SELECT vehicle_guid, ANY_VALUE(vehicle_make) AS make,
+               ANY_VALUE(vehicle_model) AS model, ANY_VALUE(vehicle_year) AS year,
+               COUNT(*) AS session_count
+        FROM sessions
+        WHERE vehicle_guid IS NOT NULL
+        GROUP BY vehicle_guid
+        ORDER BY session_count DESC
+      `)
+      rows = reader.getRowObjectsJson()
+    } catch {
+      return []
+    }
+    return rows.map(r => {
+      const resolved = resolveVehicleProfile(r.vehicle_guid, r.make)
+      return {
+        vehicleGuid: r.vehicle_guid,
+        make: r.make ?? null,
+        model: r.model ?? null,
+        year: r.year != null ? Number(r.year) : null,
+        sessionCount: Number(r.session_count ?? 0),
+        profile: resolved.profile,
+        explicit: resolved.explicit,
+      }
+    })
+  })
+
+  ipcMain.handle('profiles:setVehicleProfile', (_e, vehicleGuid: string, profileName: string | null) => {
+    setVehicleProfile(vehicleGuid, profileName)
+  })
+  ipcMain.handle('profiles:resolveForVehicle', (_e, vehicleGuid: string | null, make: string | null) => {
+    return resolveVehicleProfile(vehicleGuid, make)
   })
 
   ipcMain.handle('briefs:list', (): BriefFile[] => {
@@ -249,6 +304,28 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return files
   })
   ipcMain.handle('briefs:read', (_e, p: string) => fs.readFileSync(p, 'utf-8'))
+
+  // Results = LLM-generated markdown saved alongside the briefs in coaching/.
+  // Convention: brief prompts end with `-brief.md`; everything else is a result.
+  ipcMain.handle('results:list', (): BriefFile[] => {
+    if (!fs.existsSync(COACHING_DIR)) return []
+    const files = fs.readdirSync(COACHING_DIR)
+      .filter(n => {
+        const lower = n.toLowerCase()
+        if (!lower.endsWith('.md')) return false
+        if (lower.endsWith('-brief.md')) return false
+        if (lower === 'readme.md') return false
+        return true
+      })
+      .map(n => {
+        const p = path.join(COACHING_DIR, n)
+        const st = fs.statSync(p)
+        return { name: n, path: p, sizeKb: st.size / 1024, mtime: st.mtimeMs }
+      })
+    files.sort((a, b) => b.mtime - a.mtime)
+    return files
+  })
+  ipcMain.handle('results:read', (_e, p: string) => fs.readFileSync(p, 'utf-8'))
   ipcMain.handle('briefs:generate', async (_e, opts: BriefOptions) => {
     const res = await runBrief({
       scope: opts.scope,

@@ -430,15 +430,19 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
   }
   const bestLap = laps.find(L => L.isBest) ?? laps[0]
 
-  const [speedTraces, lateralTraces, longgTraces, gg, trackMap, heatmap, cornerRows] = await Promise.all([
-    fetchSpeedTraces(con, laps, 25),
-    fetchLateralTraces(con, laps, 25),
-    fetchLongGTraces(con, laps, 25),
-    fetchGGData(con, laps),
-    fetchTrackMap(con, bestLap, 10),
-    buildHeatmap(con, laps, segments),
-    fetchCornerRows(con, laps, corners),
-  ])
+  // IMPORTANT: serialize. @duckdb/node-api crashes (SIGSEGV in
+  // duckdb_destroy_result) when multiple prepared-statement Execute workers
+  // overlap on the same connection — one frees its result while another is
+  // still tearing down the optimizer state. Each fetcher already does many
+  // sequential queries internally; running the seven of them serially keeps
+  // total wall-clock fine (~couple of seconds for typical analysis sizes).
+  const speedTraces = await fetchSpeedTraces(con, laps, 25)
+  const lateralTraces = await fetchLateralTraces(con, laps, 25)
+  const longgTraces = await fetchLongGTraces(con, laps, 25)
+  const gg = await fetchGGData(con, laps)
+  const trackMap = await fetchTrackMap(con, bestLap, 10)
+  const heatmap = await buildHeatmap(con, laps, segments)
+  const cornerRows = await fetchCornerRows(con, laps, corners)
 
   // Theoretical best = sum of segment personal bests
   let theoreticalBestMs: number | null = null

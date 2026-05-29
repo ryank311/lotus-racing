@@ -10,11 +10,29 @@ interface Props {
   activeAccount: string | null
 }
 
+// Derive a one-line vehicle label from the DB row. We prefer `model` so the
+// chip stays short — make is the secondary tag.
+function vehicleLabel(r: DbSessionRow): string {
+  const make = (r.vehicle_make ?? '').trim()
+  const model = (r.vehicle_model ?? '').trim()
+  if (model && make) return `${make[0]}${make.slice(1).toLowerCase()} ${model[0]}${model.slice(1).toLowerCase()}`
+  if (model) return model
+  if (make) return `${make[0]}${make.slice(1).toLowerCase()}`
+  return ''
+}
+
+interface VehicleGroup {
+  guid: string
+  label: string
+  count: number
+}
+
 export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount }: Props) {
   const [rows, setRows] = useState<DbSessionRow[]>([])
   const [hasDb, setHasDb] = useState(false)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
+  const [vehicleFilter, setVehicleFilter] = useState<string | null>(null) // vehicle_guid or null
 
   useEffect(() => {
     void (async () => {
@@ -26,14 +44,35 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     })()
   }, [refreshTick, activeAccount])
 
+  // One chip per distinct vehicle_guid in the current rows, with a count.
+  const vehicleGroups = useMemo<VehicleGroup[]>(() => {
+    const by = new Map<string, VehicleGroup>()
+    for (const r of rows) {
+      if (!r.vehicle_guid) continue
+      const g = by.get(r.vehicle_guid)
+      if (g) g.count++
+      else by.set(r.vehicle_guid, {
+        guid: r.vehicle_guid,
+        label: vehicleLabel(r) || r.vehicle_guid.slice(0, 8),
+        count: 1,
+      })
+    }
+    return [...by.values()].sort((a, b) => b.count - a.count)
+  }, [rows])
+
   const filtered = useMemo(() => {
+    let out = rows
+    if (vehicleFilter) out = out.filter(r => r.vehicle_guid === vehicleFilter)
     const q = filter.trim().toLowerCase()
-    if (!q) return rows
-    return rows.filter(r =>
-      (r.track_name ?? '').toLowerCase().includes(q) ||
-      (r.track_configuration_name ?? '').toLowerCase().includes(q) ||
-      (r.session_guid ?? '').toLowerCase().includes(q))
-  }, [rows, filter])
+    if (q) {
+      out = out.filter(r =>
+        (r.track_name ?? '').toLowerCase().includes(q) ||
+        (r.track_configuration_name ?? '').toLowerCase().includes(q) ||
+        (r.session_guid ?? '').toLowerCase().includes(q) ||
+        vehicleLabel(r).toLowerCase().includes(q))
+    }
+    return out
+  }, [rows, filter, vehicleFilter])
 
   const allVisibleSelected = filtered.length > 0 && filtered.every(r => selected.has(r.session_guid))
 
@@ -53,7 +92,6 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     setSelected(next)
   }
 
-  // Build a tiny chip list from the selected rows, ordered by session_start desc.
   const selectedRows = useMemo(
     () => rows.filter(r => selected.has(r.session_guid)),
     [rows, selected],
@@ -73,9 +111,34 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
       </header>
 
       <div className="page-body">
+        {vehicleGroups.length > 1 && (
+          <div className="row-center" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+            <span className="muted text-mono" style={{
+              fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', marginRight: 4,
+            }}>Vehicle:</span>
+            <span
+              className={`chip ${vehicleFilter === null ? 'signal' : ''}`}
+              style={{ cursor: 'pointer' }}
+              onClick={() => setVehicleFilter(null)}
+            >
+              All · {rows.length}
+            </span>
+            {vehicleGroups.map(g => (
+              <span
+                key={g.guid}
+                className={`chip ${vehicleFilter === g.guid ? 'signal' : ''}`}
+                style={{ cursor: 'pointer' }}
+                onClick={() => setVehicleFilter(g.guid === vehicleFilter ? null : g.guid)}
+              >
+                {g.label} · {g.count}
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="row-center" style={{ marginBottom: 16, gap: 10 }}>
           <input
-            placeholder="filter by track, config, or guid…"
+            placeholder="filter by track, config, vehicle, or guid…"
             value={filter}
             onChange={e => setFilter(e.target.value)}
             style={{
@@ -102,11 +165,11 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                 <th>Date</th>
                 <th>Track</th>
                 <th>Config</th>
+                <th>Vehicle</th>
                 <th style={{ textAlign: 'right' }}>Best lap</th>
                 <th style={{ textAlign: 'right' }}>Laps</th>
                 <th style={{ textAlign: 'right' }}>Samples</th>
                 <th>Weather</th>
-                <th>Session GUID</th>
               </tr>
             </thead>
             <tbody>
@@ -118,6 +181,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
               )}
               {filtered.map(r => {
                 const on = selected.has(r.session_guid)
+                const veh = vehicleLabel(r)
                 return (
                   <tr
                     key={r.session_guid}
@@ -137,43 +201,46 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                     <td className="small">{r.session_start ?? '—'}</td>
                     <td>{r.track_name ?? '—'}</td>
                     <td className="muted">{r.track_configuration_name || '—'}</td>
+                    <td className="small">{veh || <span className="muted">—</span>}</td>
                     <td className="num laptime">{msToLap(r.best_lap_ms)}</td>
                     <td className="num">{r.lap_count || '—'}</td>
                     <td className="num">{r.sample_count ? r.sample_count.toLocaleString() : '—'}</td>
                     <td className="muted small">{r.weather_description || '—'}</td>
-                    <td className="small muted">{r.session_guid}</td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
-
-        {selected.size > 0 && (
-          <div className="selection-bar">
-            <div className="pulse" />
-            <div>
-              <div className="count">{selected.size}</div>
-              <div className="count-sub">selected</div>
-            </div>
-            <div className="selected-laptimes">
-              {selectedRows.slice(0, 10).map(r => (
-                <span key={r.session_guid} className="chip cyan">
-                  {(r.session_start ?? '').slice(0, 10)} · {msToLap(r.best_lap_ms)}
-                  <span className="x" onClick={e => { e.stopPropagation(); toggle(r.session_guid) }}>×</span>
-                </span>
-              ))}
-              {selectedRows.length > 10 && (
-                <span className="chip">+{selectedRows.length - 10}</span>
-              )}
-            </div>
-            <button className="btn ghost" onClick={() => setSelected(new Set())}>Clear</button>
-            <button className="btn primary" onClick={onAnalyze}>
-              Analyze {selected.size} →
-            </button>
-          </div>
-        )}
       </div>
+
+      {/* Sibling of .page-body (not a child) so it sits at the true viewport
+          bottom — sticky inside the scrolling body left a 36px gap under it
+          because of the body's bottom padding. */}
+      {selected.size > 0 && (
+        <div className="selection-bar">
+          <div className="pulse" />
+          <div>
+            <div className="count">{selected.size}</div>
+            <div className="count-sub">selected</div>
+          </div>
+          <div className="selected-laptimes">
+            {selectedRows.slice(0, 10).map(r => (
+              <span key={r.session_guid} className="chip cyan">
+                {(r.session_start ?? '').slice(0, 10)} · {msToLap(r.best_lap_ms)}
+                <span className="x" onClick={e => { e.stopPropagation(); toggle(r.session_guid) }}>×</span>
+              </span>
+            ))}
+            {selectedRows.length > 10 && (
+              <span className="chip">+{selectedRows.length - 10}</span>
+            )}
+          </div>
+          <button className="btn ghost" onClick={() => setSelected(new Set())}>Clear</button>
+          <button className="btn primary" onClick={onAnalyze}>
+            Analyze {selected.size} →
+          </button>
+        </div>
+      )}
     </>
   )
 }

@@ -3,8 +3,10 @@ import { Sidebar, NavKey } from './components/Sidebar'
 import { Home } from './pages/Home'
 import { Sessions } from './pages/Sessions'
 import { Briefs } from './pages/Briefs'
+import { Results } from './pages/Results'
 import { Garage } from './pages/Garage'
 import { Analysis } from './pages/Analysis'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { api } from './api'
 import { AccountState, getActiveAccount, loadAccounts, tokenValid } from './accounts'
 import type { AuthState, SyncStats, WorkerEvent } from '../shared/types'
@@ -87,33 +89,38 @@ export function App() {
         selectionCount={selected.size}
       />
       <div className="main-pane">
-        {page === 'home' && (
-          <Home
-            auth={auth} stats={stats} busy={busy}
-            onSync={startSync} onLoad={startLoad}
-            accounts={accounts} onAccountsChange={onAccountsChange}
-          />
-        )}
-        {page === 'sessions' && (
-          <Sessions
-            refreshTick={refreshTick}
-            selected={selected}
-            setSelected={setSelected}
-            onAnalyze={openAnalysis}
-            activeAccount={accounts.activeLabel}
-          />
-        )}
-        {page === 'briefs' && (
-          <Briefs onRefresh={() => setRefreshTick(t => t + 1)} refreshTick={refreshTick} />
-        )}
-        {page === 'garage' && <Garage />}
-        {page === 'analysis' && (
-          <Analysis
-            selected={selected}
-            setSelected={setSelected}
-            onBack={() => setPage('sessions')}
-          />
-        )}
+        <ErrorBoundary label={`${page} page`} resetKey={page}>
+          {page === 'home' && (
+            <Home
+              auth={auth} stats={stats} busy={busy}
+              onSync={startSync} onLoad={startLoad}
+              accounts={accounts} onAccountsChange={onAccountsChange}
+            />
+          )}
+          {page === 'sessions' && (
+            <Sessions
+              refreshTick={refreshTick}
+              selected={selected}
+              setSelected={setSelected}
+              onAnalyze={openAnalysis}
+              activeAccount={accounts.activeLabel}
+            />
+          )}
+          {page === 'briefs' && (
+            <Briefs onRefresh={() => setRefreshTick(t => t + 1)} refreshTick={refreshTick} />
+          )}
+          {page === 'results' && (
+            <Results refreshTick={refreshTick} />
+          )}
+          {page === 'garage' && <Garage />}
+          {page === 'analysis' && (
+            <Analysis
+              selected={selected}
+              setSelected={setSelected}
+              onBack={() => setPage('sessions')}
+            />
+          )}
+        </ErrorBoundary>
 
         <div className={`status-bar ${busy ? 'busy' : ''}`}>
           {busy && <div className="spinner" />}

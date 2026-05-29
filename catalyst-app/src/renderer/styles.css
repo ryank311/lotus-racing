@@ -310,6 +310,10 @@ input, textarea, select { font-family: inherit; color: inherit; }
   flex: 1;
   overflow: auto;
   padding: 28px 36px 36px;
+  /* Flex items default to min-content; without this the body refuses to
+     shrink when a sibling (e.g. .selection-bar) appears, which would push
+     the status bar past the bottom of .main-pane. */
+  min-height: 0;
 }
 
 /* =========================================================================
@@ -910,27 +914,27 @@ input, textarea, select { font-family: inherit; color: inherit; }
  * ========================================================================= */
 
 .selection-bar {
-  position: sticky;
-  bottom: 0;
-  left: 0; right: 0;
-  margin: 16px -36px -36px;
+  /* Rendered as a flex sibling of .page-body inside .main-pane, so it always
+     sits flush above the status bar regardless of scroll position. */
+  flex-shrink: 0;
   padding: 14px 36px;
-  background: linear-gradient(180deg, transparent 0%, var(--bg-elev) 30%, var(--bg-elev) 100%);
+  background: var(--bg-elev);
   border-top: 1px solid var(--signal);
   display: flex;
   align-items: center;
   gap: 18px;
+  position: relative;
   z-index: 5;
-  backdrop-filter: blur(8px);
 }
 
 .selection-bar::before {
-  /* signal-orange line above the bar with a glow */
+  /* signal-orange glow on the top edge */
   content: '';
   position: absolute;
   top: -1px; left: 0; right: 0; height: 1px;
   background: var(--signal);
   box-shadow: 0 0 12px var(--signal), 0 0 2px var(--signal);
+  pointer-events: none;
 }
 
 .selection-bar .pulse {
@@ -1174,4 +1178,81 @@ input, textarea, select { font-family: inherit; color: inherit; }
   letter-spacing: 0.14em;
   text-transform: uppercase;
   max-width: 420px;
+}
+
+/* ── error boundary ────────────────────────────────────────────────── */
+
+.error-boundary {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.error-boundary-card {
+  max-width: 640px;
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--red);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  box-shadow: 0 0 24px rgba(255,71,87,0.12);
+}
+
+.error-boundary-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--red);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.error-boundary-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+.error-boundary-msg {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.error-boundary-stack {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.error-boundary-stack summary {
+  cursor: pointer;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 4px 0;
+}
+.error-boundary-stack pre {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  max-height: 220px;
+}
+
+.error-boundary-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
 }

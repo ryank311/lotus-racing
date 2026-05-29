@@ -51,7 +51,6 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
         <div className="page-body">
           <div className="analysis-empty">
             <div>
-              <div className="icon" />
               <div className="hd">No sessions selected</div>
               <div className="sub">Open the Sessions tab, pick one or more rows, then hit Analyze.</div>
               <div style={{ marginTop: 18 }}>

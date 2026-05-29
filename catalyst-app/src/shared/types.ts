@@ -24,6 +24,7 @@ export interface SyncStats {
   sessionCount: number       // rows in the `sessions` table (the source of truth)
   lapCount: number
   sampleCount: number
+  trackCount: number         // distinct track configurations actually driven
   totalSizeBytes: number     // on-disk DB file size
   lastSyncEpoch: number | null
   lastSyncAgoHuman: string
@@ -39,6 +40,26 @@ export interface DbSessionRow {
   sample_count: number
   weather_description: string | null
   account: string | null
+  vehicle_guid: string | null
+  vehicle_make: string | null
+  vehicle_model: string | null
+  vehicle_year: number | null
+  vehicle_type: string | null
+}
+
+// Distinct vehicles seen across the DB — used for the Sessions filter chips
+// and the Garage mapping editor.
+export interface VehicleSummary {
+  vehicleGuid: string
+  make: string | null
+  model: string | null
+  year: number | null
+  sessionCount: number
+  // Resolved profile (Lotus / Vette / …) — null if no match.
+  profile: string | null
+  // Whether the resolution came from an explicit user override (true) or a
+  // fuzzy make-name fallback (false).
+  explicit: boolean
 }
 
 export interface SignInResult {
@@ -130,10 +151,18 @@ export interface CatalystBridge {
   // Sessions / DB
   listSessions(accountLabel?: string | null): Promise<DbSessionRow[]>
   hasDb(): Promise<boolean>
+  listVehicles(): Promise<VehicleSummary[]>
+  setVehicleProfile(vehicleGuid: string, profileName: string | null): Promise<void>
+  resolveProfileForVehicle(
+    vehicleGuid: string | null,
+    make: string | null,
+  ): Promise<{ profile: string | null; explicit: boolean }>
 
   // Briefs
   listBriefs(): Promise<BriefFile[]>
   readBrief(path: string): Promise<string>
+  listResults(): Promise<BriefFile[]>
+  readResult(path: string): Promise<string>
   generateBrief(opts: BriefOptions): Promise<{ outPath: string }>
   revealInFinder(path: string): Promise<void>
 

@@ -31,9 +31,16 @@ const bridge: CatalystBridge = {
 
   listSessions: (accountLabel?: string | null) => ipcRenderer.invoke('db:listSessions', accountLabel),
   hasDb: () => ipcRenderer.invoke('db:hasDb'),
+  listVehicles: () => ipcRenderer.invoke('db:listVehicles'),
+  setVehicleProfile: (vehicleGuid: string, profileName: string | null) =>
+    ipcRenderer.invoke('profiles:setVehicleProfile', vehicleGuid, profileName),
+  resolveProfileForVehicle: (vehicleGuid: string | null, make: string | null) =>
+    ipcRenderer.invoke('profiles:resolveForVehicle', vehicleGuid, make),
 
   listBriefs: () => ipcRenderer.invoke('briefs:list'),
   readBrief: p => ipcRenderer.invoke('briefs:read', p),
+  listResults: () => ipcRenderer.invoke('results:list'),
+  readResult: (p: string) => ipcRenderer.invoke('results:read', p),
   generateBrief: (opts: BriefOptions) => ipcRenderer.invoke('briefs:generate', opts),
   revealInFinder: p => ipcRenderer.invoke('shell:reveal', p),
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type NavKey = 'home' | 'sessions' | 'briefs' | 'garage' | 'analysis'
+export type NavKey = 'home' | 'sessions' | 'briefs' | 'results' | 'garage' | 'analysis'
 
 interface NavSpec {
   key: NavKey
@@ -39,13 +39,20 @@ const AnalysisIcon = () => (
     <path d="M5 17V11" /><path d="M10 17V8" /><path d="M15 17V13" /><path d="M20 17V5" />
   </svg>
 )
+const ResultsIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
+    <path d="M4 4H20V20H4Z" />
+    <path d="M8 9H16" /><path d="M8 13H16" /><path d="M8 17H13" />
+  </svg>
+)
 
 const NAV: NavSpec[] = [
   { key: 'home',     label: 'Overview',  k: '1', icon: <HomeIcon /> },
   { key: 'sessions', label: 'Sessions',  k: '2', icon: <SessionsIcon /> },
   { key: 'analysis', label: 'Analysis',  k: '3', icon: <AnalysisIcon /> },
   { key: 'briefs',   label: 'Briefs',    k: '4', icon: <BriefsIcon /> },
-  { key: 'garage',   label: 'Garage',    k: '5', icon: <GarageIcon /> },
+  { key: 'results',  label: 'Results',   k: '5', icon: <ResultsIcon /> },
+  { key: 'garage',   label: 'Garage',    k: '6', icon: <GarageIcon /> },
 ]
 
 export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
@@ -56,7 +63,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
 }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-5]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
         e.preventDefault()
         onChange(NAV[parseInt(e.key, 10) - 1].key)
       }
