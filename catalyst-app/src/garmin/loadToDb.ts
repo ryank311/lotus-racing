@@ -281,9 +281,16 @@ export async function openDb(dbPath = DB_PATH, readOnly = false): Promise<{ inst
   return { instance, con }
 }
 
+export interface LoadProgress {
+  current: number    // 1-based index of the session currently loading
+  total: number      // total session directories to process
+  label: string      // short identifier of the current session
+}
+
 export async function loadAll(
   log: (line: string) => void,
   dbPath = DB_PATH,
+  onProgress?: (p: LoadProgress) => void,
 ): Promise<{ sessions: number; samples: number }> {
   // Always rebuild from scratch. The JSON+protobuf files in SESSIONS_DIR are
   // the source of truth; the DB is just a derived cache. Wiping it dodges
@@ -315,12 +322,14 @@ export async function loadAll(
   let totalSamples = 0
   for (let i = 0; i < targets.length; i++) {
     const d = targets[i]
+    const guid = path.basename(d)
+    onProgress?.({ current: i + 1, total: targets.length, label: `${guid.slice(0, 8)}…` })
     try {
       const n = await loadSession(con, d)
       totalSamples += n
-      log(`[${i + 1}/${targets.length}] ${path.basename(d)}: ${n.toLocaleString()} samples`)
+      log(`[${i + 1}/${targets.length}] ${guid}: ${n.toLocaleString()} samples`)
     } catch (e: any) {
-      log(`[${i + 1}/${targets.length}] ${path.basename(d)}: FAILED ${e.message ?? e}`)
+      log(`[${i + 1}/${targets.length}] ${guid}: FAILED ${e.message ?? e}`)
     }
   }
   return { sessions: targets.length, samples: totalSamples }

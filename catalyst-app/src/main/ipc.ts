@@ -10,6 +10,7 @@ import {
   DB_PATH,
   COACHING_DIR,
   DATA_DIR,
+  REPO_ROOT,
 } from '../garmin/paths.js'
 import { loadConfig, setCredentials } from '../garmin/config.js'
 import {
@@ -632,7 +633,15 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     const win = getMainWindow()
     void (async () => {
       try {
-        await loadAll(line => broadcast(win, { kind: 'load', type: 'log', payload: line }))
+        await loadAll(
+          line => broadcast(win, { kind: 'load', type: 'log', payload: line }),
+          undefined,
+          p => broadcast(win, {
+            kind: 'load',
+            type: 'progress',
+            progress: { current: p.current, total: p.total, label: p.label },
+          }),
+        )
         broadcast(win, { kind: 'load', type: 'done' })
       } catch (e: any) {
         broadcast(win, { kind: 'load', type: 'error', payload: `${e.message ?? e}` })

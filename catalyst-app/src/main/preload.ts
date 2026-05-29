@@ -36,6 +36,12 @@ const bridge: CatalystBridge = {
     ipcRenderer.invoke('profiles:setVehicleProfile', vehicleGuid, profileName),
   resolveProfileForVehicle: (vehicleGuid: string | null, make: string | null) =>
     ipcRenderer.invoke('profiles:resolveForVehicle', vehicleGuid, make),
+  importContextFile: (profileName: string, sourcePath: string, destName: string) =>
+    ipcRenderer.invoke('profiles:importContextFile', profileName, sourcePath, destName),
+  deleteContextFile: (profileName: string, fileName: string) =>
+    ipcRenderer.invoke('profiles:deleteContextFile', profileName, fileName),
+  ensureProfile: (name: string, vehicleGuid?: string) =>
+    ipcRenderer.invoke('profiles:ensureProfile', name, vehicleGuid),
 
   listBriefs: () => ipcRenderer.invoke('briefs:list'),
   readBrief: p => ipcRenderer.invoke('briefs:read', p),

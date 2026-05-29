@@ -88,21 +88,41 @@ export function ensureDir(p: string): void {
 export function seedUserData(): void {
   if (!isPackaged) return
 
+  const resourcesPath = (process as any).resourcesPath as string | undefined
+  if (!resourcesPath) return
+
   // Seed track YAMLs from the bundled-tracks extraResource.
   try {
-    const resourcesPath = (process as any).resourcesPath as string | undefined
-    if (!resourcesPath) return
     const bundledTracks = path.join(resourcesPath, 'bundled-tracks')
-    if (!fs.existsSync(bundledTracks)) return
-    ensureDir(TRACKS_DIR)
-    for (const fn of fs.readdirSync(bundledTracks)) {
-      if (!fn.toLowerCase().endsWith('.yaml')) continue
-      const dest = path.join(TRACKS_DIR, fn)
-      if (!fs.existsSync(dest)) {
-        fs.copyFileSync(path.join(bundledTracks, fn), dest)
+    if (fs.existsSync(bundledTracks)) {
+      ensureDir(TRACKS_DIR)
+      for (const fn of fs.readdirSync(bundledTracks)) {
+        if (!fn.toLowerCase().endsWith('.yaml')) continue
+        const dest = path.join(TRACKS_DIR, fn)
+        if (!fs.existsSync(dest)) fs.copyFileSync(path.join(bundledTracks, fn), dest)
       }
     }
   } catch (e) {
     console.warn('seedUserData: failed to seed tracks', e)
+  }
+
+  // Seed car profile directories (Lotus, Vette, …) from bundled-profiles.
+  // Each profile is a directory of .md context files used for brief generation.
+  try {
+    const bundledProfiles = path.join(resourcesPath, 'bundled-profiles')
+    if (fs.existsSync(bundledProfiles)) {
+      for (const profileName of fs.readdirSync(bundledProfiles)) {
+        const srcDir = path.join(bundledProfiles, profileName)
+        if (!fs.statSync(srcDir).isDirectory()) continue
+        const destDir = path.join(REPO_ROOT, profileName)
+        ensureDir(destDir)
+        for (const fn of fs.readdirSync(srcDir)) {
+          const dest = path.join(destDir, fn)
+          if (!fs.existsSync(dest)) fs.copyFileSync(path.join(srcDir, fn), dest)
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('seedUserData: failed to seed profiles', e)
   }
 }

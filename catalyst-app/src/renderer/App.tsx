@@ -79,6 +79,7 @@ export function App() {
     if (busy) return
     setBusy('load')
     setLogLine('loading database...')
+    setProgress({ current: 0, total: 0, label: 'Scanning sessions…' })
     try { await api.startLoad() } catch (e: any) {
       setBusy(null); setLogLine(`error: ${e.message ?? e}`)
     }
@@ -137,7 +138,11 @@ export function App() {
                 <span className="sync-progress-counter">
                   {progress.current}/{progress.total}
                 </span>
-                <span className="sync-progress-label">{progress.label}</span>
+                <span className="sync-progress-log">
+                  {/* Strip the loader's leading "[N/M] " prefix — the orange
+                      counter already shows the same info, no point duplicating. */}
+                  {(logLine || progress.label).replace(/^\[\d+\/\d+\]\s*/, '')}
+                </span>
                 {progress.fileName && (
                   <span className="sync-progress-file">→ {progress.fileName}</span>
                 )}

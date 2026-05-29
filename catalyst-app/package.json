@@ -58,9 +58,17 @@
       {
         "from": "../tracks",
         "to": "bundled-tracks",
-        "filter": [
-          "**/*.yaml"
-        ]
+        "filter": ["**/*.yaml"]
+      },
+      {
+        "from": "../Lotus",
+        "to": "bundled-profiles/Lotus",
+        "filter": ["**/*.md"]
+      },
+      {
+        "from": "../Vette",
+        "to": "bundled-profiles/Vette",
+        "filter": ["**/*.md"]
       }
     ],
     "directories": {
