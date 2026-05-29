@@ -340,7 +340,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
         onDoubleClick={fitToTrack}
         style={{
           width: '100%',
-          height: 'calc(100% - 44px)',
+          flex: 1,
+          minHeight: 0,
           cursor: dragStateRef.current
             ? 'grabbing'
             : edit

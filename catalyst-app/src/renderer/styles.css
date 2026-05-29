@@ -1266,6 +1266,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
   border-radius: var(--radius);
   user-select: none;
   position: relative;
+  min-height: 0;
 }
 
 .track-map-empty {
@@ -1280,8 +1281,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .track-map-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-soft);
 }
