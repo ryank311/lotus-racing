@@ -888,6 +888,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Car profile name (folder name, e.g. 'Lotus', 'Vette'). "
                          "Default: read from GUI's saved selection or auto-detect.")
     ap.add_argument("--db", default=str(DB_PATH))
+    ap.add_argument("--html", action="store_true",
+                    help="Also write a self-contained Plotly HTML coaching dashboard")
     return ap.parse_args(argv)
 
 
@@ -951,6 +953,17 @@ def main(argv: list[str] | None = None) -> int:
     csv_counts: dict[str, int] = {}
     if data_dir is not None:
         csv_counts = write_csv_pack(data_dir, sessions, track_yaml, con)
+
+    html_path: Path | None = None
+    if args.html:
+        try:
+            from .html_report import generate_html_report
+        except ImportError:
+            from html_report import generate_html_report
+        html_path = out_path.with_name(out_path.stem.replace("-brief", "") + "-report.html")
+        html = generate_html_report(sessions, track_yaml, con, profile_name=profile_dir.name)
+        html_path.write_text(html, encoding="utf-8")
+
     con.close()
 
     print(f"[ok] wrote {out_path} ({len(brief):,} chars, "
@@ -959,6 +972,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"     + CSVs in {data_dir.name}/:")
         for fn, n in csv_counts.items():
             print(f"       {fn}: {n:,} rows")
+    if html_path:
+        html_bytes = html_path.stat().st_size
+        print(f"     + HTML dashboard: {html_path.name} ({html_bytes/1024:.0f} KB)")
     print(f"     covering {len(sessions)} session(s), "
           f"profile={profile_dir.name}, "
           f"config={track_yaml.get('track_configuration_name','?')}, "
