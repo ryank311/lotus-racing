@@ -116,7 +116,7 @@ export interface CatalystBridge {
   readProfileFile(path: string): Promise<string>
 
   // Sessions / DB
-  listSessions(): Promise<DbSessionRow[]>
+  listSessions(accountLabel?: string | null): Promise<DbSessionRow[]>
   hasDb(): Promise<boolean>
 
   // Briefs
@@ -126,7 +126,7 @@ export interface CatalystBridge {
   revealInFinder(path: string): Promise<void>
 
   // Long-running workers
-  startSync(): Promise<void>
+  startSync(opts?: { token?: string; accountLabel?: string }): Promise<void>
   startLoad(): Promise<void>
   onWorker(cb: (evt: WorkerEvent) => void): () => void
 

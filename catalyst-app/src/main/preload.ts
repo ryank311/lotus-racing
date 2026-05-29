@@ -13,6 +13,7 @@ const bridge: CatalystBridge = {
   getAccountEmail: () => ipcRenderer.invoke('auth:email'),
   saveCredentials: (email, password) => ipcRenderer.invoke('auth:saveCredentials', email, password),
   clearTokens: () => ipcRenderer.invoke('auth:clearTokens'),
+  signIn: () => ipcRenderer.invoke('auth:signIn'),
 
   listProfiles: () => ipcRenderer.invoke('profiles:list'),
   getActiveProfile: () => ipcRenderer.invoke('profiles:active'),
@@ -23,7 +24,7 @@ const bridge: CatalystBridge = {
   listProfileFiles: name => ipcRenderer.invoke('profiles:files', name),
   readProfileFile: p => ipcRenderer.invoke('profiles:readFile', p),
 
-  listSessions: () => ipcRenderer.invoke('db:listSessions'),
+  listSessions: (accountLabel?: string | null) => ipcRenderer.invoke('db:listSessions', accountLabel),
   hasDb: () => ipcRenderer.invoke('db:hasDb'),
 
   listBriefs: () => ipcRenderer.invoke('briefs:list'),
@@ -31,7 +32,7 @@ const bridge: CatalystBridge = {
   generateBrief: (opts: BriefOptions) => ipcRenderer.invoke('briefs:generate', opts),
   revealInFinder: p => ipcRenderer.invoke('shell:reveal', p),
 
-  startSync: () => ipcRenderer.invoke('worker:startSync'),
+  startSync: (opts?: { token?: string; accountLabel?: string }) => ipcRenderer.invoke('worker:startSync', opts),
   startLoad: () => ipcRenderer.invoke('worker:startLoad'),
   onWorker: cb => {
     const handler = (_e: unknown, evt: WorkerEvent) => cb(evt)

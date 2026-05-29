@@ -272,16 +272,28 @@ function speedFigure(d: AnalysisData) {
 
 function heatmapFigure(d: AnalysisData) {
   const hm = d.heatmap!
-  // Reverse rows so newest at top
-  const z = hm.z, text = hm.text, y = hm.rows
   const zmax = Math.max(hm.zmax, 0.1)
+  // Compact cell labels — just the delta. Color already encodes magnitude;
+  // hover shows the full split. The PB row gets the absolute time instead.
+  const cellText = hm.text.map((row, ri) =>
+    row.map((t, ci) => {
+      if (t === '—') return ''
+      const z = hm.z[ri][ci]
+      if (z == null) return ''
+      const isPb = ri === hm.z.length - 1
+      if (isPb) return t.replace(' PB', '')
+      return z === 0 ? 'PB' : `+${z.toFixed(2)}`
+    }),
+  )
   return {
     data: ([{
       type: 'heatmap',
-      x: hm.cols, y, z, text,
+      x: hm.cols, y: hm.rows, z: hm.z, text: hm.text,
+      customdata: cellText,
       hovertemplate: '%{text}<extra>%{y}</extra>',
-      texttemplate: '%{text}',
+      texttemplate: '%{customdata}',
       textfont: { size: 10, color: '#fff', family: '"JetBrains Mono", monospace' },
+      xgap: 1, ygap: 1,
       colorscale: [
         [0,    PALETTE.green],
         [0.1,  PALETTE.teal],

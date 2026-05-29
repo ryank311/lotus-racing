@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { AuthState, SyncStats } from '../../shared/types'
-import { api, humaniseBytes } from '../api'
+import { humaniseBytes } from '../api'
 import { BriefDialog } from '../components/BriefDialog'
+import { AccountWidget } from '../components/AccountWidget'
+import { AccountState, daysRemaining, getActiveAccount, tokenValid } from '../accounts'
 
 interface Props {
   auth: AuthState | null
@@ -9,19 +11,23 @@ interface Props {
   busy: 'sync' | 'load' | null
   onSync: () => void
   onLoad: () => void
+  accounts: AccountState
+  onAccountsChange: (next: AccountState) => void
 }
 
-export function Home({ auth, stats, busy, onSync, onLoad }: Props) {
-  const [email, setEmail] = useState<string | null>(null)
+export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsChange }: Props) {
   const [briefOpen, setBriefOpen] = useState(false)
 
-  useEffect(() => { void api.getAccountEmail().then(setEmail) }, [auth])
-
-  const tokenStatus = auth?.tokenValid
-    ? { cls: 'ok', text: `${auth.tokenDaysRemaining}d` }
-    : auth?.hasGarthTokens
+  const active = getActiveAccount(accounts)
+  const activeValid = tokenValid(active)
+  const email = active?.label ?? null
+  const tokenStatus = activeValid
+    ? { cls: 'ok', text: `${daysRemaining(active)}d` }
+    : active
       ? { cls: 'warn', text: 'expired' }
-      : { cls: 'err', text: 'absent' }
+      : auth?.tokenValid
+        ? { cls: 'ok', text: `${auth.tokenDaysRemaining}d` }
+        : { cls: 'err', text: 'no account' }
 
   return (
     <>

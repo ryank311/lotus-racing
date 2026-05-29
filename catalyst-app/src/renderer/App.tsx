@@ -6,6 +6,7 @@ import { Briefs } from './pages/Briefs'
 import { Garage } from './pages/Garage'
 import { Analysis } from './pages/Analysis'
 import { api } from './api'
+import { AccountState, getActiveAccount, loadAccounts, tokenValid } from './accounts'
 import type { AuthState, SyncStats, WorkerEvent } from '../shared/types'
 
 export function App() {
@@ -15,6 +16,7 @@ export function App() {
   const [logLine, setLogLine] = useState('')
   const [busy, setBusy] = useState<'sync' | 'load' | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
+  const [accounts, setAccounts] = useState<AccountState>(() => loadAccounts())
 
   // Selected session guids — accumulated on the Sessions tab, consumed by Analysis.
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -51,10 +53,21 @@ export function App() {
     if (busy) return
     setBusy('sync')
     setLogLine('starting sync...')
-    try { await api.startSync() } catch (e: any) {
+    const active = getActiveAccount(accounts)
+    try {
+      await api.startSync({
+        token: tokenValid(active) ? active!.token : undefined,
+        accountLabel: active?.label,
+      })
+    } catch (e: any) {
       setBusy(null); setLogLine(`error: ${e.message ?? e}`)
     }
   }
+
+  const onAccountsChange = useCallback((next: AccountState) => {
+    setAccounts(next)
+    setRefreshTick(t => t + 1)
+  }, [])
 
   const startLoad = async () => {
     if (busy) return
@@ -77,7 +90,11 @@ export function App() {
       />
       <div className="main-pane">
         {page === 'home' && (
-          <Home auth={auth} stats={stats} busy={busy} onSync={startSync} onLoad={startLoad} />
+          <Home
+            auth={auth} stats={stats} busy={busy}
+            onSync={startSync} onLoad={startLoad}
+            accounts={accounts} onAccountsChange={onAccountsChange}
+          />
         )}
         {page === 'sessions' && (
           <Sessions
@@ -85,6 +102,7 @@ export function App() {
             selected={selected}
             setSelected={setSelected}
             onAnalyze={openAnalysis}
+            activeAccount={accounts.activeLabel}
           />
         )}
         {page === 'briefs' && (
