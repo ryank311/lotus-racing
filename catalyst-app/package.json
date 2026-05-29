@@ -1,6 +1,6 @@
 {
   "name": "catalyst-coach",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Garmin Catalyst telemetry pipeline + coaching dashboard",
   "main": "dist-main/main/index.js",
   "scripts": {
@@ -47,9 +47,21 @@
       "package.json"
     ],
     "extraResources": [
-      { "from": "build/icon.png", "to": "build/icon.png" },
-      { "from": "build/icon.ico", "to": "build/icon.ico" },
-      { "from": "../tracks", "to": "bundled-tracks", "filter": ["**/*.yaml"] }
+      {
+        "from": "build/icon.png",
+        "to": "build/icon.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "build/icon.ico"
+      },
+      {
+        "from": "../tracks",
+        "to": "bundled-tracks",
+        "filter": [
+          "**/*.yaml"
+        ]
+      }
     ],
     "directories": {
       "buildResources": "build",
@@ -57,7 +69,13 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "category": "public.app-category.sports",
       "icon": "build/icon.icns",
@@ -65,7 +83,12 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icon.ico"
     },
