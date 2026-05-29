@@ -33,7 +33,7 @@ function buildLoginUrl(): string {
   return `${SSO_BASE}/sso/embed?${params.toString()}`
 }
 
-export async function loginViaBrowser(parent?: BrowserWindow): Promise<{ accessToken: string }> {
+export async function loginViaBrowser(parent?: BrowserWindow): Promise<{ accessToken: string; expiresIn: number }> {
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({
       width: 520,
@@ -57,9 +57,9 @@ export async function loginViaBrowser(parent?: BrowserWindow): Promise<{ accessT
       finished = true
       const ticket = m[1]
       try {
-        const accessToken = await exchangeTicketForToken(ticket, SERVICE_URL)
+        const result = await exchangeTicketForToken(ticket, SERVICE_URL)
         cleanup()
-        resolve({ accessToken })
+        resolve(result)
       } catch (e) {
         cleanup()
         reject(e)

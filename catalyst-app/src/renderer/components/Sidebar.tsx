@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type NavKey = 'home' | 'sessions' | 'briefs' | 'garage'
+export type NavKey = 'home' | 'sessions' | 'briefs' | 'garage' | 'analysis'
 
 interface NavSpec {
   key: NavKey
@@ -33,19 +33,30 @@ const GarageIcon = () => (
     <path d="M7 21V15H17V21" /><circle cx="9" cy="17" r="0.5" fill="currentColor" />
   </svg>
 )
+const AnalysisIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
+    <path d="M3 20H21" />
+    <path d="M5 17V11" /><path d="M10 17V8" /><path d="M15 17V13" /><path d="M20 17V5" />
+  </svg>
+)
 
 const NAV: NavSpec[] = [
   { key: 'home',     label: 'Overview',  k: '1', icon: <HomeIcon /> },
   { key: 'sessions', label: 'Sessions',  k: '2', icon: <SessionsIcon /> },
-  { key: 'briefs',   label: 'Briefs',    k: '3', icon: <BriefsIcon /> },
-  { key: 'garage',   label: 'Garage',    k: '4', icon: <GarageIcon /> },
+  { key: 'analysis', label: 'Analysis',  k: '3', icon: <AnalysisIcon /> },
+  { key: 'briefs',   label: 'Briefs',    k: '4', icon: <BriefsIcon /> },
+  { key: 'garage',   label: 'Garage',    k: '5', icon: <GarageIcon /> },
 ]
 
-export function Sidebar({ active, onChange, connected }: { active: NavKey; onChange: (k: NavKey) => void; connected: boolean }) {
-  // ⌘+1..4 to swap pages
+export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
+  active: NavKey
+  onChange: (k: NavKey) => void
+  connected: boolean
+  selectionCount?: number
+}) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-4]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-5]$/.test(e.key)) {
         e.preventDefault()
         onChange(NAV[parseInt(e.key, 10) - 1].key)
       }
@@ -63,8 +74,11 @@ export function Sidebar({ active, onChange, connected }: { active: NavKey; onCha
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-title">Catalyst</div>
-        <div className="brand-sub">// telemetry · vir</div>
+        <div className="brand-mark" />
+        <div className="brand-text">
+          <div className="brand-title">Catalyst</div>
+          <div className="brand-sub">// telemetry · vir</div>
+        </div>
       </div>
 
       <nav className="nav">
@@ -77,7 +91,23 @@ export function Sidebar({ active, onChange, connected }: { active: NavKey; onCha
           >
             {n.icon}
             <span>{n.label}</span>
-            <span className="nav-key">⌘{n.k}</span>
+            {n.key === 'analysis' && selectionCount > 0 && (
+              <span style={{
+                marginLeft: 'auto',
+                marginRight: 6,
+                background: 'var(--signal)',
+                color: '#1a0500',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 9,
+                fontWeight: 700,
+                padding: '2px 6px',
+                borderRadius: 2,
+                letterSpacing: '0.08em',
+              }}>
+                {selectionCount}
+              </span>
+            )}
+            <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{n.k}</span>
           </div>
         ))}
       </nav>

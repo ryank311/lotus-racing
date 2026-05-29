@@ -111,6 +111,11 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     if (fs.existsSync(GARTH_TOKEN_DIR)) fs.rmSync(GARTH_TOKEN_DIR, { recursive: true, force: true })
     if (fs.existsSync(CATALYST_TOKEN_CACHE)) fs.rmSync(CATALYST_TOKEN_CACHE, { force: true })
   })
+  ipcMain.handle('auth:signIn', async () => {
+    const win = getMainWindow()
+    const { accessToken, expiresIn } = await loginViaBrowser(win ?? undefined)
+    return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
+  })
 
   ipcMain.handle('profiles:list', (): CarProfile[] => discoverProfiles())
   ipcMain.handle('profiles:active', () => getActiveProfileName())
@@ -138,14 +143,19 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('db:hasDb', () => fs.existsSync(DB_PATH))
-  ipcMain.handle('db:listSessions', async (): Promise<DbSessionRow[]> => {
+  ipcMain.handle('db:listSessions', async (_e, accountLabel?: string | null): Promise<DbSessionRow[]> => {
+    const matchesAccount = (a: string | null): boolean =>
+      !accountLabel || a == null || a === accountLabel
     if (!fs.existsSync(DB_PATH)) {
-      // Fall back to summary.json scan.
+      // Fall back to summary.json scan, using the .account sidecar for filtering.
       if (!fs.existsSync(SESSIONS_DIR)) return []
       const rows: DbSessionRow[] = []
       for (const name of fs.readdirSync(SESSIONS_DIR).sort().reverse()) {
         const sp = path.join(SESSIONS_DIR, name, 'summary.json')
         if (!fs.existsSync(sp)) continue
+        const ap = path.join(SESSIONS_DIR, name, '.account')
+        const acct = fs.existsSync(ap) ? fs.readFileSync(ap, 'utf-8').trim() || null : null
+        if (!matchesAccount(acct)) continue
         try {
           const s = JSON.parse(fs.readFileSync(sp, 'utf-8'))
           rows.push({
@@ -157,12 +167,14 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
             lap_count: 0,
             sample_count: 0,
             weather_description: null,
+            account: acct,
           })
         } catch { /* ignore */ }
       }
       return rows
     }
     const { con } = await openDb(DB_PATH, true)
+    const whereClause = accountLabel ? 'WHERE s.account = ? OR s.account IS NULL' : ''
     const reader = await con.runAndReadAll(`
       SELECT s.session_guid,
         CAST(s.session_start AS VARCHAR) AS session_start,
@@ -171,11 +183,13 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         s.best_lap_ms,
         (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
         (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
-        COALESCE(s.weather_description, '') AS weather_description
+        COALESCE(s.weather_description, '') AS weather_description,
+        s.account
       FROM sessions s
       LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
+      ${whereClause}
       ORDER BY s.session_start DESC NULLS LAST
-    `)
+    `, accountLabel ? [accountLabel] as any : undefined)
     return reader.getRowObjectsJson() as unknown as DbSessionRow[]
   })
 
@@ -220,28 +234,30 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   // ---- workers ---------------------------------------------------------
 
-  ipcMain.handle('worker:startSync', async () => {
+  ipcMain.handle('worker:startSync', async (_e, opts?: { token?: string; accountLabel?: string }) => {
     if (activeWorker) throw new Error('worker already running')
     activeWorker = { kind: 'sync' }
     const win = getMainWindow()
+    const accountLabel = opts?.accountLabel ?? null
 
-    // Use cached token if valid; otherwise launch BrowserWindow login.
+    // Prefer renderer-supplied token (active account from localStorage); otherwise
+    // fall back to the legacy on-disk cache; otherwise prompt SSO.
     void (async () => {
       try {
-        let token = loadCatalystToken()
+        let token = opts?.token || loadCatalystToken()
         if (!token) {
           broadcast(win, { kind: 'sync', type: 'log', payload: '[auth] No valid token — opening Garmin sign-in window' })
           const { accessToken } = await loginViaBrowser(win ?? undefined)
           token = accessToken
           broadcast(win, { kind: 'sync', type: 'log', payload: '[auth] Login successful' })
         } else {
-          broadcast(win, { kind: 'sync', type: 'log', payload: '[auth] Using cached Catalyst token' })
+          broadcast(win, { kind: 'sync', type: 'log', payload: `[auth] Syncing as ${accountLabel ?? 'unlabeled account'}` })
         }
         const api = new CatalystAPI(token)
         api.pageSize = loadConfig().api?.page_size ?? 50
         await fetchAllSessions(api, SESSIONS_DIR, e => {
           broadcast(win, { kind: 'sync', type: 'log', payload: e.message })
-        })
+        }, accountLabel)
         broadcast(win, { kind: 'sync', type: 'done' })
       } catch (e: any) {
         broadcast(win, { kind: 'sync', type: 'error', payload: `${e.message ?? e}` })

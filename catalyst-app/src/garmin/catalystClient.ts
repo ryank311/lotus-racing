@@ -61,7 +61,7 @@ export function loadCatalystTokenExpiry(): number | null {
 export async function exchangeTicketForToken(
   ticket: string,
   serviceUrl: string,
-): Promise<string> {
+): Promise<{ accessToken: string; expiresIn: number }> {
   const body = new URLSearchParams({
     grant_type: 'service_ticket',
     client_id: CATALYST_CLIENT_ID,
@@ -82,7 +82,7 @@ export async function exchangeTicketForToken(
   if (!token) throw new Error(`no access_token in response: ${JSON.stringify(payload)}`)
   const expiresIn = Number(payload.expires_in ?? 7_776_000)
   saveCatalystToken(token, expiresIn)
-  return token
+  return { accessToken: token, expiresIn }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +244,7 @@ export async function fetchAndSaveSession(
   dataDir: string,
   meanLineDir: string,
   log: (e: FetchProgressEvent) => void,
+  accountLabel?: string | null,
 ): Promise<void> {
   const sg = summary.sessionGuid
   if (!sg) {
@@ -253,6 +254,9 @@ export async function fetchAndSaveSession(
   const out = path.join(dataDir, sg)
   fs.mkdirSync(out, { recursive: true })
   saveJson(path.join(out, 'summary.json'), summary)
+  if (accountLabel) {
+    fs.writeFileSync(path.join(out, '.account'), accountLabel)
+  }
   log({ kind: 'session', message: `[session] ${sg} (${summary.trackName ?? '?'}, best=${summary.bestLap ?? '?'})` })
 
   const fetches: Array<[string, string, () => Promise<unknown>, 'json' | 'bytes']> = [
@@ -293,6 +297,7 @@ export async function fetchAllSessions(
   api: CatalystAPI,
   dataDir: string,
   log: (e: FetchProgressEvent) => void,
+  accountLabel?: string | null,
 ): Promise<number> {
   log({ kind: 'list', message: '[sessions] Fetching session list...' })
   const sessions = await api.getSessions({
@@ -328,7 +333,7 @@ export async function fetchAllSessions(
     const s = sessions[i]
     if (!s.sessionGuid) continue
     log({ kind: 'session', message: `\n[${i + 1}/${sessions.length}]`, index: i + 1, total: sessions.length })
-    await fetchAndSaveSession(api, s, dataDir, meanLineDir, log)
+    await fetchAndSaveSession(api, s, dataDir, meanLineDir, log, accountLabel)
     await new Promise(r => setTimeout(r, 300))
   }
 

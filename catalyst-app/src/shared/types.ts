@@ -36,6 +36,12 @@ export interface DbSessionRow {
   lap_count: number
   sample_count: number
   weather_description: string | null
+  account: string | null
+}
+
+export interface SignInResult {
+  token: string
+  expiresAt: number  // epoch seconds
 }
 
 export interface LogLine {
@@ -98,6 +104,7 @@ export interface CatalystBridge {
   getAccountEmail(): Promise<string | null>
   saveCredentials(email: string, password: string): Promise<void>
   clearTokens(): Promise<void>
+  signIn(): Promise<SignInResult>
 
   // Profiles
   listProfiles(): Promise<CarProfile[]>

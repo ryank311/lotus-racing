@@ -4,6 +4,7 @@ import { Home } from './pages/Home'
 import { Sessions } from './pages/Sessions'
 import { Briefs } from './pages/Briefs'
 import { Garage } from './pages/Garage'
+import { Analysis } from './pages/Analysis'
 import { api } from './api'
 import type { AuthState, SyncStats, WorkerEvent } from '../shared/types'
 
@@ -14,6 +15,9 @@ export function App() {
   const [logLine, setLogLine] = useState('')
   const [busy, setBusy] = useState<'sync' | 'load' | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
+
+  // Selected session guids — accumulated on the Sessions tab, consumed by Analysis.
+  const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(async () => {
     const [a, s] = await Promise.all([api.getAuthState(), api.getSyncStats()])
@@ -31,7 +35,6 @@ export function App() {
         refresh()
         setRefreshTick(t => t + 1)
         if (evt.kind === 'sync') {
-          // Auto-trigger DB reload after sync completes.
           setBusy('load')
           api.startLoad()
         }
@@ -48,11 +51,8 @@ export function App() {
     if (busy) return
     setBusy('sync')
     setLogLine('starting sync...')
-    try {
-      await api.startSync()
-    } catch (e: any) {
-      setBusy(null)
-      setLogLine(`error: ${e.message ?? e}`)
+    try { await api.startSync() } catch (e: any) {
+      setBusy(null); setLogLine(`error: ${e.message ?? e}`)
     }
   }
 
@@ -60,13 +60,12 @@ export function App() {
     if (busy) return
     setBusy('load')
     setLogLine('loading database...')
-    try {
-      await api.startLoad()
-    } catch (e: any) {
-      setBusy(null)
-      setLogLine(`error: ${e.message ?? e}`)
+    try { await api.startLoad() } catch (e: any) {
+      setBusy(null); setLogLine(`error: ${e.message ?? e}`)
     }
   }
+
+  const openAnalysis = () => setPage('analysis')
 
   return (
     <div className="app-shell">
@@ -74,14 +73,31 @@ export function App() {
         active={page}
         onChange={setPage}
         connected={!!auth?.tokenValid}
+        selectionCount={selected.size}
       />
       <div className="main-pane">
         {page === 'home' && (
           <Home auth={auth} stats={stats} busy={busy} onSync={startSync} onLoad={startLoad} />
         )}
-        {page === 'sessions' && <Sessions refreshTick={refreshTick} />}
-        {page === 'briefs' && <Briefs onRefresh={() => setRefreshTick(t => t + 1)} refreshTick={refreshTick} />}
+        {page === 'sessions' && (
+          <Sessions
+            refreshTick={refreshTick}
+            selected={selected}
+            setSelected={setSelected}
+            onAnalyze={openAnalysis}
+          />
+        )}
+        {page === 'briefs' && (
+          <Briefs onRefresh={() => setRefreshTick(t => t + 1)} refreshTick={refreshTick} />
+        )}
         {page === 'garage' && <Garage />}
+        {page === 'analysis' && (
+          <Analysis
+            selected={selected}
+            setSelected={setSelected}
+            onBack={() => setPage('sessions')}
+          />
+        )}
 
         <div className={`status-bar ${busy ? 'busy' : ''}`}>
           {busy && <div className="spinner" />}

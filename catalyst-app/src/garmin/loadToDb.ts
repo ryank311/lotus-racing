@@ -55,8 +55,12 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
       temperature_c DOUBLE,
       humidity_pct DOUBLE,
       wind_speed_mps DOUBLE,
-      wind_direction_deg DOUBLE
+      wind_direction_deg DOUBLE,
+      account VARCHAR
     );
+
+    -- Account column may be missing on older DBs; ADD IF NOT EXISTS is the migration.
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS account VARCHAR;
 
     CREATE TABLE IF NOT EXISTS laps (
       session_guid VARCHAR,
@@ -148,8 +152,11 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
   const metadata = fs.existsSync(metadataP) ? JSON.parse(fs.readFileSync(metadataP, 'utf-8')) : {}
   const weather = fs.existsSync(weatherP) ? JSON.parse(fs.readFileSync(weatherP, 'utf-8')) : {}
 
+  const accountFile = path.join(sessionDir, '.account')
+  const account = fs.existsSync(accountFile) ? fs.readFileSync(accountFile, 'utf-8').trim() || null : null
+
   await con.run(
-    'INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT OR REPLACE INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       sg,
       summary.sessionStart ?? null,
@@ -166,6 +173,7 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
       nullIfNaN(weather.relativeHumidity),
       nullIfNaN(weather.windSpeed),
       nullIfNaN(weather.windDirection),
+      account,
     ] as any,
   )
 
