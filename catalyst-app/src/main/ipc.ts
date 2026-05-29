@@ -29,7 +29,7 @@ import {
 } from '../garmin/loadToDb.js'
 import { MEAN_LINES_DIR, TRACKS_DIR } from '../garmin/paths.js'
 import { buildTrackGeometry } from '../garmin/trackGeometry.js'
-import { loadTrackYaml, saveTrackYamlCorners, TrackCorner } from '../garmin/trackYaml.js'
+import { loadTrackYaml, resolveTrackYamlPath, saveTrackYamlCorners, TrackCorner } from '../garmin/trackYaml.js'
 import { runBrief } from '../garmin/promptPack.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import {
@@ -300,35 +300,6 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   //                            lon are filled in from the mean_line's apex_idx
   //                            so the renderer doesn't have to ship them back.
 
-  function slug(s: string): string {
-    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-  }
-
-  // Resolve the YAML file for a given (track_name, config_name, mean_line_guid).
-  // Strategy: scan tracks/*.yaml and match by mean_line_guid first (most
-  // reliable), then by track_configuration_name, then synthesize a path.
-  function resolveTrackYamlPath(
-    trackName: string, configName: string, meanLineGuid: string | null,
-  ): { path: string; exists: boolean } {
-    if (!fs.existsSync(TRACKS_DIR)) fs.mkdirSync(TRACKS_DIR, { recursive: true })
-    const yamls = fs.readdirSync(TRACKS_DIR).filter(n => n.toLowerCase().endsWith('.yaml'))
-    for (const fn of yamls) {
-      const p = path.join(TRACKS_DIR, fn)
-      const y = loadTrackYaml(p)
-      if (meanLineGuid && y.mean_line_guid === meanLineGuid) return { path: p, exists: true }
-    }
-    for (const fn of yamls) {
-      const p = path.join(TRACKS_DIR, fn)
-      const y = loadTrackYaml(p)
-      if (y.track_configuration_name === configName && y.track_name === trackName) {
-        return { path: p, exists: true }
-      }
-    }
-    // Best-effort default path: use the first word of the track name as alias.
-    const alias = slug(trackName).split('-')[0] || slug(trackName)
-    return { path: path.join(TRACKS_DIR, `${alias}-${slug(configName)}.yaml`), exists: false }
-  }
-
   ipcMain.handle('tracks:listAll', async () => {
     if (!fs.existsSync(DB_PATH)) return []
     const { con } = await openDb(DB_PATH, true)
@@ -385,21 +356,56 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     }
   })
 
-  // The renderer sends back corners without apex_lat/apex_lon — we fill those
-  // in from the mean-line geometry at apex_idx so the YAML stays authoritative.
+  // The renderer sends back corners without lat/lon (and possibly without
+  // dist_idx_start/end). We enrich each one from the mean-line geometry so
+  // the YAML is fully populated for downstream consumers (Analysis charts,
+  // brief generator). Defaults: zone = apex ± 50 m clamped to [0, total], and
+  // apex_radius_m derived from local curvature.
+  const DEFAULT_ZONE_HALF = 50
+
+  function curvatureRadiusAt(
+    centerline: Array<{ x: number; y: number }>,
+    i: number,
+  ): number {
+    // Three-point circle radius estimate using points at ±20m. Robust at the
+    // 1m sample spacing on Garmin meanlines without bumping into GPS noise.
+    const n = centerline.length
+    const a = centerline[Math.max(0, i - 20)]
+    const b = centerline[i]
+    const c = centerline[Math.min(n - 1, i + 20)]
+    const ax = a.x, ay = a.y, bx = b.x, by = b.y, cx = c.x, cy = c.y
+    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if (Math.abs(d) < 1e-6) return 9999
+    const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d
+    const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d
+    return Math.hypot(ux - bx, uy - by)
+  }
+
   ipcMain.handle('tracks:saveCorners', (_e, opts: {
     yamlPath: string
     meanLineGuid: string
     corners: TrackCorner[]
   }) => {
     const geom = buildTrackGeometry(opts.meanLineGuid)
+    const maxIdx = geom ? geom.centerline.length - 1 : 0
+
     const enriched = opts.corners.map(c => {
+      const out: TrackCorner = { ...c }
       if (geom && c.apex_idx != null) {
-        const i = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(c.apex_idx)))
+        const i = Math.max(0, Math.min(maxIdx, Math.round(c.apex_idx)))
         const p = geom.centerline[i]
-        return { ...c, apex_lat: p.lat, apex_lon: p.lon }
+        out.apex_lat = p.lat
+        out.apex_lon = p.lon
+        // Default the corner zone to ±50 m around apex if the user didn't set
+        // explicit bounds. These are what the Analysis page's corner shading,
+        // entry/apex/exit speed extraction, and the brief generator key off.
+        if (out.dist_idx_start == null) out.dist_idx_start = Math.max(0, i - DEFAULT_ZONE_HALF)
+        if (out.dist_idx_end == null)   out.dist_idx_end   = Math.min(maxIdx, i + DEFAULT_ZONE_HALF)
+        if (out.apex_radius_m == null) {
+          out.apex_radius_m = Math.round(curvatureRadiusAt(geom.centerline, i) * 10) / 10
+        }
       }
-      return c
+      return out
     })
     saveTrackYamlCorners(opts.yamlPath, enriched)
     return { savedTo: opts.yamlPath, cornerCount: enriched.length }

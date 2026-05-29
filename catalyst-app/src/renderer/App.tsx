@@ -5,6 +5,7 @@ import { Sessions } from './pages/Sessions'
 import { Briefs } from './pages/Briefs'
 import { Results } from './pages/Results'
 import { Garage } from './pages/Garage'
+import { Tracks } from './pages/Tracks'
 import { Analysis } from './pages/Analysis'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { api } from './api'
@@ -113,6 +114,7 @@ export function App() {
             <Results refreshTick={refreshTick} />
           )}
           {page === 'garage' && <Garage />}
+          {page === 'tracks' && <Tracks />}
           {page === 'analysis' && (
             <Analysis
               selected={selected}
@@ -122,7 +124,7 @@ export function App() {
           )}
         </ErrorBoundary>
 
-        <div className={`status-bar ${busy ? 'busy' : ''}`}>
+        <div className={`status-bar ${busy ? 'busy' : ''}`} style={{ display: busy ? undefined : 'none' }}>
           {busy && <div className="spinner" />}
           <div className="log">{logLine || 'ready'}</div>
           <div className="tag">

@@ -1348,33 +1348,86 @@ input, textarea, select { font-family: inherit; color: inherit; }
   margin-top: 2px;
 }
 
-/* ── analysis 2-column layout (scrolling charts + sticky track map) ── */
+/* ── analysis full-height split page ── */
 
-.analysis-layout {
+/* Sits below page-header as a flex sibling, fills remaining main-pane height */
+.analysis-split {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(420px, 560px);
-  gap: 18px;
-  align-items: start;
+  /* grid-template-columns set inline via React state */
+  overflow: hidden;
+}
+
+.analysis-left-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.analysis-left-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 28px 36px;
+}
+
+.analysis-split-divider {
+  cursor: col-resize;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  user-select: none;
+  z-index: 10;
+}
+.analysis-split-divider::after {
+  content: '';
+  width: 2px;
+  background: var(--border);
+  transition: background 0.15s;
+  border-radius: 1px;
+}
+.analysis-split-divider:hover::after,
+.analysis-split-divider:active::after {
+  background: var(--signal);
+}
+
+.analysis-right-pane {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.analysis-right-pane .chart-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+  border-radius: 0;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+}
+.analysis-right-pane .chart-card-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 0;
+  padding-top: 8px;
+}
+
+.analysis-map-placeholder {
+  flex: 1;
+  background: var(--panel);
 }
 
 .analysis-charts {
-  min-width: 0;            /* allow children to shrink inside the grid */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-
-.analysis-trackmap-sticky {
-  position: sticky;
-  top: 12px;
-  align-self: start;
-}
-
-/* On narrow viewports drop to a stacked layout — track map slots in after
-   speed/heatmap rather than disappearing below the fold. */
-@media (max-width: 1180px) {
-  .analysis-layout { grid-template-columns: 1fr; }
-  .analysis-trackmap-sticky { position: static; }
 }
 
 .track-map-legend-hover {
@@ -1383,4 +1436,149 @@ input, textarea, select { font-family: inherit; color: inherit; }
   letter-spacing: 0.06em;
   color: #fff;
   margin-top: 2px;
+}
+
+/* ── tracks editor ───────────────────────────────────────────────────── */
+
+.tracks-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tracks-picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tracks-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .tracks-editor { grid-template-columns: 1fr; }
+}
+
+.tracks-map {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  position: relative;
+}
+.tracks-map-hint {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  background: rgba(10,10,14,0.78);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  pointer-events: none;
+  max-width: 70%;
+}
+
+.tracks-sidebar {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  max-height: 620px;
+  overflow: hidden;
+}
+
+.tracks-sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.tracks-sidebar-header .spacer { flex: 1; }
+
+.tracks-corner-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tracks-corner-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 38px 64px 56px 26px;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.tracks-corner-row:hover { border-color: var(--border-strong); }
+.tracks-corner-row.active {
+  border-color: var(--signal);
+  background: rgba(255,94,58,0.06);
+}
+.tracks-corner-zone {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  width: 100%;
+  outline: none;
+  text-align: right;
+}
+.tracks-corner-zone:focus { border-color: var(--signal); color: var(--text); }
+
+.tracks-corner-turn,
+.tracks-corner-name,
+.tracks-corner-dir {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  width: 100%;
+  outline: none;
+}
+.tracks-corner-turn { color: var(--signal); font-weight: 700; }
+.tracks-corner-name { font-family: var(--font-body); }
+.tracks-corner-turn:focus,
+.tracks-corner-name:focus,
+.tracks-corner-dir:focus { border-color: var(--signal); }
+
+.tracks-corner-apex {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  color: var(--text-dim);
+}
+
+.tracks-sidebar-footer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }

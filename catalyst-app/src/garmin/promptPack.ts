@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DuckDBConnection } from '@duckdb/node-api'
 import { COACHING_DIR, DB_PATH, TRACKS_DIR } from './paths.js'
-import { loadTrackYaml, TrackCorner, TrackSegment, TrackYaml } from './trackYaml.js'
+import { loadTrackYaml, resolveTrackYamlPath, TrackCorner, TrackSegment, TrackYaml } from './trackYaml.js'
 import { resolveProfileDir } from './profiles.js'
 import { openDb } from './loadToDb.js'
 
@@ -647,8 +647,16 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
     counts.set(c, (counts.get(c) ?? 0) + 1)
   }
   const topConfig = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
-  const slug = slugify(topConfig)
-  const trackPath = path.join(TRACKS_DIR, `vir-${slug}.yaml`)
+  // Mean-line GUID is the primary key the Tracks editor stamps on save; we
+  // resolve by that first so brief generation picks up corner edits even if
+  // the YAML lives under a non-canonical filename.
+  const mlgCounts = new Map<string, number>()
+  for (const s of sessions) {
+    if (s.mean_line_guid) mlgCounts.set(s.mean_line_guid, (mlgCounts.get(s.mean_line_guid) ?? 0) + 1)
+  }
+  const topMeanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+  const topTrackName = sessions.find(s => s.track_name)?.track_name ?? ''
+  const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
   const trackYaml = loadTrackYaml(trackPath)
 
   const profile = resolveProfileDir(opts.profile)

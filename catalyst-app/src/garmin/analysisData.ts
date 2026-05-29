@@ -8,7 +8,7 @@ import path from 'node:path'
 import { DuckDBConnection } from '@duckdb/node-api'
 import { openDb } from './loadToDb.js'
 import { DB_PATH, TRACKS_DIR } from './paths.js'
-import { loadTrackYaml, TrackCorner, TrackSegment } from './trackYaml.js'
+import { loadTrackYaml, resolveTrackYamlPath, TrackCorner, TrackSegment } from './trackYaml.js'
 import { buildTrackGeometry, projectLatLon, TrackGeometry } from './trackGeometry.js'
 
 const MPH = (mps: number | null | undefined): number | null =>
@@ -476,8 +476,11 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     configCounts.set(s.trackConfig, (configCounts.get(s.trackConfig) ?? 0) + 1)
   }
   const config = [...configCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Unknown'
-  const slug = config.toLowerCase().replace(/ /g, '-')
-  const trackPath = path.join(TRACKS_DIR, `vir-${slug}.yaml`)
+  // Resolve via the shared resolver — finds the YAML by mean_line_guid first,
+  // which matters because the Tracks editor writes the file using that key.
+  // We don't have track_name on this query, so the resolver falls back on
+  // config_name + guid alone (still reliable for VIR's 3 configs).
+  const trackPath = resolveTrackYamlPath('', config, meanLineGuid).path
   const trackYaml = loadTrackYaml(trackPath)
   const segments = trackYaml.segments ?? []
   const corners = trackYaml.corners ?? []

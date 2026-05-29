@@ -2,6 +2,8 @@
 // Avoids pulling in a full YAML lib.
 
 import fs from 'node:fs'
+import path from 'node:path'
+import { TRACKS_DIR } from './paths.js'
 
 export interface TrackSegment {
   id: number
@@ -42,6 +44,44 @@ function coerce(s: string): unknown {
   if (s.toLowerCase() === 'true') return true
   if (s.toLowerCase() === 'false') return false
   return s
+}
+
+function slugify(s: string): string {
+  return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+// Find the track YAML for a given (track, config, mean_line_guid). Single
+// resolver shared by the Tracks editor, the Analysis page, and the brief
+// generator so a save in one place is picked up by the others. Strategy:
+//   1. Scan tracks/*.yaml and match by mean_line_guid (most reliable — the
+//      Tracks editor writes this on save and any auto-generated file will
+//      have stamped it from the .pb decode).
+//   2. Fall back to matching by track_configuration_name + track_name.
+//   3. Synthesize a path: `<track-alias>-<config-slug>.yaml` under tracks/.
+export function resolveTrackYamlPath(
+  trackName: string,
+  configName: string,
+  meanLineGuid: string | null,
+): { path: string; exists: boolean } {
+  if (!fs.existsSync(TRACKS_DIR)) fs.mkdirSync(TRACKS_DIR, { recursive: true })
+  const yamls = fs.readdirSync(TRACKS_DIR).filter(n => n.toLowerCase().endsWith('.yaml'))
+
+  if (meanLineGuid) {
+    for (const fn of yamls) {
+      const p = path.join(TRACKS_DIR, fn)
+      const y = loadTrackYaml(p)
+      if (y.mean_line_guid === meanLineGuid) return { path: p, exists: true }
+    }
+  }
+  for (const fn of yamls) {
+    const p = path.join(TRACKS_DIR, fn)
+    const y = loadTrackYaml(p)
+    if (y.track_configuration_name === configName && (!trackName || y.track_name === trackName)) {
+      return { path: p, exists: true }
+    }
+  }
+  const alias = slugify(trackName).split('-')[0] || slugify(trackName) || 'track'
+  return { path: path.join(TRACKS_DIR, `${alias}-${slugify(configName)}.yaml`), exists: false }
 }
 
 // Rewrite the `corners:` section of an existing track YAML in place, leaving

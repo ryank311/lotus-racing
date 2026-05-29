@@ -68,139 +68,187 @@ corners:
     name: "Horse Shoe"
     direction: right
     character: "long slow right off the front straight; heavy braking from high speed"
-    apex_idx: 390
-    dist_idx_start: 367
-    dist_idx_end: 452
-    apex_lat: 36.5686482
-    apex_lon: -79.2023108
+    apex_idx: 425
+    dist_idx_start: 380
+    dist_idx_end: 470
+    apex_lat: 36.5683579
+    apex_lon: -79.2021953
     apex_radius_m: 35.7
-  - turn: T2-T3
-    name: "Connectors"
-    direction: right
+  - turn: T2
+    name: "T2"
+    direction: left
+    apex_idx: 715
+    apex_lat: 36.5682624
+    apex_lon: -79.2050578
+  - turn: T3
+    name: "NASCAR"
+    direction: left
     character: "fast transition corners after 2014 repave"
-    apex_idx: 456
+    apex_idx: 852
     dist_idx_start: 354
     dist_idx_end: 561
-    apex_lat: 36.5681107
-    apex_lon: -79.2023443
+    apex_lat: 36.5677492
+    apex_lon: -79.2063774
     apex_radius_m: 73.5
-  - turn: T4
-    name: "NASCAR Bend"
+  - turn: T4a
+    name: "Snake Entry"
     direction: left
     character: "slow tight left, sets up the Snake"
-    apex_idx: 835
+    apex_idx: 1048
     dist_idx_start: 817
     dist_idx_end: 872
-    apex_lat: 36.5678843
-    apex_lon: -79.2062914
-    apex_radius_m: 43.0
-  - turn: T5a-T5b
+    apex_lat: 36.5660996
+    apex_lon: -79.2057710
+    apex_radius_m: 43
+  - turn: T4b
     name: "Snake Entry"
-    direction: L→R
+    direction: right
     character: "cambered medium-speed, near flat-throttle exit"
-    apex_idx: 1045
+    apex_idx: 1108
     dist_idx_start: 1023
     dist_idx_end: 1068
-    apex_lat: 36.5661109
-    apex_lon: -79.2058015
+    apex_lat: 36.5661896
+    apex_lon: -79.2051202
     apex_radius_m: 27.7
-  - turn: T6a-T6b
+  - turn: T5a
     name: "Snake Exit"
-    direction: L→R
+    direction: right
     character: "full throttle ideal, avoid inside curb"
-    apex_idx: 1114
-    dist_idx_start: 1093
-    dist_idx_end: 1140
-    apex_lat: 36.5661867
-    apex_lon: -79.2050531
+    apex_idx: 1225
+    dist_idx_start: 1205
+    dist_idx_end: 1245
+    apex_lat: 36.5654956
+    apex_lon: -79.2042101
     apex_radius_m: 43.5
+  - turn: T5b
+    name: "Snake Exit"
+    direction: left
+    apex_idx: 1319
+    apex_lat: 36.5646889
+    apex_lon: -79.2044244
+  - turn: T6a
+    name: "Lower Snake"
+    direction: right
+    apex_idx: 1384
+    apex_lat: 36.5641079
+    apex_lon: -79.2044967
+  - turn: T6b
+    name: "Lower Snake"
+    direction: left
+    apex_idx: 1433
+    apex_lat: 36.5636827
+    apex_lon: -79.2046368
   - turn: T7
     name: "Climbing Esses"
-    direction: right
+    direction: left
     character: "uphill, blind crest, late apex — most exciting feature of VIR"
-    apex_idx: 1234
+    apex_idx: 1886
     dist_idx_start: 1215
     dist_idx_end: 1264
-    apex_lat: 36.5654179
-    apex_lon: -79.2041820
+    apex_lat: 36.5596238
+    apex_lon: -79.2048561
     apex_radius_m: 46.7
-  - turn: T8a-T8b
-    name: "Climbing Esses 2"
-    direction: R→L
+  - turn: T8a
+    name: "Climbing Esses Middle"
+    direction: right
     character: "crests, blind uphill"
-    apex_idx: 2397
+    apex_idx: 1977
     dist_idx_start: 2376
     dist_idx_end: 2425
-    apex_lat: 36.5551704
-    apex_lon: -79.2053505
+    apex_lat: 36.5588257
+    apex_lon: -79.2046381
     apex_radius_m: 76.9
+  - turn: T8b
+    name: "Climbing Esses Middle"
+    direction: left
+    apex_idx: 2074
+    apex_lat: 36.5579599
+    apex_lon: -79.2047443
   - turn: T9
     name: "Esses Exit"
     direction: left
     character: "more open, partial→full throttle"
-    apex_idx: 2702
+    apex_idx: 2189
     dist_idx_start: 2686
     dist_idx_end: 2876
-    apex_lat: 36.5525659
-    apex_lon: -79.2043565
+    apex_lat: 36.5569358
+    apex_lon: -79.2046068
     apex_radius_m: 76.8
   - turn: T10
     name: "South Bend"
     direction: left
     character: "fast downhill blind-crested left"
-    apex_idx: 2758
+    apex_idx: 2397
     dist_idx_start: 2694
     dist_idx_end: 2862
-    apex_lat: 36.5520871
-    apex_lon: -79.2045144
+    apex_lat: 36.5551704
+    apex_lon: -79.2053505
     apex_radius_m: 52.3
   - turn: T11
     name: "Oak Tree Entry"
-    direction: left
+    direction: right
     character: "approach to Oak Tree"
-    apex_idx: 2811
+    apex_idx: 2707
     dist_idx_start: 2695
     dist_idx_end: 2861
-    apex_lat: 36.5519159
-    apex_lon: -79.2050118
+    apex_lat: 36.5525211
+    apex_lon: -79.2043517
     apex_radius_m: 51.2
   - turn: T12
     name: "Oak Tree"
     direction: right
     character: "MOST IMPORTANT corner for lap time — feeds 4000ft back straight"
-    apex_idx: 4133
+    apex_idx: 2791
     dist_idx_start: 4113
     dist_idx_end: 4190
-    apex_lat: 36.5623049
-    apex_lon: -79.2119460
+    apex_lat: 36.5519049
+    apex_lon: -79.2047897
     apex_radius_m: 38.3
   - turn: T13
-    name: "RC Entry"
+    name: "Roller Coaster Entry"
     direction: left
     character: "short uphill jog, very brief braking zone after long back straight"
-    apex_idx: 4187
+    apex_idx: 4038
     dist_idx_start: 4092
     dist_idx_end: 4258
-    apex_lat: 36.5627439
-    apex_lon: -79.2117728
+    apex_lat: 36.5616718
+    apex_lon: -79.2112413
     apex_radius_m: 68.8
   - turn: T14
     name: "Roller Coaster"
     direction: right
     character: "cresting hill, trailbrake — VIR's mirror of Laguna Corkscrew"
-    apex_idx: 4518
+    apex_idx: 4146
     dist_idx_start: 4490
     dist_idx_end: 4549
-    apex_lat: 36.5652356
-    apex_lon: -79.2127082
+    apex_lat: 36.5624194
+    apex_lon: -79.2119699
     apex_radius_m: 57.9
   - turn: T15
-    name: "RC Exit"
+    name: "Roller Coaster Exit"
     direction: left
     character: "downhill, full or partial throttle"
-    apex_idx: 5215
+    apex_idx: 4230
     dist_idx_start: 5213
     dist_idx_end: 5248
-    apex_lat: 36.5687667
-    apex_lon: -79.2070854
+    apex_lat: 36.5630372
+    apex_lon: -79.2114648
     apex_radius_m: 70.1
+  - turn: T16a
+    name: "Hogpen Entry"
+    direction: left
+    apex_idx: 4444
+    apex_lat: 36.5648269
+    apex_lon: -79.2120632
+  - turn: T16b
+    name: "Hogpen"
+    direction: right
+    apex_idx: 4521
+    apex_lat: 36.5652587
+    apex_lon: -79.2127255
+  - turn: T17
+    name: "Hogpen Exit"
+    direction: right
+    apex_idx: 4640
+    apex_lat: 36.5662954
+    apex_lon: -79.2126560

@@ -1,7 +1,7 @@
 // Analysis page — selected sessions in, full Plotly dashboard out.
 // Every chart wrapped in an instrument-card. Theme matches the rest of the app.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
 import {
@@ -21,6 +21,28 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [splitPct, setSplitPct] = useState(62)
+  const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const draggingRef = useRef(false)
+
+  const onDividerMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    draggingRef.current = true
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!draggingRef.current || !containerRef.current) return
+      const rect = containerRef.current.getBoundingClientRect()
+      const pct = ((ev.clientX - rect.left) / rect.width) * 100
+      setSplitPct(Math.max(30, Math.min(80, pct)))
+    }
+    const onMouseUp = () => {
+      draggingRef.current = false
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+  }
 
   useEffect(() => {
     if (selected.size === 0) {
@@ -77,28 +99,50 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
         </div>
       </header>
 
-      <div className="page-body">
-        {loading && (
-          <div className="analysis-empty" style={{ height: 240 }}>
-            <div>
-              <div className="spinner" style={{ width: 32, height: 32, borderWidth: 2, margin: '0 auto 18px' }} />
-              <div className="sub">Reading samples · computing splits · building figures</div>
-            </div>
-          </div>
-        )}
+      <div
+        className="analysis-split"
+        ref={containerRef}
+        style={{ gridTemplateColumns: `minmax(0, ${splitPct}fr) 6px minmax(0, ${100 - splitPct}fr)` }}
+      >
+        {/* LEFT PANE — chart content, scrollable */}
+        <div className="analysis-left-pane">
+          <div className="analysis-left-body">
+            {loading && (
+              <div className="analysis-empty" style={{ height: 240 }}>
+                <div>
+                  <div className="spinner" style={{ width: 32, height: 32, borderWidth: 2, margin: '0 auto 18px' }} />
+                  <div className="sub">Reading samples · computing splits · building figures</div>
+                </div>
+              </div>
+            )}
 
-        {err && !loading && (
-          <div className="card" style={{ padding: 22 }}>
-            <div className="card-label" style={{ color: 'var(--red)' }}>Error</div>
-            <div className="card-corner-marks"><i /></div>
-            <div style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{err}</div>
-            <div className="btn-row">
-              <button className="btn ghost" onClick={onBack}>Back to Sessions</button>
-            </div>
-          </div>
-        )}
+            {err && !loading && (
+              <div className="card" style={{ padding: 22 }}>
+                <div className="card-label" style={{ color: 'var(--red)' }}>Error</div>
+                <div className="card-corner-marks"><i /></div>
+                <div style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{err}</div>
+                <div className="btn-row">
+                  <button className="btn ghost" onClick={onBack}>Back to Sessions</button>
+                </div>
+              </div>
+            )}
 
-        {data && !loading && !err && <AnalysisBody data={data} setSelected={setSelected} selected={selected} />}
+            {data && !loading && !err && (
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} />
+            )}
+          </div>
+        </div>
+
+        {/* DIVIDER */}
+        <div className="analysis-split-divider" onMouseDown={onDividerMouseDown} />
+
+        {/* RIGHT PANE — track map only, full height, no scroll */}
+        <div className="analysis-right-pane">
+          {data && !loading && !err
+            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} />
+            : <div className="analysis-map-placeholder" />
+          }
+        </div>
       </div>
     </>
   )
@@ -106,21 +150,25 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
 
 // ============================================================================
 
-function AnalysisBody({ data, selected, setSelected }: {
+// TrackMapPanel — right pane content, full height, no chrome padding
+function TrackMapPanel({ data, hoverDistanceM }: { data: AnalysisData; hoverDistanceM: number | null }) {
+  return (
+    <ChartCard channel="TRACK MAP" meta="racing line · drag to pan · ⌘+scroll to zoom">
+      <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} />
+    </ChartCard>
+  )
+}
+
+function AnalysisBody({ data, selected, setSelected, onHoverDistance }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
+  onHoverDistance: (d: number | null) => void
 }) {
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
     [data.sessions],
   )
-
-  // Shared crosshair — distance_m hovered on any of the time-series charts
-  // with a distance x-axis. TrackMap renders a white dot at that point on
-  // the best-lap racing line so the user can correlate any chart row to
-  // the exact spatial location on the track.
-  const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
 
   const dateRange = useMemo(() => {
     const dates = sessionsSorted.map(s => s.start ?? '').filter(Boolean).map(s => s.slice(0, 10)).sort()
@@ -156,96 +204,62 @@ function AnalysisBody({ data, selected, setSelected }: {
         <Stat label="Track" value={data.config} sub={`${data.totalDistM.toFixed(0)} m`} />
       </div>
 
-      {/* 2-column layout: scrolling chart column + sticky track map.
-          Track map stays pinned as the chart column scrolls, and the white
-          crosshair on it tracks whichever chart you're hovering on. */}
-      <div className="analysis-layout">
-        <div className="analysis-charts">
-          {/* SPEED */}
-          <ChartCard
-            channel="CH·01 SPEED"
-            meta={`${data.speedTraces.length} laps · mph`}
-          >
+      {/* CHARTS */}
+      <div className="analysis-charts">
+        <ChartCard channel="SPEED" meta={`${data.speedTraces.length} laps · mph`}>
+          <PlotlyChart
+            height={460}
+            data={speedFigure(data).data}
+            layout={speedFigure(data).layout}
+            onHoverDistance={onHoverDistance}
+          />
+        </ChartCard>
+
+        {data.heatmap && (
+          <ChartCard channel="SEGMENT Δ" meta="seconds · best per segment = 0">
             <PlotlyChart
-              height={460}
-              data={speedFigure(data).data}
-              layout={speedFigure(data).layout}
-              onHoverDistance={setHoverDistanceM}
+              height={Math.max(360, data.heatmap.rows.length * 22 + 80)}
+              data={heatmapFigure(data).data}
+              layout={heatmapFigure(data).layout}
             />
           </ChartCard>
+        )}
 
-          {/* HEATMAP */}
-          {data.heatmap && (
-            <ChartCard
-              channel="CH·02 SEGMENT Δ"
-              meta="seconds · best per segment = 0"
-            >
-              <PlotlyChart
-                height={Math.max(360, data.heatmap.rows.length * 22 + 80)}
-                data={heatmapFigure(data).data}
-                layout={heatmapFigure(data).layout}
-              />
-            </ChartCard>
-          )}
+        <ChartCard channel="G-G" meta={`p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
+          <PlotlyChart
+            height={460}
+            data={ggFigure(data).data}
+            layout={ggFigure(data).layout}
+          />
+        </ChartCard>
 
-          {/* G-G */}
-          <ChartCard channel="CH·03 G-G" meta={`p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
+        <ChartCard channel="LATERAL POSITION" meta="0 = inner · 1 = outer · 0.5 = centre">
+          <PlotlyChart
+            height={300}
+            data={lateralFigure(data).data}
+            layout={lateralFigure(data).layout}
+            onHoverDistance={onHoverDistance}
+          />
+        </ChartCard>
+
+        <ChartCard channel="LONG. G" meta="braking (neg) · acceleration (pos)">
+          <PlotlyChart
+            height={320}
+            data={longgFigure(data).data}
+            layout={longgFigure(data).layout}
+            onHoverDistance={onHoverDistance}
+          />
+        </ChartCard>
+
+        {data.cornerRows.length > 0 && (
+          <ChartCard channel="CORNER STATS" meta="entry · apex · exit">
             <PlotlyChart
-              height={460}
-              data={ggFigure(data).data}
-              layout={ggFigure(data).layout}
+              height={560}
+              data={cornersFigure(data).data}
+              layout={cornersFigure(data).layout}
             />
           </ChartCard>
-
-          {/* LATERAL POSITION */}
-          <ChartCard
-            channel="CH·05 LATERAL POSITION"
-            meta="0 = inner · 1 = outer · 0.5 = centre"
-          >
-            <PlotlyChart
-              height={300}
-              data={lateralFigure(data).data}
-              layout={lateralFigure(data).layout}
-              onHoverDistance={setHoverDistanceM}
-            />
-          </ChartCard>
-
-          {/* LONGITUDINAL G */}
-          <ChartCard
-            channel="CH·06 LONG. G"
-            meta="braking (neg) · acceleration (pos)"
-          >
-            <PlotlyChart
-              height={320}
-              data={longgFigure(data).data}
-              layout={longgFigure(data).layout}
-              onHoverDistance={setHoverDistanceM}
-            />
-          </ChartCard>
-
-          {/* CORNERS */}
-          {data.cornerRows.length > 0 && (
-            <ChartCard
-              channel="CH·07 CORNER STATS"
-              meta="entry · apex · exit"
-            >
-              <PlotlyChart
-                height={560}
-                data={cornersFigure(data).data}
-                layout={cornersFigure(data).layout}
-              />
-            </ChartCard>
-          )}
-        </div>
-
-        <aside className="analysis-trackmap-sticky">
-          <ChartCard
-            channel="CH·04 TRACK MAP"
-            meta="racing line · drag to pan · ⌘+scroll to zoom"
-          >
-            <TrackMap data={data} height={620} hoverDistanceM={hoverDistanceM} />
-          </ChartCard>
-        </aside>
+        )}
       </div>
     </>
   )

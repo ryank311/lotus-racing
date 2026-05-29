@@ -41,7 +41,7 @@ export interface TrackMapEditState {
 
 interface Props {
   data: TrackMapInput | AnalysisData
-  height?: number
+  height?: number | string
   // When set, a white crosshair is drawn on the best-lap racing line at this
   // cumulative distance. Lets the parent sync mouse-hover from other charts
   // (which use distance_m on x) onto the spatial track view.
@@ -414,6 +414,31 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
         {!edit && showRacing && bestLap && (
           <SpeedHeatmapPath lap={bestLap} smin={smin} smax={smax} />
         )}
+
+        {/* L5z — corner zone of the selected corner. We draw a thick faint
+             arc along the centerline between dist_idx_start..dist_idx_end so
+             the user can see what window the Analysis charts will treat as
+             "this corner" (entry/apex/exit speeds, shaded zone overlay). */}
+        {edit && edit.corners.map((c) => {
+          if (edit.selectedTurn !== c.turn) return null
+          if (c.apex_idx == null) return null
+          const lo = c.dist_idx_start ?? Math.max(0, c.apex_idx - 50)
+          const hi = c.dist_idx_end ?? Math.min(geom.centerline.length - 1, c.apex_idx + 50)
+          const slice = geom.centerline.slice(Math.max(0, Math.round(lo)), Math.min(geom.centerline.length, Math.round(hi) + 1))
+          if (slice.length < 2) return null
+          return (
+            <path
+              key={`zone-${c.turn}`}
+              d={pathFromPoints(slice)}
+              fill="none"
+              stroke="#ff5e3a"
+              strokeOpacity={0.55}
+              strokeWidth={Math.max(4, geom.widthM * 0.9)}
+              strokeLinecap="round"
+              pointerEvents="none"
+            />
+          )
+        })}
 
         {/* L5e — corner apex markers (editing mode). Each marker is a numbered
              dot positioned at the centerline point indexed by `apex_idx`. The
