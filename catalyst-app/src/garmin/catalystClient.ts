@@ -226,6 +226,10 @@ export interface FetchProgressEvent {
   message: string
   index?: number
   total?: number
+  // Optional structured fields for richer progress UIs. Loggers that just
+  // want a flat text stream can keep reading `message` and ignore these.
+  fileName?: string
+  sessionLabel?: string
 }
 
 function saveJson(p: string, data: unknown, pretty = true): void {
@@ -257,7 +261,12 @@ export async function fetchAndSaveSession(
   if (accountLabel) {
     fs.writeFileSync(path.join(out, '.account'), accountLabel)
   }
-  log({ kind: 'session', message: `[session] ${sg} (${summary.trackName ?? '?'}, best=${summary.bestLap ?? '?'})` })
+  const sessionLabel = `${summary.trackName ?? '?'} · ${(summary.sessionStart ?? '').slice(0, 10)}`
+  log({
+    kind: 'session',
+    message: `[session] ${sg} (${summary.trackName ?? '?'}, best=${summary.bestLap ?? '?'})`,
+    sessionLabel,
+  })
 
   const fetches: Array<[string, string, () => Promise<unknown>, 'json' | 'bytes']> = [
     ['metadata', 'metadata.json', () => api.getSessionMetadata(sg), 'json'],
@@ -272,9 +281,13 @@ export async function fetchAndSaveSession(
       const data = await fn()
       if (kind === 'json') saveJson(p, data)
       else saveBytes(p, data as Uint8Array)
-      log({ kind: 'file', message: `  wrote ${fname} (${fs.statSync(p).size.toLocaleString()} bytes)` })
+      log({
+        kind: 'file',
+        message: `  wrote ${fname} (${fs.statSync(p).size.toLocaleString()} bytes)`,
+        fileName: fname, sessionLabel,
+      })
     } catch (e: any) {
-      log({ kind: 'warn', message: `  [WARN] ${label} failed: ${e.message ?? e}` })
+      log({ kind: 'warn', message: `  [WARN] ${label} failed: ${e.message ?? e}`, sessionLabel })
     }
   }
 
@@ -285,9 +298,13 @@ export async function fetchAndSaveSession(
       try {
         const bytes = await api.getMeanLine(mlGuid)
         saveBytes(mlPath, bytes)
-        log({ kind: 'file', message: `  wrote mean_line/${mlGuid}.pb (${fs.statSync(mlPath).size.toLocaleString()} bytes)` })
+        log({
+          kind: 'file',
+          message: `  wrote mean_line/${mlGuid}.pb (${fs.statSync(mlPath).size.toLocaleString()} bytes)`,
+          fileName: `mean_line/${mlGuid.slice(0, 8)}.pb`, sessionLabel,
+        })
       } catch (e: any) {
-        log({ kind: 'warn', message: `  [WARN] mean line failed: ${e.message ?? e}` })
+        log({ kind: 'warn', message: `  [WARN] mean line failed: ${e.message ?? e}`, sessionLabel })
       }
     }
   }

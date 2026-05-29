@@ -288,6 +288,35 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return resolveVehicleProfile(vehicleGuid, make)
   })
 
+  // Import an external file into a profile's context directory.
+  // sourcePath is the dropped file's path on disk (provided by Electron's File API).
+  ipcMain.handle('profiles:importContextFile', (_e, profileName: string, sourcePath: string, destName: string) => {
+    const profile = discoverProfiles().find(p => p.name === profileName)
+    if (!profile) throw new Error(`unknown profile '${profileName}'`)
+    const dest = path.join(profile.dir, destName)
+    fs.copyFileSync(sourcePath, dest)
+  })
+
+  // Delete a context file from a profile directory. Car.md is protected.
+  ipcMain.handle('profiles:deleteContextFile', (_e, profileName: string, fileName: string) => {
+    if (fileName.toLowerCase() === 'car.md') throw new Error('Car.md cannot be deleted')
+    const profile = discoverProfiles().find(p => p.name === profileName)
+    if (!profile) throw new Error(`unknown profile '${profileName}'`)
+    fs.rmSync(path.join(profile.dir, fileName))
+  })
+
+  // Create a new profile directory with a blank Car.md and optionally link it to a vehicle.
+  ipcMain.handle('profiles:ensureProfile', (_e, name: string, vehicleGuid?: string) => {
+    const dir = path.join(REPO_ROOT, name)
+    fs.mkdirSync(dir, { recursive: true })
+    const carMd = path.join(dir, 'Car.md')
+    if (!fs.existsSync(carMd)) {
+      fs.writeFileSync(carMd, `# ${name}\n\n<!-- Add car specs, setup notes, and driver feedback here. -->\n`)
+    }
+    if (vehicleGuid) setVehicleProfile(vehicleGuid, name)
+    return { name, dir, carMdPath: carMd } as import('../shared/types.js').CarProfile
+  })
+
   // ── Tracks editor ─────────────────────────────────────────────────────────
   //
   // The Tracks workspace tab is for cleaning up corner annotations. We expose:
@@ -480,6 +509,13 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     const win = getMainWindow()
     const accountLabel = opts?.accountLabel ?? null
     const log = (msg: string) => broadcast(win, { kind: 'sync', type: 'log', payload: msg })
+    // Tracks the current progress state so we can incrementally update file/
+    // session labels without losing the previous fields. Emit on any change.
+    const prog: { current: number; total: number; label: string; fileName?: string } = {
+      current: 0, total: 0, label: '',
+    }
+    const sendProgress = () =>
+      broadcast(win, { kind: 'sync', type: 'progress', progress: { ...prog } })
 
     // Smart sync: diff Garmin's session list against what's already in the DB,
     // fetch + load only the new ones, and update the DB incrementally.
@@ -548,13 +584,25 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         // (network); DB insert is fast via the Appender.
         let loaded = 0
         let failed = 0
+        prog.total = newSessions.length
+        sendProgress()
         for (let i = 0; i < newSessions.length; i++) {
           const s = newSessions[i]
           const sg = s.sessionGuid!
+          prog.current = i + 1
+          prog.label = `${s.trackName ?? sg.slice(0, 8)} · ${(s.sessionStart ?? '').slice(0, 10)}`
+          prog.fileName = undefined
+          sendProgress()
           log(`[${i + 1}/${newSessions.length}] ${sg.slice(0, 8)}… ${s.trackName ?? ''} ${s.bestLap ?? ''}`)
           try {
             await fetchAndSaveSession(api, s, SESSIONS_DIR, MEAN_LINES_DIR,
-              e => log(`  ${e.message}`),
+              e => {
+                log(`  ${e.message}`)
+                if (e.kind === 'file' && e.fileName) {
+                  prog.fileName = e.fileName
+                  sendProgress()
+                }
+              },
               accountLabel,
             )
             const samples = await loadSession(con, path.join(SESSIONS_DIR, sg))

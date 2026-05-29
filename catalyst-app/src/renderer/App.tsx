@@ -10,13 +10,14 @@ import { Analysis } from './pages/Analysis'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { api } from './api'
 import { AccountState, getActiveAccount, loadAccounts, tokenValid } from './accounts'
-import type { AuthState, SyncStats, WorkerEvent } from '../shared/types'
+import type { AuthState, SyncStats, WorkerEvent, WorkerProgress } from '../shared/types'
 
 export function App() {
   const [page, setPage] = useState<NavKey>('home')
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [stats, setStats] = useState<SyncStats | null>(null)
   const [logLine, setLogLine] = useState('')
+  const [progress, setProgress] = useState<WorkerProgress | null>(null)
   const [busy, setBusy] = useState<'sync' | 'load' | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [accounts, setAccounts] = useState<AccountState>(() => loadAccounts())
@@ -34,9 +35,11 @@ export function App() {
     refresh()
     const unsub = api.onWorker((evt: WorkerEvent) => {
       if (evt.type === 'log' && evt.payload) setLogLine(evt.payload)
+      if (evt.type === 'progress' && evt.progress) setProgress(evt.progress)
       if (evt.type === 'done') {
         setBusy(null)
         setLogLine(`${evt.kind} complete`)
+        setProgress(null)
         refresh()
         setRefreshTick(t => t + 1)
         // Sync now loads new sessions into the DB incrementally as part of the
@@ -44,6 +47,7 @@ export function App() {
       }
       if (evt.type === 'error') {
         setBusy(null)
+        setProgress(null)
         setLogLine(`error: ${evt.payload}`)
       }
     })
@@ -54,6 +58,7 @@ export function App() {
     if (busy) return
     setBusy('sync')
     setLogLine('starting sync...')
+    setProgress({ current: 0, total: 0, label: 'Fetching session list…' })
     const active = getActiveAccount(accounts)
     try {
       await api.startSync({
@@ -126,7 +131,30 @@ export function App() {
 
         <div className={`status-bar ${busy ? 'busy' : ''}`} style={{ display: busy ? undefined : 'none' }}>
           {busy && <div className="spinner" />}
-          <div className="log">{logLine || 'ready'}</div>
+          {progress && progress.total > 0 ? (
+            <div className="sync-progress">
+              <div className="sync-progress-row">
+                <span className="sync-progress-counter">
+                  {progress.current}/{progress.total}
+                </span>
+                <span className="sync-progress-label">{progress.label}</span>
+                {progress.fileName && (
+                  <span className="sync-progress-file">→ {progress.fileName}</span>
+                )}
+                <span className="sync-progress-pct">
+                  {Math.round((progress.current / progress.total) * 100)}%
+                </span>
+              </div>
+              <div className="sync-progress-track">
+                <div
+                  className="sync-progress-fill"
+                  style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="log">{logLine || 'ready'}</div>
+          )}
           <div className="tag">
             {auth?.tokenValid ? `TOKEN · ${auth.tokenDaysRemaining}D` : 'NO TOKEN'}
           </div>

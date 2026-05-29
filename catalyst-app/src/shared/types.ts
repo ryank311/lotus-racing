@@ -81,10 +81,21 @@ export interface LogLine {
 
 export type WorkerKind = 'sync' | 'load' | 'brief'
 
+// Structured progress for the status bar. `current/total` drive the bar; the
+// other fields populate the human-readable label. Emitted alongside `log`
+// events so existing log consumers keep working unchanged.
+export interface WorkerProgress {
+  current: number          // 1-based session index (or 0 before sync starts)
+  total: number            // total sessions to fetch (0 if not yet known)
+  label: string            // short summary, e.g. "Virginia · Sat AM"
+  fileName?: string        // last file written (weather.json, performance.pb…)
+}
+
 export interface WorkerEvent {
   kind: WorkerKind
-  type: 'log' | 'done' | 'error'
+  type: 'log' | 'done' | 'error' | 'progress'
   payload?: string
+  progress?: WorkerProgress
 }
 
 export interface CarProfile {
