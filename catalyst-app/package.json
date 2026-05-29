@@ -48,7 +48,8 @@
     ],
     "extraResources": [
       { "from": "build/icon.png", "to": "build/icon.png" },
-      { "from": "build/icon.ico", "to": "build/icon.ico" }
+      { "from": "build/icon.ico", "to": "build/icon.ico" },
+      { "from": "../tracks", "to": "bundled-tracks", "filter": ["**/*.yaml"] }
     ],
     "directories": {
       "buildResources": "build",

@@ -4,6 +4,7 @@ import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc.js'
 import { loadInitialBounds, trackWindowState } from './windowState.js'
+import { seedUserData } from '../garmin/paths.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -50,6 +51,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  seedUserData()
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(iconPath) } catch {}
   }
