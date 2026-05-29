@@ -27,12 +27,55 @@ interface VehicleGroup {
   count: number
 }
 
+type SortKey = 'date' | 'track' | 'config' | 'vehicle' | 'best' | 'laps' | 'weather'
+type SortDir = 'asc' | 'desc'
+
+// Per-column field extractors. Returning a (number|string|null) lets us share
+// one comparator across all keys — null sorts to the bottom in both directions.
+const SORT_EXTRACTORS: Record<SortKey, (r: DbSessionRow) => string | number | null> = {
+  date:    r => r.session_start ?? null,
+  track:   r => (r.track_name ?? '').toLowerCase() || null,
+  config:  r => (r.track_configuration_name ?? '').toLowerCase() || null,
+  vehicle: r => vehicleLabel(r).toLowerCase() || null,
+  best:    r => r.best_lap_ms ?? null,
+  laps:    r => r.lap_count ?? null,
+  weather: r => (r.weather_description ?? '').toLowerCase() || null,
+}
+
+function compareWith(key: SortKey, dir: SortDir) {
+  const extract = SORT_EXTRACTORS[key]
+  const mul = dir === 'asc' ? 1 : -1
+  return (a: DbSessionRow, b: DbSessionRow): number => {
+    const av = extract(a), bv = extract(b)
+    if (av == null && bv == null) return 0
+    if (av == null) return 1   // nulls always last, regardless of dir
+    if (bv == null) return -1
+    if (av < bv) return -1 * mul
+    if (av > bv) return  1 * mul
+    return 0
+  }
+}
+
 export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount }: Props) {
   const [rows, setRows] = useState<DbSessionRow[]>([])
   const [hasDb, setHasDb] = useState(false)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
   const [vehicleFilter, setVehicleFilter] = useState<string | null>(null) // vehicle_guid or null
+  const [sortKey, setSortKey] = useState<SortKey>('date')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  // First click on a new column picks that column's natural default direction;
+  // clicking the active column toggles asc/desc.
+  const onHeaderClick = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      // Date / best-lap / laps are more useful descending; text columns ascending.
+      setSortDir(key === 'date' || key === 'best' || key === 'laps' ? 'desc' : 'asc')
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -71,8 +114,10 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         (r.session_guid ?? '').toLowerCase().includes(q) ||
         vehicleLabel(r).toLowerCase().includes(q))
     }
-    return out
-  }, [rows, filter, vehicleFilter])
+    // Sort after filtering so the visible order matches the selected column.
+    // Slice() because Array.sort is in-place and `out` may alias `rows`.
+    return out.slice().sort(compareWith(sortKey, sortDir))
+  }, [rows, filter, vehicleFilter, sortKey, sortDir])
 
   const allVisibleSelected = filtered.length > 0 && filtered.every(r => selected.has(r.session_guid))
 
@@ -162,22 +207,21 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
             <thead>
               <tr>
                 <th style={{ width: 36 }}></th>
-                <th>Date</th>
-                <th>Track</th>
-                <th>Config</th>
-                <th>Vehicle</th>
-                <th style={{ textAlign: 'right' }}>Best lap</th>
-                <th style={{ textAlign: 'right' }}>Laps</th>
-                <th style={{ textAlign: 'right' }}>Samples</th>
-                <th>Weather</th>
+                <SortHeader k="date"    sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Date</SortHeader>
+                <SortHeader k="track"   sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Track</SortHeader>
+                <SortHeader k="config"  sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Config</SortHeader>
+                <SortHeader k="vehicle" sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Vehicle</SortHeader>
+                <SortHeader k="best"    sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick} align="right">Best lap</SortHeader>
+                <SortHeader k="laps"    sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick} align="right">Laps</SortHeader>
+                <SortHeader k="weather" sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Weather</SortHeader>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={9} className="muted">loading…</td></tr>
+                <tr><td colSpan={8} className="muted">loading…</td></tr>
               )}
               {!loading && filtered.length === 0 && (
-                <tr><td colSpan={9} className="muted">no sessions{!hasDb ? ' — sync first' : ''}</td></tr>
+                <tr><td colSpan={8} className="muted">no sessions{!hasDb ? ' — sync first' : ''}</td></tr>
               )}
               {filtered.map(r => {
                 const on = selected.has(r.session_guid)
@@ -204,7 +248,6 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                     <td className="small">{veh || <span className="muted">—</span>}</td>
                     <td className="num laptime">{msToLap(r.best_lap_ms)}</td>
                     <td className="num">{r.lap_count || '—'}</td>
-                    <td className="num">{r.sample_count ? r.sample_count.toLocaleString() : '—'}</td>
                     <td className="muted small">{r.weather_description || '—'}</td>
                   </tr>
                 )
@@ -242,5 +285,32 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         </div>
       )}
     </>
+  )
+}
+
+// Clickable column header with a tiny ▲/▼ glyph showing the active direction.
+// `align` lets numeric columns keep their right-aligned values while the label
+// + arrow stay together on the right side of the header.
+function SortHeader({
+  k, sortKey, sortDir, onClick, align = 'left', children,
+}: {
+  k: SortKey
+  sortKey: SortKey
+  sortDir: SortDir
+  onClick: (k: SortKey) => void
+  align?: 'left' | 'right'
+  children: React.ReactNode
+}) {
+  const active = sortKey === k
+  const arrow = active ? (sortDir === 'asc' ? '▲' : '▼') : ''
+  return (
+    <th
+      onClick={() => onClick(k)}
+      className={`sortable ${active ? 'sorted' : ''}`}
+      style={{ textAlign: align, cursor: 'pointer', userSelect: 'none' }}
+    >
+      <span>{children}</span>
+      <span className="sort-arrow">{arrow || '·'}</span>
+    </th>
   )
 }

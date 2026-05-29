@@ -150,13 +150,9 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
 
 // ============================================================================
 
-// TrackMapPanel — right pane content, full height, no chrome padding
+// TrackMapPanel — right pane content, full height, no extra chrome
 function TrackMapPanel({ data, hoverDistanceM }: { data: AnalysisData; hoverDistanceM: number | null }) {
-  return (
-    <ChartCard channel="TRACK MAP" meta="racing line · drag to pan · ⌘+scroll to zoom">
-      <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} />
-    </ChartCard>
-  )
+  return <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} />
 }
 
 function AnalysisBody({ data, selected, setSelected, onHoverDistance }: {
@@ -384,7 +380,7 @@ function ggFigure(d: AnalysisData) {
     ] as any[],
     layout: {
       xaxis: { title: 'Lateral G  (← left | right →)', zeroline: true, zerolinecolor: PALETTE.borderStrong, scaleanchor: 'y' },
-      yaxis: { title: 'Longitudinal G  (brake ↓ | accel ↑)', zeroline: true, zerolinecolor: PALETTE.borderStrong },
+      yaxis: { title: 'Longitudinal G  (accel ↑ | brake ↓)', zeroline: true, zerolinecolor: PALETTE.borderStrong, autorange: 'reversed' },
       shapes: [
         { type: 'line', x0: 0, x1: 0, y0: -2.2, y1: 2.2, line: { color: PALETTE.borderStrong, width: 1 } },
         { type: 'line', x0: -2.2, x1: 2.2, y0: 0, y1: 0, line: { color: PALETTE.borderStrong, width: 1 } },

@@ -1282,37 +1282,118 @@ input, textarea, select { font-family: inherit; color: inherit; }
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 6px 8px;
+  gap: 3px;
+  padding: 5px 6px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-soft);
+  min-height: 0;
 }
-.track-map-controls .spacer { flex: 1; }
+.track-map-controls .spacer { flex: 1; min-width: 4px; }
 
 .layer-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.16em;
+  font-size: 8px;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
-  padding: 5px 9px;
+  padding: 4px 7px;
   background: transparent;
   color: var(--text-mute);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   cursor: pointer;
+  white-space: nowrap;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 .layer-toggle:hover { color: var(--text-dim); border-color: var(--border-strong); }
 .layer-toggle.on   { color: var(--text); border-color: var(--signal); background: rgba(255,94,58,0.06); }
 .layer-toggle .dot {
-  width: 6px; height: 6px;
+  width: 5px; height: 5px;
   border-radius: 50%;
   background: var(--text-mute);
+  flex-shrink: 0;
 }
-.layer-toggle.on .dot { background: var(--signal); box-shadow: 0 0 6px var(--signal); }
+.layer-toggle.on .dot { background: var(--signal); box-shadow: 0 0 5px var(--signal); }
+
+/* ── lap picker dropdown ── */
+.lap-picker {
+  position: relative;
+}
+.lap-picker-caret {
+  font-size: 7px;
+  margin-left: 2px;
+  opacity: 0.6;
+}
+.lap-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  min-width: 180px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lap-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-mute);
+  text-align: left;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  width: 100%;
+}
+.lap-picker-item:hover {
+  background: var(--bg-elev);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+.lap-picker-item.on {
+  color: var(--text);
+  border-color: var(--border);
+  background: rgba(255,255,255,0.04);
+}
+.lap-picker-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: opacity 0.1s;
+}
+.lap-picker-label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.08em;
+}
+.lap-picker-time {
+  color: var(--text-mute);
+  letter-spacing: 0.04em;
+}
+.lap-picker-item.on .lap-picker-time {
+  color: var(--text-dim);
+}
+.lap-picker-check {
+  font-size: 9px;
+  color: var(--signal);
+  width: 10px;
+  text-align: center;
+}
 
 .track-map-legend {
   position: absolute;
@@ -1402,22 +1483,11 @@ input, textarea, select { font-family: inherit; color: inherit; }
   flex-direction: column;
 }
 
-.analysis-right-pane .chart-card {
+/* TrackMap fills the right pane directly — no ChartCard wrapper */
+.analysis-right-pane .track-map {
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 0;
   border-radius: 0;
-  border-top: none;
-  border-right: none;
-  border-bottom: none;
-}
-.analysis-right-pane .chart-card-body {
-  flex: 1;
-  min-height: 0;
-  margin-top: 0;
-  padding-top: 8px;
+  border-left: 1px solid var(--border);
 }
 
 .analysis-map-placeholder {
@@ -1438,6 +1508,43 @@ input, textarea, select { font-family: inherit; color: inherit; }
   letter-spacing: 0.06em;
   color: #fff;
   margin-top: 2px;
+}
+
+/* ── track map hover tooltip ──────────────────────────────────────────── */
+.track-map-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 50;
+  background: rgba(10,10,14,0.92);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  min-width: 200px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.track-map-tooltip-dist {
+  color: var(--text-mute);
+  letter-spacing: 0.14em;
+  font-size: 9px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.track-map-tooltip-row {
+  display: grid;
+  grid-template-columns: 52px 1fr 1fr 1fr;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 2px 0;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+.track-map-tooltip-label {
+  font-weight: 700;
+  letter-spacing: 0.08em;
 }
 
 /* ── tracks editor ───────────────────────────────────────────────────── */
@@ -1584,3 +1691,22 @@ input, textarea, select { font-family: inherit; color: inherit; }
   gap: 8px;
   align-items: center;
 }
+
+/* ── sortable table headers ──────────────────────────────────────────── */
+
+.tbl th.sortable {
+  transition: color 0.12s, background 0.12s;
+}
+.tbl th.sortable:hover {
+  color: var(--text);
+  background: rgba(255,255,255,0.02);
+}
+.tbl th.sortable.sorted {
+  color: var(--signal);
+}
+.tbl th .sort-arrow {
+  font-size: 9px;
+  margin-left: 6px;
+  color: var(--text-mute);
+}
+.tbl th.sortable.sorted .sort-arrow { color: var(--signal); }

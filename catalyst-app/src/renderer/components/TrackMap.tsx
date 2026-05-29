@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisData, RacingLineLap, TrackGeometryPayload } from '../../garmin/analysisData'
+import { LAP_PALETTE } from './PlotlyChart'
 
 // Structural subset of AnalysisData that this component actually needs. Both
 // the Analysis page (passes its full AnalysisData) and the Tracks editor
@@ -108,14 +109,39 @@ function ribbonPath(left: Array<{ x: number; y: number }>, right: Array<{ x: num
   return d
 }
 
-// Best-lap "speed heatmap" — many short line segments, each coloured by the
-// average speed at that segment. Using <polyline>s with per-segment colour
-// is the simplest cross-browser way to fake a gradient stroke.
-function SpeedHeatmapPath({ lap, smin, smax }: { lap: RacingLineLap; smin: number; smax: number }) {
+type TrackMetric = 'speed_mph' | 'lat_g' | 'long_g'
+
+const METRIC_META: Record<TrackMetric, { label: string; unit: string; abs: boolean }> = {
+  speed_mph: { label: 'Speed',    unit: 'mph', abs: false },
+  lat_g:     { label: 'Lat G',    unit: 'g',   abs: true  },
+  long_g:    { label: 'Long G',   unit: 'g',   abs: true  },
+}
+
+function getMetricValues(lap: RacingLineLap, metric: TrackMetric): number[] {
+  const raw = lap[metric] as number[]
+  return METRIC_META[metric].abs ? raw.map(Math.abs) : raw
+}
+
+// Nearest index in a sorted dist[] array for a given distance value.
+function nearestDistIdx(dist: number[], target: number): number {
+  let lo = 0, hi = dist.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (dist[mid] < target) lo = mid + 1
+    else hi = mid
+  }
+  if (lo > 0 && Math.abs(dist[lo - 1] - target) < Math.abs(dist[lo] - target)) return lo - 1
+  return lo
+}
+
+// Per-lap heatmap — many short line segments coloured by the chosen metric.
+function HeatmapPath({ lap, values, vmin, vmax }: {
+  lap: RacingLineLap; values: number[]; vmin: number; vmax: number
+}) {
   const segments = []
-  const range = Math.max(1, smax - smin)
+  const range = Math.max(1e-6, vmax - vmin)
   for (let i = 1; i < lap.x.length; i++) {
-    const t = ((lap.speed_mph[i] + lap.speed_mph[i - 1]) / 2 - smin) / range
+    const t = ((values[i] + values[i - 1]) / 2 - vmin) / range
     segments.push(
       <line
         key={i}
@@ -150,26 +176,30 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
   const [vb, setVb] = useState<ViewBox | null>(fitBox)
   useEffect(() => { setVb(fitBox) }, [fitBox])
 
-  // Layer toggles
-  const [showRibbon,    setShowRibbon]    = useState(true)
-  const [showCenter,    setShowCenter]    = useState(false)
-  const [showSectors,   setShowSectors]   = useState(true)
-  const [showRacing,    setShowRacing]    = useState(true)
-  const [showCompare,   setShowCompare]   = useState(false)
+  // Layer toggles + metric selector
+  const [showCenter,      setShowCenter]    = useState(false)
+  const [showRacing,      setShowRacing]    = useState(true)
+  const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set())
+  const [metric,          setMetric]        = useState<TrackMetric>('speed_mph')
+
+  // Hover state — index into bestLap arrays, plus container-relative position
+  const [hoverIdx,    setHoverIdx]    = useState<number | null>(null)
+  const [tooltipPos,  setTooltipPos]  = useState<{ x: number; y: number } | null>(null)
 
   const bestLap = racingLines[0] ?? null
   const compareLaps = racingLines.slice(1)
 
-  // Speed range — drives the heatmap colour scale.
-  const [smin, smax] = useMemo(() => {
+  // Value range for the current metric (used for heatmap colour scale + legend).
+  const [vmin, vmax] = useMemo(() => {
     if (!bestLap) return [0, 100]
+    const vals = getMetricValues(bestLap, metric)
     let mn = Infinity, mx = -Infinity
-    for (const v of bestLap.speed_mph) {
+    for (const v of vals) {
       if (v < mn) mn = v
       if (v > mx) mx = v
     }
     return [mn, mx]
-  }, [bestLap])
+  }, [bestLap, metric])
 
   // Centerline distance → position lookup for sector ticks.
   const centerByDist = useMemo(() => {
@@ -245,15 +275,49 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
     const d = dragStateRef.current
     const svg = svgRef.current
-    if (!d || !svg) return
-    const rect = svg.getBoundingClientRect()
-    moveSinceDownRef.current = Math.max(
-      moveSinceDownRef.current,
-      Math.hypot(e.clientX - d.x, e.clientY - d.y),
-    )
-    const dx = ((e.clientX - d.x) / rect.width) * d.vb.w
-    const dy = ((e.clientY - d.y) / rect.height) * d.vb.h
-    setVb({ x: d.vb.x - dx, y: d.vb.y - dy, w: d.vb.w, h: d.vb.h })
+    if (svg) {
+      if (d) {
+        // Pan drag
+        const rect = svg.getBoundingClientRect()
+        moveSinceDownRef.current = Math.max(
+          moveSinceDownRef.current,
+          Math.hypot(e.clientX - d.x, e.clientY - d.y),
+        )
+        const dx = ((e.clientX - d.x) / rect.width) * d.vb.w
+        const dy = ((e.clientY - d.y) / rect.height) * d.vb.h
+        setVb({ x: d.vb.x - dx, y: d.vb.y - dy, w: d.vb.w, h: d.vb.h })
+      } else if (bestLap && vb) {
+        // Hover detection — find nearest best-lap point in SVG space.
+        // SVG space has y-flipped: a world point (x,y) is at SVG (x, -y).
+        const w = screenToWorld(e.clientX, e.clientY)
+        if (w) {
+          let nearI = 0, nearD = Infinity
+          for (let i = 0; i < bestLap.x.length; i++) {
+            const dx = bestLap.x[i] - w.x
+            const dy = -bestLap.y[i] - w.y
+            const dist = dx * dx + dy * dy
+            if (dist < nearD) { nearD = dist; nearI = i }
+          }
+          // Only show tooltip if within ~40 CSS pixels of a sample
+          const rect = svg.getBoundingClientRect()
+          const pxPerSvgUnit = rect.width / vb.w
+          const threshold = (40 / pxPerSvgUnit) ** 2
+          if (nearD < threshold) {
+            setHoverIdx(nearI)
+            const cRect = containerRef.current?.getBoundingClientRect()
+            if (cRect) setTooltipPos({ x: e.clientX - cRect.left, y: e.clientY - cRect.top })
+          } else {
+            setHoverIdx(null)
+            setTooltipPos(null)
+          }
+        }
+      }
+    }
+  }
+
+  function onPointerLeave() {
+    setHoverIdx(null)
+    setTooltipPos(null)
   }
   function onPointerUp(e: React.PointerEvent<SVGSVGElement>) {
     svgRef.current?.releasePointerCapture(e.pointerId)
@@ -319,11 +383,16 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
   return (
     <div className="track-map" ref={containerRef} style={{ height }}>
       <div className="track-map-controls">
-        <LayerToggle on={showRibbon}  onChange={setShowRibbon}>track</LayerToggle>
-        <LayerToggle on={showCenter}  onChange={setShowCenter}>centerline</LayerToggle>
-        <LayerToggle on={showSectors} onChange={setShowSectors}>sectors</LayerToggle>
-        <LayerToggle on={showRacing}  onChange={setShowRacing}>racing line</LayerToggle>
-        <LayerToggle on={showCompare} onChange={setShowCompare}>compare laps</LayerToggle>
+        <MetricDropdown metric={metric} onChange={setMetric} />
+        <LayerToggle on={showCenter} onChange={setShowCenter}>centerline</LayerToggle>
+        <LayerToggle on={showRacing} onChange={setShowRacing}>best lap</LayerToggle>
+        {compareLaps.length > 0 && (
+          <LapPickerDropdown
+            laps={compareLaps}
+            selected={selectedLapIdxs}
+            onChange={setSelectedLapIdxs}
+          />
+        )}
         <span className="spacer" />
         <button className="btn tiny ghost" title="Zoom in"   onClick={() => zoomCenter(0.8)}>+</button>
         <button className="btn tiny ghost" title="Zoom out"  onClick={() => zoomCenter(1.25)}>−</button>
@@ -337,6 +406,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerLeave={onPointerLeave}
         onDoubleClick={fitToTrack}
         style={{
           width: '100%',
@@ -349,16 +419,14 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
               : 'grab',
         }}
       >
-        {/* L1 — track surface ribbon */}
-        {showRibbon && (
-          <path
-            d={ribbonPath(geom.leftEdge, geom.rightEdge)}
-            fill="#1a1a22"
-            stroke="#34343d"
-            strokeWidth={0.6}
-            vectorEffect="non-scaling-stroke"
-          />
-        )}
+        {/* L1 — track surface ribbon (always on) */}
+        <path
+          d={ribbonPath(geom.leftEdge, geom.rightEdge)}
+          fill="#1a1a22"
+          stroke="#34343d"
+          strokeWidth={0.6}
+          vectorEffect="non-scaling-stroke"
+        />
 
         {/* L2 — centerline reference */}
         {showCenter && (
@@ -372,8 +440,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           />
         )}
 
-        {/* L3 — sector ticks (small ⊥ marks at each sector start) */}
-        {showSectors && geom.sectorMarks.map((m, i) => {
+        {/* L3 — sector ticks (always on) */}
+        {geom.sectorMarks.map((m, i) => {
           const p = pointAtDist(m.distM)
           if (!p) return null
           // perpendicular direction at this distance
@@ -397,23 +465,22 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           )
         })}
 
-        {/* L4 — comparison laps (faint single colour, drawn below the best) */}
-        {showCompare && compareLaps.map((lap, i) => (
+        {/* L4 — individually selected comparison laps */}
+        {compareLaps.map((lap, i) => selectedLapIdxs.has(i) && (
           <path
             key={`cmp-${lap.sg}-${lap.lapIdx}`}
             d={pathFromPoints(lap.x.map((x, k) => ({ x, y: lap.y[k] })))}
             fill="none"
-            stroke="#7dd3fc"
-            strokeOpacity={Math.max(0.15, 0.45 - i * 0.04)}
-            strokeWidth={1.0}
+            stroke={LAP_PALETTE[i % LAP_PALETTE.length]}
+            strokeOpacity={0.75}
+            strokeWidth={1.2}
             vectorEffect="non-scaling-stroke"
           />
         ))}
 
-        {/* L5 — best-lap racing line, speed-heatmap stroke. Hidden in edit
-             mode so the corner markers below stay the visual focus. */}
+        {/* L5 — best-lap heatmap coloured by the selected metric. */}
         {!edit && showRacing && bestLap && (
-          <SpeedHeatmapPath lap={bestLap} smin={smin} smax={smax} />
+          <HeatmapPath lap={bestLap} values={getMetricValues(bestLap, metric)} vmin={vmin} vmax={vmax} />
         )}
 
         {/* L5z — corner zone of the selected corner. We draw a thick faint
@@ -478,27 +545,23 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           )
         })}
 
-        {/* L6 — chart-hover crosshair: white pulse on the racing line at the
-             cumulative distance the user is hovering on the time-series charts. */}
+        {/* L6 — chart-hover crosshair (external, from hovering the left-pane charts) */}
         {crosshair && (
           <g pointerEvents="none">
-            <circle
-              cx={crosshair.x} cy={-crosshair.y}
-              r={6}
-              fill="none"
-              stroke="#ffffff"
-              strokeOpacity={0.35}
-              strokeWidth={1.2}
-              vectorEffect="non-scaling-stroke"
-            />
-            <circle
-              cx={crosshair.x} cy={-crosshair.y}
-              r={3}
-              fill="#ffffff"
-              stroke="#000"
-              strokeWidth={0.5}
-              vectorEffect="non-scaling-stroke"
-            />
+            <circle cx={crosshair.x} cy={-crosshair.y} r={9} fill="none" stroke="#ffffff"
+              strokeOpacity={0.25} strokeWidth={4} vectorEffect="non-scaling-stroke" />
+            <circle cx={crosshair.x} cy={-crosshair.y} r={5} fill="#ff5e3a" stroke="#ffffff"
+              strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          </g>
+        )}
+
+        {/* L7 — direct hover marker (mouse over the track map itself) */}
+        {hoverIdx !== null && bestLap && (
+          <g pointerEvents="none">
+            <circle cx={bestLap.x[hoverIdx]} cy={-bestLap.y[hoverIdx]} r={9} fill="none"
+              stroke="#ffffff" strokeOpacity={0.25} strokeWidth={4} vectorEffect="non-scaling-stroke" />
+            <circle cx={bestLap.x[hoverIdx]} cy={-bestLap.y[hoverIdx]} r={5} fill="#ff5e3a"
+              stroke="#ffffff" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
           </g>
         )}
       </svg>
@@ -510,9 +573,15 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           ))}
         </div>
         <div className="track-map-legend-labels">
-          <span>{Math.round(smin)} mph</span>
-          <span>{Math.round((smin + smax) / 2)} mph</span>
-          <span>{Math.round(smax)} mph</span>
+          {(() => {
+            const { unit, abs } = METRIC_META[metric]
+            const fmt = (v: number) => metric === 'speed_mph' ? `${Math.round(v)} ${unit}` : `${v.toFixed(2)}${unit}`
+            return <>
+              <span>{fmt(vmin)}</span>
+              <span>{fmt((vmin + vmax) / 2)}</span>
+              <span>{fmt(vmax)}{abs ? ' abs' : ''}</span>
+            </>
+          })()}
         </div>
         {bestLap && (
           <div className="track-map-legend-best">
@@ -526,6 +595,79 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
           </div>
         )}
       </div>
+
+      {/* Hover tooltip — shows all metrics for every enabled lap */}
+      {hoverIdx !== null && tooltipPos && bestLap && (
+        <div
+          className="track-map-tooltip"
+          style={{ left: tooltipPos.x + 14, top: tooltipPos.y - 10 }}
+        >
+          <div className="track-map-tooltip-dist">
+            {Math.round(bestLap.dist[hoverIdx])} m
+          </div>
+          {[{ lap: bestLap, label: `L${bestLap.lapIdx + 1} ★`, i: -1 },
+            ...compareLaps
+              .map((lap, i) => ({ lap, label: `L${lap.lapIdx + 1}`, i }))
+              .filter(({ i }) => selectedLapIdxs.has(i))
+          ].map(({ lap, label, i }) => {
+            const distM = bestLap.dist[hoverIdx]
+            const idx = i === -1 ? hoverIdx : nearestDistIdx(lap.dist, distM)
+            const color = i === -1 ? '#ff5e3a' : LAP_PALETTE[i % LAP_PALETTE.length]
+            return (
+              <div key={`${lap.sg}-${lap.lapIdx}`} className="track-map-tooltip-row">
+                <span className="track-map-tooltip-label" style={{ color }}>{label}</span>
+                <span>{lap.speed_mph[idx]?.toFixed(1)} mph</span>
+                <span>{lap.lat_g[idx]?.toFixed(2)}g lat</span>
+                <span>{lap.long_g[idx]?.toFixed(2)}g lng</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MetricDropdown({ metric, onChange }: { metric: TrackMetric; onChange: (m: TrackMetric) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div className="lap-picker" ref={ref}>
+      <button
+        className="layer-toggle on"
+        type="button"
+        onClick={() => setOpen(o => !o)}
+      >
+        <span className="dot" />
+        <span>{METRIC_META[metric].label}</span>
+        <span className="lap-picker-caret">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="lap-picker-menu">
+          {(Object.keys(METRIC_META) as TrackMetric[]).map(m => (
+            <button
+              key={m}
+              className={`lap-picker-item ${m === metric ? 'on' : ''}`}
+              type="button"
+              onClick={() => { onChange(m); setOpen(false) }}
+            >
+              <span className="lap-picker-swatch" style={{ background: '#ff5e3a', opacity: m === metric ? 1 : 0.25 }} />
+              <span className="lap-picker-label">{METRIC_META[m].label}</span>
+              <span className="lap-picker-check">{m === metric ? '✓' : ''}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -542,5 +684,75 @@ function LayerToggle({
       <span className="dot" />
       <span>{children}</span>
     </button>
+  )
+}
+
+function msToLapTime(ms: number): string {
+  const m = Math.floor(ms / 60000)
+  const s = ((ms % 60000) / 1000).toFixed(3)
+  return `${m}:${s.padStart(7, '0')}`
+}
+
+function LapPickerDropdown({ laps, selected, onChange }: {
+  laps: RacingLineLap[]
+  selected: Set<number>
+  onChange: (s: Set<number>) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const toggle = (i: number) => {
+    const next = new Set(selected)
+    next.has(i) ? next.delete(i) : next.add(i)
+    onChange(next)
+  }
+
+  const anyOn = selected.size > 0
+
+  return (
+    <div className="lap-picker" ref={ref}>
+      <button
+        className={`layer-toggle ${anyOn ? 'on' : ''}`}
+        type="button"
+        onClick={() => setOpen(o => !o)}
+      >
+        <span className="dot" />
+        <span>compare laps{anyOn ? ` (${selected.size})` : ''}</span>
+        <span className="lap-picker-caret">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="lap-picker-menu">
+          {laps.map((lap, i) => {
+            const on = selected.has(i)
+            const color = LAP_PALETTE[i % LAP_PALETTE.length]
+            return (
+              <button
+                key={`${lap.sg}-${lap.lapIdx}`}
+                className={`lap-picker-item ${on ? 'on' : ''}`}
+                type="button"
+                onClick={() => toggle(i)}
+              >
+                <span className="lap-picker-swatch" style={{ background: color, opacity: on ? 1 : 0.3 }} />
+                <span className="lap-picker-label">
+                  L{lap.lapIdx + 1}
+                  <span className="lap-picker-time">{msToLapTime(lap.durationMs)}</span>
+                </span>
+                <span className="lap-picker-check">{on ? '✓' : ''}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
