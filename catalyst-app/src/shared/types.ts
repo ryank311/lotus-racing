@@ -21,8 +21,10 @@ export interface AuthState {
 }
 
 export interface SyncStats {
-  sessionCount: number
-  totalSizeBytes: number
+  sessionCount: number       // rows in the `sessions` table (the source of truth)
+  lapCount: number
+  sampleCount: number
+  totalSizeBytes: number     // on-disk DB file size
   lastSyncEpoch: number | null
   lastSyncAgoHuman: string
 }

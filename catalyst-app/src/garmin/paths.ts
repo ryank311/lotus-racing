@@ -38,7 +38,14 @@ export const MEAN_LINES_DIR = path.join(DATA_DIR, 'mean_lines')
 export const CONFIG_PATH = path.join(GARMIN_DIR, 'config.json')
 export const GARTH_TOKEN_DIR = path.join(GARMIN_DIR, '.garth')
 export const CATALYST_TOKEN_CACHE = path.join(GARMIN_DIR, '.catalyst_token.json')
-export const DB_PATH = path.join(DATA_DIR, 'catalyst.duckdb')
+// DB lives in a path the Electron app owns exclusively. Sharing the same
+// .duckdb file with the Python pipeline (different libduckdb version) has
+// caused ART-index corruption + SIGBUS crashes during commit cleanup. The
+// underlying telemetry (JSON + protobuf) is the source of truth; the DB is
+// a derived cache and can be rebuilt in seconds.
+export const DB_PATH = process.env.CATALYST_DB_PATH
+  ? path.resolve(process.env.CATALYST_DB_PATH)
+  : path.join(DATA_DIR, 'catalyst-app.duckdb')
 export const TRACKS_DIR = path.join(REPO_ROOT, 'tracks')
 export const COACHING_DIR = path.join(REPO_ROOT, 'coaching')
 

@@ -236,6 +236,22 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
   return sampleCount
 }
 
+// Read the set of session_guids currently materialized in the DB. Returns an
+// empty set if the table doesn't exist yet — used by the smart-sync worker to
+// skip what we already have without re-downloading.
+export async function existingSessionGuids(con: DuckDBConnection): Promise<Set<string>> {
+  try {
+    const reader = await con.runAndReadAll('SELECT session_guid FROM sessions')
+    const out = new Set<string>()
+    for (const row of reader.getRowsJson()) {
+      if (row[0]) out.add(String(row[0]))
+    }
+    return out
+  } catch {
+    return new Set()
+  }
+}
+
 export async function openDb(dbPath = DB_PATH, readOnly = false): Promise<{ instance: DuckDBInstance; con: DuckDBConnection }> {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   const instance = await DuckDBInstance.create(dbPath, readOnly ? { access_mode: 'READ_ONLY' } : {})
@@ -247,6 +263,19 @@ export async function loadAll(
   log: (line: string) => void,
   dbPath = DB_PATH,
 ): Promise<{ sessions: number; samples: number }> {
+  // Always rebuild from scratch. The JSON+protobuf files in SESSIONS_DIR are
+  // the source of truth; the DB is just a derived cache. Wiping it dodges
+  // ART-index corruption that's accumulated from prior crashes or
+  // cross-version writes (e.g. Python writing the same file with a different
+  // libduckdb). Re-ingest is ~10s per 50 sessions thanks to the Appender.
+  for (const ext of ['', '.wal', '.tmp']) {
+    const p = dbPath + ext
+    if (fs.existsSync(p)) {
+      try { fs.rmSync(p, { recursive: true, force: true }); log(`[rebuild] removed ${path.basename(p)}`) }
+      catch (e: any) { log(`[rebuild] could not remove ${p}: ${e.message ?? e}`) }
+    }
+  }
+
   const { con } = await openDb(dbPath)
   await initSchema(con)
   const tcCount = await loadTrackConfigs(con)

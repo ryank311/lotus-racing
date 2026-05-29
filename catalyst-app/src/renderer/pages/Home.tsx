@@ -47,11 +47,11 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
           <div>
             <div className="banner-headline">
               {stats && stats.sessionCount > 0
-                ? <>Telemetry archive · <span style={{ color: 'var(--signal)' }}>{stats.sessionCount}</span> sessions on disk</>
+                ? <>Telemetry archive · <span style={{ color: 'var(--signal)' }}>{stats.sessionCount}</span> sessions loaded</>
                 : <>No telemetry yet — sync your first session</>}
             </div>
             <div className="banner-sub">
-              {humaniseBytes(stats?.totalSizeBytes ?? 0)} · last sync {stats?.lastSyncAgoHuman ?? 'never'}
+              {(stats?.sampleCount ?? 0).toLocaleString()} samples · last sync {stats?.lastSyncAgoHuman ?? 'never'}
             </div>
           </div>
           <div className="btn-row" style={{ margin: 0 }}>
@@ -68,8 +68,8 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
         </div>
 
         <div className="stat-grid">
-          <Tile label="Sessions on disk" value={String(stats?.sessionCount ?? 0)} />
-          <Tile label="Total telemetry" value={humaniseBytes(stats?.totalSizeBytes ?? 0)} mono />
+          <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />
+          <Tile label="Driven laps" value={(stats?.lapCount ?? 0).toLocaleString()} mono />
           <Tile label="Token expires in" value={tokenStatus.text} valueClass={tokenStatus.cls} />
           <Tile label="Last sync" value={stats?.lastSyncAgoHuman ?? 'never'} mono />
         </div>

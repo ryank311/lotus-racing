@@ -36,10 +36,8 @@ export function App() {
         setLogLine(`${evt.kind} complete`)
         refresh()
         setRefreshTick(t => t + 1)
-        if (evt.kind === 'sync') {
-          setBusy('load')
-          api.startLoad()
-        }
+        // Sync now loads new sessions into the DB incrementally as part of the
+        // same worker pass — no need to chain a full Rebuild DB after it.
       }
       if (evt.type === 'error') {
         setBusy(null)

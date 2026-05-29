@@ -15,10 +15,19 @@ import { loadConfig, setCredentials } from '../garmin/config.js'
 import {
   CatalystAPI,
   fetchAllSessions,
+  fetchAndSaveSession,
   loadCatalystToken,
   loadCatalystTokenExpiry,
 } from '../garmin/catalystClient.js'
-import { loadAll, openDb } from '../garmin/loadToDb.js'
+import {
+  existingSessionGuids,
+  initSchema,
+  loadAll,
+  loadSession,
+  loadTrackConfigs,
+  openDb,
+} from '../garmin/loadToDb.js'
+import { MEAN_LINES_DIR } from '../garmin/paths.js'
 import { runBrief } from '../garmin/promptPack.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import {
@@ -47,32 +56,38 @@ function humaniseTimeAgo(epochSec: number | null): string {
   return `${Math.floor(delta / 86_400)} days ago`
 }
 
-function readSyncStats(): SyncStats {
-  if (!fs.existsSync(SESSIONS_DIR)) {
-    return { sessionCount: 0, totalSizeBytes: 0, lastSyncEpoch: null, lastSyncAgoHuman: 'never' }
+async function readSyncStats(): Promise<SyncStats> {
+  const empty: SyncStats = {
+    sessionCount: 0, lapCount: 0, sampleCount: 0,
+    totalSizeBytes: 0, lastSyncEpoch: null, lastSyncAgoHuman: 'never',
   }
-  let total = 0
-  let latest = 0
-  let sessionCount = 0
-  for (const name of fs.readdirSync(SESSIONS_DIR)) {
-    const dir = path.join(SESSIONS_DIR, name)
-    const st = fs.statSync(dir)
-    if (!st.isDirectory()) continue
-    sessionCount++
-    for (const fn of fs.readdirSync(dir)) {
-      const fp = path.join(dir, fn)
-      const fs2 = fs.statSync(fp)
-      if (fs2.isFile()) {
-        total += fs2.size
-        if (fs2.mtimeMs / 1000 > latest) latest = fs2.mtimeMs / 1000
-      }
-    }
+  if (!fs.existsSync(DB_PATH)) return empty
+
+  let sessionCount = 0, lapCount = 0, sampleCount = 0
+  try {
+    const { con } = await openDb(DB_PATH, true)
+    const reader = await con.runAndReadAll(`
+      SELECT
+        (SELECT COUNT(*) FROM sessions),
+        (SELECT COUNT(*) FROM laps),
+        (SELECT COUNT(*) FROM samples)
+    `)
+    const row = reader.getRowsJson()[0] ?? []
+    sessionCount = Number(row[0] ?? 0)
+    lapCount = Number(row[1] ?? 0)
+    sampleCount = Number(row[2] ?? 0)
+  } catch {
+    // schema not initialised yet — treat as empty
+    return empty
   }
+
+  const st = fs.statSync(DB_PATH)
+  const lastSync = st.mtimeMs / 1000
   return {
-    sessionCount,
-    totalSizeBytes: total,
-    lastSyncEpoch: latest || null,
-    lastSyncAgoHuman: humaniseTimeAgo(latest || null),
+    sessionCount, lapCount, sampleCount,
+    totalSizeBytes: st.size,
+    lastSyncEpoch: lastSync,
+    lastSyncAgoHuman: humaniseTimeAgo(lastSync),
   }
 }
 
@@ -262,25 +277,96 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     activeWorker = { kind: 'sync' }
     const win = getMainWindow()
     const accountLabel = opts?.accountLabel ?? null
+    const log = (msg: string) => broadcast(win, { kind: 'sync', type: 'log', payload: msg })
 
-    // Prefer renderer-supplied token (active account from localStorage); otherwise
-    // fall back to the legacy on-disk cache; otherwise prompt SSO.
+    // Smart sync: diff Garmin's session list against what's already in the DB,
+    // fetch + load only the new ones, and update the DB incrementally.
+    // No full rebuild — that's what the Rebuild DB button is for.
     void (async () => {
       try {
         let token = opts?.token || loadCatalystToken()
         if (!token) {
-          broadcast(win, { kind: 'sync', type: 'log', payload: '[auth] No valid token — opening Garmin sign-in window' })
+          log('[auth] No valid token — opening Garmin sign-in window')
           const { accessToken } = await loginViaBrowser(win ?? undefined)
           token = accessToken
-          broadcast(win, { kind: 'sync', type: 'log', payload: '[auth] Login successful' })
+          log('[auth] Login successful')
         } else {
-          broadcast(win, { kind: 'sync', type: 'log', payload: `[auth] Syncing as ${accountLabel ?? 'unlabeled account'}` })
+          log(`[auth] Syncing as ${accountLabel ?? 'unlabeled account'}`)
         }
         const api = new CatalystAPI(token)
         api.pageSize = loadConfig().api?.page_size ?? 50
-        await fetchAllSessions(api, SESSIONS_DIR, e => {
-          broadcast(win, { kind: 'sync', type: 'log', payload: e.message })
-        }, accountLabel)
+
+        // Open / initialise the DB before doing any network work so we can
+        // diff against it.
+        const { con } = await openDb()
+        await initSchema(con)
+        const knownGuids = await existingSessionGuids(con)
+        log(`[sync] DB already contains ${knownGuids.size} session(s)`)
+
+        log('[sync] Fetching session list from Garmin...')
+        const summaries = await api.getSessions({
+          onProgress: n => log(`  [sessions] fetched ${n} summaries so far...`),
+        })
+        const newSessions = summaries.filter(s => s.sessionGuid && !knownGuids.has(s.sessionGuid))
+        const skipped = summaries.length - newSessions.length
+        log(`[sync] Garmin has ${summaries.length} session(s) — ${newSessions.length} new, ${skipped} already loaded`)
+
+        if (newSessions.length === 0) {
+          log('[sync] Up to date — nothing to download.')
+          broadcast(win, { kind: 'sync', type: 'done' })
+          return
+        }
+
+        // Refresh track facilities + configurations once so new sessions' track
+        // names resolve in the DB. These are small JSON blobs.
+        try {
+          log('[sync] Refreshing track facilities + configurations...')
+          const facilities = await api.getTrackFacilities()
+          fs.writeFileSync(path.join(DATA_DIR, 'track_facilities.json'), JSON.stringify(facilities, null, 2))
+          const configsByTrack: Record<string, any[]> = {}
+          for (const fac of facilities) {
+            const cid = (fac as any).trackCartographyId
+            if (!cid) continue
+            try {
+              configsByTrack[String(cid)] = await api.getTrackConfigurations(cid)
+            } catch (e: any) {
+              log(`  [WARN] configs ${cid}: ${e.message ?? e}`)
+            }
+          }
+          fs.writeFileSync(path.join(DATA_DIR, 'track_configurations.json'), JSON.stringify(configsByTrack, null, 2))
+          const n = await loadTrackConfigs(con)
+          log(`  loaded ${n} track config rows`)
+        } catch (e: any) {
+          log(`[sync] track config refresh failed (continuing): ${e.message ?? e}`)
+        }
+
+        fs.mkdirSync(MEAN_LINES_DIR, { recursive: true })
+
+        // Fetch + load each new session in order. Fetch is the slow part
+        // (network); DB insert is fast via the Appender.
+        let loaded = 0
+        let failed = 0
+        for (let i = 0; i < newSessions.length; i++) {
+          const s = newSessions[i]
+          const sg = s.sessionGuid!
+          log(`[${i + 1}/${newSessions.length}] ${sg.slice(0, 8)}… ${s.trackName ?? ''} ${s.bestLap ?? ''}`)
+          try {
+            await fetchAndSaveSession(api, s, SESSIONS_DIR, MEAN_LINES_DIR,
+              e => log(`  ${e.message}`),
+              accountLabel,
+            )
+            const samples = await loadSession(con, path.join(SESSIONS_DIR, sg))
+            log(`  ✓ loaded ${samples.toLocaleString()} samples into DB`)
+            loaded++
+          } catch (e: any) {
+            failed++
+            log(`  ✗ FAILED: ${e.message ?? e}`)
+          }
+          // Brief courtesy pause between sessions to avoid hammering the API.
+          await new Promise(r => setTimeout(r, 300))
+        }
+
+        log(`[sync] done — ${loaded} loaded, ${failed} failed, ${skipped} skipped (already in DB)`)
         broadcast(win, { kind: 'sync', type: 'done' })
       } catch (e: any) {
         broadcast(win, { kind: 'sync', type: 'error', payload: `${e.message ?? e}` })
