@@ -1,6 +1,7 @@
 // Read/write garmin/config.json.
 
 import fs from 'node:fs'
+import path from 'node:path'
 import { CONFIG_PATH } from './paths.js'
 
 export interface AppConfig {
@@ -30,7 +31,7 @@ export function loadConfig(): AppConfig {
 }
 
 export function saveConfig(cfg: AppConfig): void {
-  fs.mkdirSync(require('node:path').dirname(CONFIG_PATH), { recursive: true })
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2))
 }
 

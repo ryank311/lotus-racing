@@ -20,8 +20,7 @@ function findRepoRoot(start: string): string {
   return start
 }
 
-const HERE = path.resolve(path.dirname(new URL(import.meta.url).pathname))
-const REPO_ROOT_DEFAULT = findRepoRoot(HERE)
+const REPO_ROOT_DEFAULT = findRepoRoot(__dirname)
 
 export const REPO_ROOT = process.env.CATALYST_REPO_ROOT
   ? path.resolve(process.env.CATALYST_REPO_ROOT)

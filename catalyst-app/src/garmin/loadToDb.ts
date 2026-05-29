@@ -172,60 +172,58 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
   const decoded = decodePerformance(new Uint8Array(fs.readFileSync(perfP)))
   await con.run('DELETE FROM samples WHERE session_guid = ?', [sg] as any)
 
+  // Laps are tiny (~10 rows/session) — per-row INSERT is fine.
+  for (let lapIdx = 0; lapIdx < decoded.driven_laps.length; lapIdx++) {
+    const lap = decoded.driven_laps[lapIdx]
+    await con.run(
+      'INSERT OR REPLACE INTO laps VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [
+        sg, lapIdx, lap.type ?? null, lap.duration_ms ?? null,
+        lap.start_time_session_ms ?? null, lap.lap_descriptor ?? null,
+        nullIfNaN(lap.min_speed_mps), nullIfNaN(lap.max_speed_mps),
+        nullIfNaN(lap.avg_speed_mps), nullIfNaN(lap.max_decel_mps2),
+        nullIfNaN(lap.max_accel_mps2), lap.samples.length,
+      ] as any,
+    )
+  }
+
+  // Samples are ~30k/session — use the bulk Appender. SQL INSERT per row
+  // through prepared statements was ~100× slower in practice.
+  const appender = await con.createAppender('samples')
+  const appendDoubleOrNull = (v: number | undefined | null) => {
+    if (v == null || Number.isNaN(v)) appender.appendNull()
+    else appender.appendDouble(v)
+  }
   let sampleCount = 0
-  await con.run('BEGIN')
   try {
     for (let lapIdx = 0; lapIdx < decoded.driven_laps.length; lapIdx++) {
       const lap = decoded.driven_laps[lapIdx]
-      await con.run(
-        'INSERT OR REPLACE INTO laps VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-        [
-          sg,
-          lapIdx,
-          lap.type ?? null,
-          lap.duration_ms ?? null,
-          lap.start_time_session_ms ?? null,
-          lap.lap_descriptor ?? null,
-          nullIfNaN(lap.min_speed_mps),
-          nullIfNaN(lap.max_speed_mps),
-          nullIfNaN(lap.avg_speed_mps),
-          nullIfNaN(lap.max_decel_mps2),
-          nullIfNaN(lap.max_accel_mps2),
-          lap.samples.length,
-        ] as any,
-      )
-
       for (const s of lap.samples) {
-        await con.run(
-          'INSERT INTO samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          [
-            sg,
-            lapIdx,
-            Math.round(s.distance_m ?? 0),
-            s.time_ms ?? null,
-            s.position?.lat ?? null,
-            s.position?.lon ?? null,
-            nullIfNaN(s.gnss_speed_mps),
-            nullIfNaN(s.gnss_heading_deg),
-            nullIfNaN(s.gnss_heading_deriv_dps),
-            nullIfNaN(s.gnss_accuracy_m),
-            nullIfNaN(s.gnss_altitude_m),
-            nullIfNaN(s.accel_x_mps2),
-            nullIfNaN(s.accel_y_mps2),
-            nullIfNaN(s.accel_z_mps2),
-            nullIfNaN(s.gyro_roll_dps),
-            nullIfNaN(s.gyro_pitch_dps),
-            nullIfNaN(s.gyro_yaw_dps),
-            nullIfNaN(s.lateral_position),
-          ] as any,
-        )
+        appender.appendVarchar(sg)
+        appender.appendInteger(lapIdx)
+        appender.appendInteger(Math.round(s.distance_m ?? 0))
+        if (s.time_ms == null) appender.appendNull(); else appender.appendInteger(s.time_ms)
+        if (s.position?.lat == null) appender.appendNull(); else appender.appendDouble(s.position.lat)
+        if (s.position?.lon == null) appender.appendNull(); else appender.appendDouble(s.position.lon)
+        appendDoubleOrNull(s.gnss_speed_mps)
+        appendDoubleOrNull(s.gnss_heading_deg)
+        appendDoubleOrNull(s.gnss_heading_deriv_dps)
+        appendDoubleOrNull(s.gnss_accuracy_m)
+        appendDoubleOrNull(s.gnss_altitude_m)
+        appendDoubleOrNull(s.accel_x_mps2)
+        appendDoubleOrNull(s.accel_y_mps2)
+        appendDoubleOrNull(s.accel_z_mps2)
+        appendDoubleOrNull(s.gyro_roll_dps)
+        appendDoubleOrNull(s.gyro_pitch_dps)
+        appendDoubleOrNull(s.gyro_yaw_dps)
+        appendDoubleOrNull(s.lateral_position)
+        appender.endRow()
         sampleCount++
       }
     }
-    await con.run('COMMIT')
-  } catch (e) {
-    await con.run('ROLLBACK')
-    throw e
+    appender.flush()
+  } finally {
+    appender.close()
   }
   return sampleCount
 }

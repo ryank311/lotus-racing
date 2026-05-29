@@ -2,10 +2,8 @@
 
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { registerIpc } from './ipc.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = process.env.NODE_ENV === 'development'
 
 let mainWindow: BrowserWindow | null = null
@@ -28,7 +26,7 @@ function createWindow(): void {
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173/')
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
+    if (process.env.CATALYST_DEVTOOLS) mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', '..', 'dist-renderer', 'index.html'))
   }
