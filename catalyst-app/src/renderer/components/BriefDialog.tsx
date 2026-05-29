@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, msToLap } from '../api'
+import { loadAccounts } from '../accounts'
 import type { CarProfile, BriefOptions, DbSessionRow } from '../../shared/types'
 
 export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onGenerated?: () => void }) {
@@ -24,7 +25,7 @@ export function BriefDialog({ onClose, onGenerated }: { onClose: () => void; onG
       const [list, active, sess] = await Promise.all([
         api.listProfiles(),
         api.getActiveProfile(),
-        api.listSessions(),
+        api.listSessions(loadAccounts().activeLabel),
       ])
       setProfiles(list)
       setProfile(active ?? list[0]?.name ?? '')
