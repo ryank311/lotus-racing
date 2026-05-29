@@ -740,7 +740,23 @@ h1{font-size:1.3em;color:var(--accent);white-space:nowrap}
 <div id="p1" class="pane"><div class="cw"><div id="c1" class="ch"></div></div></div>
 <div id="p2" class="pane"><div class="cw"><div id="c2" class="ch"></div></div></div>
 <div id="p3" class="pane"><div class="cw"><div id="c3" class="ch-lg"></div></div></div>
-<div id="p4" class="pane"><div class="cw"><div id="c4" class="ch"></div></div></div>
+<div id="p4" class="pane">
+  <div class="cw">
+    <div style="display:flex;gap:10px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
+      <button id="map-anno-btn" onclick="toggleMapAnno()" style="background:transparent;color:#4fc3f7;border:1px solid #4fc3f7;padding:7px 16px;border-radius:4px;cursor:pointer;font-size:.85em">&#128205; Annotate Corners</button>
+      <span style="color:var(--sub);font-size:.82em">Toggle annotation mode then click a corner apex on the map to mark it</span>
+    </div>
+    <div id="c4" class="ch"></div>
+  </div>
+  <div id="map-anno-panel" class="cw" style="padding:14px;display:none">
+    <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center">
+      <button onclick="copyMapAnno()" style="background:var(--accent);color:#000;border:none;padding:7px 16px;border-radius:4px;cursor:pointer;font-weight:700;font-size:.85em">Copy YAML</button>
+      <button onclick="clearAnno()" style="background:transparent;color:var(--text);border:1px solid #555;padding:7px 14px;border-radius:4px;cursor:pointer;font-size:.85em">Clear all</button>
+      <span id="map-anno-msg" style="color:var(--accent);font-size:.85em"></span>
+    </div>
+    <pre id="map-anno-pre" style="background:#0a0a14;border:1px solid var(--border);border-radius:4px;padding:14px;font-size:.78em;color:#adf;white-space:pre-wrap">corners: []</pre>
+  </div>
+</div>
 <div id="p5" class="pane"><div class="cw"><div id="c5" class="ch"></div></div></div>
 <div id="p6" class="pane"><div class="cw"><div id="c6" class="ch"></div></div></div>
 
@@ -775,6 +791,7 @@ corners: []</pre>
 <script>
 const FIGS=__FIGS_JSON__;
 const BEST_LAP=__BEST_LAP_JSON__;
+const TRACK_MAP_PTS=__TRACK_MAP_PTS_JSON__;
 const DIVS=['c0','c1','c2','c3','c4','c5','c6'];
 const KEYS=['speed','heatmap','gg','corners','map','lateral','longg'];
 const done={};
@@ -787,6 +804,7 @@ function render(idx){
   if(idx===7){_renderAnnotator();return;}
   const f=FIGS[KEYS[idx]];
   Plotly.newPlot(DIVS[idx],f.data,f.layout,CFG);
+  if(idx===4){_setupMapAnnotator();}
 }
 function showTab(btn,idx){
   document.querySelectorAll('.tb').forEach(b=>b.classList.remove('active'));
@@ -848,19 +866,22 @@ function _updateAnnoUI(){
     '<tr style="border-bottom:1px solid #1e2a45">'+
     '<td style="padding:5px 10px;color:#FFD700">'+a.turn+'</td>'+
     '<td style="padding:5px 10px">'+a.apex_dist_m+'</td>'+
-    '<td style="padding:5px 10px">'+a.apex_speed_mph+'</td>'+
+    '<td style="padding:5px 10px">'+(a.apex_speed_mph!=null?a.apex_speed_mph:'—')+'</td>'+
     '<td style="padding:5px 10px"><button onclick="delAnno('+i+')" style="background:none;border:1px solid #555;color:#888;cursor:pointer;border-radius:3px;padding:2px 8px">✕</button></td>'+
     '</tr>'
   ).join('');
   const yaml='corners:\\n'+annos.map(a=>
     '  - turn: "'+a.turn+'"\\n'+
-    '    apex_dist_m: '+a.apex_dist_m+'\\n'+
-    '    apex_speed_mph: '+a.apex_speed_mph
+    '    apex_dist_m: '+a.apex_dist_m
   ).join('\\n');
-  document.getElementById('anno-pre').textContent=
-    '# Paste this back to Claude to update vir-full-course.yaml\\n'+yaml;
+  const yamlText='# Paste this back to Claude to update the track YAML\\n'+yaml;
+  document.getElementById('anno-pre').textContent=yamlText;
+  const mp=document.getElementById('map-anno-pre');
+  if(mp)mp.textContent=yamlText;
+  const panel=document.getElementById('map-anno-panel');
+  if(panel)panel.style.display=annos.length?'block':'none';
 }
-function delAnno(i){annos.splice(i,1);_redrawMarkers();_updateAnnoUI();}
+function delAnno(i){annos.splice(i,1);_redrawMarkers();_redrawMapMarkers();_updateAnnoUI();}
 function copyAnno(){
   navigator.clipboard.writeText(document.getElementById('anno-pre').textContent)
     .then(()=>{
@@ -871,10 +892,82 @@ function copyAnno(){
       document.getElementById('anno-msg').textContent='Select + copy the text below manually';
     });
 }
+function copyMapAnno(){
+  const txt=(document.getElementById('map-anno-pre')||document.getElementById('anno-pre')).textContent;
+  navigator.clipboard.writeText(txt)
+    .then(()=>{
+      const m=document.getElementById('map-anno-msg');
+      m.textContent='✓ Copied!';
+      setTimeout(()=>m.textContent='',2500);
+    }).catch(()=>{
+      document.getElementById('map-anno-msg').textContent='Select + copy the text below manually';
+    });
+}
 function clearAnno(){
   if(!annos.length||confirm('Clear all annotations?')){
-    annos=[];_redrawMarkers();_updateAnnoUI();
+    annos=[];_redrawMarkers();_redrawMapMarkers();_updateAnnoUI();
   }
+}
+
+// ── Track Map Annotator ────────────────────────────────────────────────────────
+let annotMode=false;
+function toggleMapAnno(){
+  annotMode=!annotMode;
+  const btn=document.getElementById('map-anno-btn');
+  if(annotMode){
+    btn.style.background='#FFD700';btn.style.color='#000';
+    btn.textContent='📍 Annotation ON — click a corner apex';
+  }else{
+    btn.style.background='transparent';btn.style.color='#4fc3f7';
+    btn.textContent='📍 Annotate Corners';
+  }
+}
+function _nearestMapPt(clickLon,clickLat){
+  let best=-1,bestD=Infinity;
+  const lats=TRACK_MAP_PTS.lat,lons=TRACK_MAP_PTS.lon;
+  for(let i=0;i<lats.length;i++){
+    const d=(lats[i]-clickLat)**2+(lons[i]-clickLon)**2;
+    if(d<bestD){bestD=d;best=i;}
+  }
+  return best;
+}
+function _setupMapAnnotator(){
+  document.getElementById('c4').on('plotly_click',function(data){
+    if(!annotMode)return;
+    const pt=data.points[0];
+    const idx=_nearestMapPt(pt.x,pt.y);
+    if(idx<0)return;
+    const dist=TRACK_MAP_PTS.dist[idx];
+    const lat=TRACK_MAP_PTS.lat[idx];
+    const lon=TRACK_MAP_PTS.lon[idx];
+    const nm=prompt('Turn label (e.g. "T1 Horseshoe" or just "T1"):');
+    if(!nm||!nm.trim())return;
+    annos.push({turn:nm.trim(),apex_dist_m:dist,apex_lat:lat,apex_lon:lon});
+    annos.sort((a,b)=>a.apex_dist_m-b.apex_dist_m);
+    _redrawMapMarkers();
+    _redrawMarkers();
+    _updateAnnoUI();
+  });
+}
+function _redrawMapMarkers(){
+  if(!done[4])return;
+  const el=document.getElementById('c4');
+  if(!el||!el.data)return;
+  const toRm=[];
+  for(let t=1;t<el.data.length;t++)toRm.push(t);
+  if(toRm.length)Plotly.deleteTraces('c4',toRm);
+  const mapAnns=annos.filter(a=>a.apex_lat!=null&&a.apex_lon!=null);
+  if(!mapAnns.length)return;
+  Plotly.addTraces('c4',{
+    x:mapAnns.map(a=>a.apex_lon),
+    y:mapAnns.map(a=>a.apex_lat),
+    mode:'markers+text',
+    text:mapAnns.map(a=>a.turn),
+    textposition:'top center',
+    textfont:{color:'#FFD700',size:11},
+    marker:{color:'#FFD700',size:12,symbol:'star'},
+    showlegend:false,hoverinfo:'none',type:'scatter'
+  });
 }
 </script>
 </body>
@@ -939,6 +1032,21 @@ def generate_html_report(
         "y": [round(r[1], 1) if r[1] is not None else None for r in _best_rows],
     })
 
+    # ── Track map GPS points for map annotation nearest-point lookup (10 m) ────
+    _map_pts = con.execute("""
+        SELECT distance_m, lat, lon
+        FROM samples
+        WHERE session_guid = ? AND lap_index = ?
+          AND lat IS NOT NULL AND lon IS NOT NULL
+          AND distance_m % 10 = 0
+        ORDER BY distance_m
+    """, [best_lap["sg"], best_lap["lap_idx"]]).fetchall()
+    track_map_pts_json = json.dumps({
+        "dist": [r[0] for r in _map_pts],
+        "lat":  [r[1] for r in _map_pts],
+        "lon":  [r[2] for r in _map_pts],
+    })
+
     # ── Serialise ──────────────────────────────────────────────────────────────
     figs_json = json.dumps(figs, allow_nan=False,
                            default=lambda o: None)  # drop any stray non-serializables
@@ -960,5 +1068,6 @@ def generate_html_report(
         .replace("__STAT_CARDS__", stat_cards_html)
         .replace("__FIGS_JSON__", figs_json)
         .replace("__BEST_LAP_JSON__", best_lap_json)
+        .replace("__TRACK_MAP_PTS_JSON__", track_map_pts_json)
     )
     return html
