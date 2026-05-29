@@ -4,7 +4,6 @@ import {
   Account,
   AccountState,
   daysRemaining,
-  loadAccounts,
   removeAccount,
   setActiveAccount,
   tokenValid,
@@ -17,28 +16,19 @@ interface Props {
 }
 
 export function AccountWidget({ state, onChange }: Props) {
-  const [signingIn, setSigningIn] = useState(false)
-  const [labelInput, setLabelInput] = useState('')
   const [showAdd, setShowAdd] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [initialEmail, setInitialEmail] = useState('')
 
   const active = state.accounts.find(a => a.label === state.activeLabel) ?? null
 
-  const signIn = async () => {
-    const lbl = labelInput.trim() || (active?.label ?? '')
-    if (!lbl) { setError('Enter an email or label first'); return }
-    setSigningIn(true)
-    setError(null)
-    try {
-      const { token, expiresAt } = await api.signIn()
-      onChange(upsertAccount(lbl, token, expiresAt))
-      setLabelInput('')
-      setShowAdd(false)
-    } catch (e: any) {
-      setError(e.message ?? String(e))
-    } finally {
-      setSigningIn(false)
-    }
+  const openAdd = (email = '') => {
+    setInitialEmail(email)
+    setShowAdd(true)
+  }
+
+  const handleSignedIn = (label: string, token: string, expiresAt: number) => {
+    onChange(upsertAccount(label, token, expiresAt))
+    setShowAdd(false)
   }
 
   const signOut = (label: string) => {
@@ -58,19 +48,17 @@ export function AccountWidget({ state, onChange }: Props) {
       {state.accounts.length === 0 ? (
         <div style={{ marginTop: 8 }}>
           <div className="muted small" style={{ marginBottom: 10 }}>
-            Sign in with a Garmin account to sync your Catalyst sessions.
+            Sign in with your Garmin Connect credentials to sync Catalyst sessions.
+            Your password is sent only to Garmin's SSO and is never stored.
           </div>
           {showAdd ? (
             <SignInForm
-              labelInput={labelInput}
-              setLabelInput={setLabelInput}
-              signingIn={signingIn}
-              onSignIn={signIn}
-              onCancel={() => { setShowAdd(false); setError(null) }}
-              error={error}
+              initialEmail={initialEmail}
+              onCancel={() => setShowAdd(false)}
+              onSignedIn={handleSignedIn}
             />
           ) : (
-            <button className="btn primary" onClick={() => setShowAdd(true)}>Sign in</button>
+            <button className="btn primary" onClick={() => openAdd()}>Sign in</button>
           )}
         </div>
       ) : (
@@ -91,21 +79,17 @@ export function AccountWidget({ state, onChange }: Props) {
           <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {showAdd ? (
               <SignInForm
-                labelInput={labelInput}
-                setLabelInput={setLabelInput}
-                signingIn={signingIn}
-                onSignIn={signIn}
-                onCancel={() => { setShowAdd(false); setError(null) }}
-                error={error}
+                initialEmail={initialEmail}
+                onCancel={() => setShowAdd(false)}
+                onSignedIn={handleSignedIn}
               />
             ) : (
               <>
-                <button className="btn ghost" onClick={() => setShowAdd(true)}>+ Add account</button>
+                <button className="btn ghost" onClick={() => openAdd()}>+ Add account</button>
                 {active && !tokenValid(active) && (
                   <button
                     className="btn primary"
-                    disabled={signingIn}
-                    onClick={() => { setLabelInput(active.label); setShowAdd(true) }}
+                    onClick={() => openAdd(active.label)}
                   >
                     Re-auth {active.label}
                   </button>
@@ -145,36 +129,119 @@ function AccountRow({
   )
 }
 
-function SignInForm({
-  labelInput, setLabelInput, signingIn, onSignIn, onCancel, error,
-}: {
-  labelInput: string
-  setLabelInput: (v: string) => void
-  signingIn: boolean
-  onSignIn: () => void
+// ---------------------------------------------------------------------------
+// Sign-in form — two states: (1) email + password, (2) MFA code input.
+// Talks directly to the no-browser garth-equivalent flow in the main process.
+
+interface SignInFormProps {
+  initialEmail: string
   onCancel: () => void
-  error: string | null
-}) {
+  onSignedIn: (label: string, token: string, expiresAt: number) => void
+}
+
+function SignInForm({ initialEmail, onCancel, onSignedIn }: SignInFormProps) {
+  const [email, setEmail] = useState(initialEmail)
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [mfa, setMfa] = useState<{ sessionId: string } | null>(null)
+  const [code, setCode] = useState('')
+
+  const submit = async () => {
+    if (!email.trim() || !password) { setErr('Enter email and password'); return }
+    setBusy(true); setErr(null)
+    try {
+      const r = await api.signInWithCreds(email.trim(), password)
+      if (r.needsMfa) {
+        setMfa({ sessionId: r.sessionId })
+        setPassword('')  // wipe pw from memory once Garmin has it
+      } else {
+        onSignedIn(email.trim(), r.token, r.expiresAt)
+      }
+    } catch (e: any) {
+      setErr(e.message ?? String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitMfa = async () => {
+    if (!mfa || !code.trim()) { setErr('Enter the MFA code'); return }
+    setBusy(true); setErr(null)
+    try {
+      const r = await api.signInMfa(mfa.sessionId, code.trim())
+      onSignedIn(email.trim(), r.token, r.expiresAt)
+    } catch (e: any) {
+      setErr(e.message ?? String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancel = async () => {
+    if (mfa) { try { await api.cancelMfa(mfa.sessionId) } catch { /* ignore */ } }
+    onCancel()
+  }
+
+  if (mfa) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
+        <div className="muted small">
+          Garmin sent a verification code to <strong style={{ color: 'var(--text)' }}>{email}</strong>. Enter it below.
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            autoFocus
+            type="text"
+            inputMode="numeric"
+            placeholder="6-digit code"
+            value={code}
+            onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+            onKeyDown={e => { if (e.key === 'Enter') void submitMfa() }}
+            disabled={busy}
+            className="text-input"
+            style={{ flex: '1 1 160px', minWidth: 140, letterSpacing: '0.2em', fontFamily: 'var(--font-mono)' }}
+          />
+          <button className="btn primary" disabled={busy || !code.trim()} onClick={submitMfa}>
+            {busy ? 'Verifying…' : 'Verify'}
+          </button>
+          <button className="btn ghost" disabled={busy} onClick={cancel}>Cancel</button>
+        </div>
+        {err && <div style={{ color: 'var(--red)', fontSize: 11 }}>{err}</div>}
+      </div>
+    )
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: '100%' }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <input
           autoFocus
-          type="text"
-          placeholder="account label (email)"
-          value={labelInput}
-          onChange={e => setLabelInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') onSignIn() }}
-          disabled={signingIn}
+          type="email"
+          placeholder="Garmin Connect email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') void submit() }}
+          disabled={busy}
           className="text-input"
-          style={{ flex: '1 1 220px', minWidth: 180 }}
         />
-        <button className="btn primary" disabled={signingIn} onClick={onSignIn}>
-          {signingIn ? 'Opening Garmin…' : 'Sign in'}
-        </button>
-        <button className="btn ghost" disabled={signingIn} onClick={onCancel}>Cancel</button>
+        <input
+          type="password"
+          placeholder="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') void submit() }}
+          disabled={busy}
+          className="text-input"
+        />
       </div>
-      {error && <div style={{ color: 'var(--red)', fontSize: 11 }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button className="btn primary" disabled={busy || !email.trim() || !password} onClick={submit}>
+          {busy ? 'Signing in…' : 'Sign in'}
+        </button>
+        <button className="btn ghost" disabled={busy} onClick={cancel}>Cancel</button>
+      </div>
+      {err && <div style={{ color: 'var(--red)', fontSize: 11 }}>{err}</div>}
     </div>
   )
 }

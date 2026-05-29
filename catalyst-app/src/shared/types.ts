@@ -44,6 +44,13 @@ export interface SignInResult {
   expiresAt: number  // epoch seconds
 }
 
+// Credential sign-in returns either a final token OR a pending MFA challenge.
+// In the MFA case, the renderer prompts the user for a code and follows up
+// with signInMfa(sessionId, code).
+export type SignInCredsResult =
+  | { needsMfa: false; token: string; expiresAt: number }
+  | { needsMfa: true; sessionId: string }
+
 export interface LogLine {
   ts: number
   line: string
@@ -105,6 +112,9 @@ export interface CatalystBridge {
   saveCredentials(email: string, password: string): Promise<void>
   clearTokens(): Promise<void>
   signIn(): Promise<SignInResult>
+  signInWithCreds(email: string, password: string): Promise<SignInCredsResult>
+  signInMfa(sessionId: string, code: string): Promise<SignInResult>
+  cancelMfa(sessionId: string): Promise<void>
 
   // Profiles
   listProfiles(): Promise<CarProfile[]>

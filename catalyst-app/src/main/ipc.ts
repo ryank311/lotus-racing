@@ -36,6 +36,7 @@ import type {
   WorkerEvent,
 } from '../shared/types.js'
 import { loginViaBrowser } from './auth.js'
+import { signInWithCredentials, submitMfaCode, cancelMfa } from './garthLogin.js'
 
 function humaniseTimeAgo(epochSec: number | null): string {
   if (!epochSec) return 'never'
@@ -111,11 +112,33 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     if (fs.existsSync(GARTH_TOKEN_DIR)) fs.rmSync(GARTH_TOKEN_DIR, { recursive: true, force: true })
     if (fs.existsSync(CATALYST_TOKEN_CACHE)) fs.rmSync(CATALYST_TOKEN_CACHE, { force: true })
   })
+  // Browser-based sign-in (last-resort fallback). The default path is the
+  // credentials flow below — it's the Python `garth` library's exact sequence.
   ipcMain.handle('auth:signIn', async () => {
     const win = getMainWindow()
     const { accessToken, expiresIn } = await loginViaBrowser(win ?? undefined)
     return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
   })
+
+  // Headless credentials sign-in — same wire format as garth's login().
+  // Returns either a final token or `{ needsMfa: true, sessionId }` so the
+  // renderer can prompt for a code and follow up with auth:signInMfa.
+  ipcMain.handle('auth:signInWithCreds', async (_e, email: string, password: string) => {
+    const result = await signInWithCredentials(email, password)
+    if (result.kind === 'mfa') return { needsMfa: true, sessionId: result.sessionId }
+    return {
+      needsMfa: false,
+      token: result.accessToken,
+      expiresAt: Math.floor(Date.now() / 1000) + result.expiresIn,
+    }
+  })
+
+  ipcMain.handle('auth:signInMfa', async (_e, sessionId: string, code: string) => {
+    const { accessToken, expiresIn } = await submitMfaCode(sessionId, code)
+    return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
+  })
+
+  ipcMain.handle('auth:cancelMfa', (_e, sessionId: string) => cancelMfa(sessionId))
 
   ipcMain.handle('profiles:list', (): CarProfile[] => discoverProfiles())
   ipcMain.handle('profiles:active', () => getActiveProfileName())

@@ -18,6 +18,11 @@ import {
 const SSO_BASE = 'https://sso.garmin.com'
 const SERVICE_URL = 'http://localhost:8765/callback'
 
+// SSO param set — kept in lockstep with garth/sso.py's PARAMS (the gold standard
+// Python implementation we reverse-engineered the rest of the flow from).
+// Garmin recently started requiring `locale`; without it the embed page bails
+// with "ERROR: locale parameter must be specified" after you advance past the
+// email-first step.
 function buildLoginUrl(): string {
   const params = new URLSearchParams({
     id: 'gauth-widget',
@@ -27,6 +32,7 @@ function buildLoginUrl(): string {
     source: SERVICE_URL,
     redirectAfterAccountLoginUrl: SERVICE_URL,
     redirectAfterAccountCreationUrl: SERVICE_URL,
+    locale: 'en_US',
     mobile: 'true',
     clientId: CATALYST_CLIENT_ID,
   })

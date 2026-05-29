@@ -14,6 +14,11 @@ const bridge: CatalystBridge = {
   saveCredentials: (email, password) => ipcRenderer.invoke('auth:saveCredentials', email, password),
   clearTokens: () => ipcRenderer.invoke('auth:clearTokens'),
   signIn: () => ipcRenderer.invoke('auth:signIn'),
+  signInWithCreds: (email: string, password: string) =>
+    ipcRenderer.invoke('auth:signInWithCreds', email, password),
+  signInMfa: (sessionId: string, code: string) =>
+    ipcRenderer.invoke('auth:signInMfa', sessionId, code),
+  cancelMfa: (sessionId: string) => ipcRenderer.invoke('auth:cancelMfa', sessionId),
 
   listProfiles: () => ipcRenderer.invoke('profiles:list'),
   getActiveProfile: () => ipcRenderer.invoke('profiles:active'),
