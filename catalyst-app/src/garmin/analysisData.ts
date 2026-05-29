@@ -45,6 +45,7 @@ export interface GGData {
   lat_g: number[]
   long_g: number[]
   speed_mph: number[]
+  dist: number[]
   p95_g: number
   circle: { x: number[]; y: number[] }
 }
@@ -227,9 +228,10 @@ async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], nBest = 12, e
   const lat_g: number[] = []
   const long_g: number[] = []
   const speed_mph: number[] = []
+  const dist: number[] = []
   for (const lap of sorted) {
     const r = await rows(con, `
-      SELECT accel_y_mps2, accel_x_mps2, gnss_speed_mps
+      SELECT accel_y_mps2, accel_x_mps2, gnss_speed_mps, distance_m
       FROM samples
       WHERE session_guid = ? AND lap_index = ?
         AND accel_x_mps2 IS NOT NULL AND accel_y_mps2 IS NOT NULL
@@ -240,6 +242,7 @@ async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], nBest = 12, e
       lat_g.push(G(Number(row[0]))!)
       long_g.push(G(Number(row[1]))!)
       speed_mph.push(MPH(Number(row[2])) ?? 0)
+      dist.push(Number(row[3]))
     }
   }
   // 95th percentile of total G magnitude — reference circle radius
@@ -250,7 +253,7 @@ async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], nBest = 12, e
     x: theta.map(t => p95 * Math.cos(t)),
     y: theta.map(t => p95 * Math.sin(t)),
   }
-  return { lat_g, long_g, speed_mph, p95_g: Math.round(p95 * 100) / 100, circle }
+  return { lat_g, long_g, speed_mph, dist, p95_g: Math.round(p95 * 100) / 100, circle }
 }
 
 async function fetchRacingLines(
@@ -361,7 +364,7 @@ async function buildHeatmap(con: DuckDBConnection, laps: LapMeta[], segments: Tr
   for (const lap of laps) {
     if (!cache.has(lap.sg)) cache.set(lap.sg, await computeSplits(con, lap.sg, segments))
     const splits = cache.get(lap.sg)!.get(lap.lapIdx) ?? new Array(segments.length).fill(null)
-    const label = `${lap.sgShort}… L${lap.lapIdx + 1} (${msToLap(lap.durationMs)})`
+    const label = `L${lap.lapIdx + 1}  ${msToLap(lap.durationMs)}`
     allSplits.push({ label, row: splits })
     for (let i = 0; i < splits.length; i++) {
       const v = splits[i]
@@ -491,7 +494,7 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
       config, totalDistM: trackYaml.total_dist_m ?? 0,
       segments, corners, sessions, laps: [], bestLap: null,
       speedTraces: [], lateralTraces: [], longgTraces: [],
-      gg: { lat_g: [], long_g: [], speed_mph: [], p95_g: 0, circle: { x: [], y: [] } },
+      gg: { lat_g: [], long_g: [], speed_mph: [], dist: [], p95_g: 0, circle: { x: [], y: [] } },
       trackMap: { dist: [], lat: [], lon: [], speed_mph: [] },
       trackGeometry: null, racingLines: [],
       heatmap: null, cornerRows: [],

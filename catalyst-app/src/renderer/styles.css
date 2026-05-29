@@ -1512,6 +1512,67 @@ input, textarea, select { font-family: inherit; color: inherit; }
   margin-top: 2px;
 }
 
+/* ── G-meter overlay ──────────────────────────────────────────────────── */
+.track-map-gmeter {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  background: rgba(10,10,14,0.78);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 6px;
+  pointer-events: none;
+}
+.track-map-gmeter-values {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 1px 8px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-mute);
+  margin-top: 4px;
+  letter-spacing: 0.06em;
+  text-align: right;
+}
+.track-map-gmeter-values span:nth-child(odd) {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* ── chart canvas tooltip (LineChart, GGChart, CornerChart) ────────────── */
+.chart-tooltip {
+  background: rgba(10,10,14,0.94);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  min-width: 140px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.chart-tooltip-header {
+  color: var(--text-mute);
+  letter-spacing: 0.14em;
+  font-size: 9px;
+  text-transform: uppercase;
+  margin-bottom: 5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 1px 0;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+.chart-tooltip-row span:first-child {
+  font-weight: 600;
+}
+
 /* ── track map hover tooltip ──────────────────────────────────────────── */
 .track-map-tooltip {
   position: absolute;

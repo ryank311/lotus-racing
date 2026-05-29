@@ -178,6 +178,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
 
   // Layer toggles + metric selector
   const [showCenter,      setShowCenter]    = useState(false)
+  const [showGMeter,      setShowGMeter]    = useState(true)
   // Index 0 = best lap; indices 1+ = comparison laps. Best lap selected by default.
   const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set([0]))
   const [metric,          setMetric]        = useState<TrackMetric>('speed_mph')
@@ -367,7 +368,6 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
   // spacing in the racing-line payload so the lookup is O(1) by index.
   const crosshair = useMemo(() => {
     if (hoverDistanceM == null || !bestLap || !bestLap.dist.length) return null
-    // Binary-search for nearest distance index.
     const arr = bestLap.dist
     let lo = 0, hi = arr.length - 1
     while (lo < hi) {
@@ -375,7 +375,6 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
       if (arr[mid] < hoverDistanceM) lo = mid + 1
       else hi = mid
     }
-    // lo is the first index whose dist >= hoverDistanceM; check lo-1 too.
     const cand = [lo, Math.max(0, lo - 1)]
     let best = cand[0]
     let bestErr = Math.abs(arr[cand[0]] - hoverDistanceM)
@@ -387,8 +386,30 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
       x: bestLap.x[best],
       y: bestLap.y[best],
       speed: bestLap.speed_mph[best],
+      lat_g: bestLap.lat_g[best],
+      long_g: bestLap.long_g[best],
     }
   }, [hoverDistanceM, bestLap])
+
+  // G-meter values — prefer direct map hover, fall back to chart crosshair
+  const gMeterValues = useMemo(() => {
+    if (hoverIdx !== null && bestLap)
+      return { lat_g: bestLap.lat_g[hoverIdx], long_g: bestLap.long_g[hoverIdx] }
+    if (crosshair)
+      return { lat_g: crosshair.lat_g, long_g: crosshair.long_g }
+    return null
+  }, [hoverIdx, crosshair, bestLap])
+
+  // G scale — round up to nearest 0.5g above max magnitude
+  const gMax = useMemo(() => {
+    if (!bestLap) return 2
+    let max = 0
+    for (let i = 0; i < bestLap.lat_g.length; i++) {
+      const g = Math.hypot(bestLap.lat_g[i], bestLap.long_g[i])
+      if (g > max) max = g
+    }
+    return Math.max(1.5, Math.ceil(max / 0.5) * 0.5)
+  }, [bestLap])
 
   if (!geom) {
     return (
@@ -406,6 +427,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
       <div className="track-map-controls">
         <MetricDropdown metric={metric} onChange={setMetric} />
         <LayerToggle on={showCenter} onChange={setShowCenter}>centerline</LayerToggle>
+        <LayerToggle on={showGMeter} onChange={setShowGMeter}>g-meter</LayerToggle>
         {racingLines.length > 0 && (
           <LapPickerDropdown
             laps={racingLines}
@@ -605,8 +627,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
         </div>
         {bestLap && (
           <div className="track-map-legend-best">
-            ⭐ {bestLap.sgShort}… L{bestLap.lapIdx + 1}
-            {' · '}{(bestLap.durationMs / 1000).toFixed(3)}s
+            ⭐ L{bestLap.lapIdx + 1} · {msToLapTime(bestLap.durationMs)}
           </div>
         )}
         {crosshair && hoverDistanceM != null && (
@@ -647,6 +668,63 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
             })}
         </div>
       )}
+
+      {showGMeter && bestLap && (
+        <GMeter latG={gMeterValues?.lat_g ?? null} longG={gMeterValues?.long_g ?? null} gMax={gMax} />
+      )}
+    </div>
+  )
+}
+
+// ─── G-Meter overlay ─────────────────────────────────────────────────────────
+
+function GMeter({ latG, longG, gMax }: { latG: number | null; longG: number | null; gMax: number }) {
+  const SIZE = 100
+  const R = 40
+  const cx = SIZE / 2, cy = SIZE / 2
+  const scale = R / gMax
+
+  // dot position: negate lat so right-hand turns appear on the right (traction circle convention)
+  // long: positive accel → bottom, negative brake → top (cy + longG * scale)
+  const dotX = latG !== null ? cx - latG * scale : null
+  const dotY = longG !== null ? cy + longG * scale : null
+
+  return (
+    <div className="track-map-gmeter">
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ display: 'block' }}>
+        {/* outer ring */}
+        <circle cx={cx} cy={cy} r={R} fill="none" stroke="#34343d" strokeWidth={1} />
+        {/* inner ring at 50% */}
+        <circle cx={cx} cy={cy} r={R * 0.5} fill="none" stroke="#25252c" strokeWidth={0.5} strokeDasharray="2 2" />
+        {/* cross-hairs */}
+        <line x1={cx} y1={cy - R} x2={cx} y2={cy + R} stroke="#25252c" strokeWidth={0.5} />
+        <line x1={cx - R} y1={cy} x2={cx + R} y2={cy} stroke="#25252c" strokeWidth={0.5} />
+        {/* scale labels */}
+        <text x={cx + 2} y={cy - R * 0.5 + 4} fontSize="7" fill="#3a3a45" fontFamily='"JetBrains Mono",monospace' textAnchor="start">
+          {(gMax * 0.5).toFixed(1)}
+        </text>
+        <text x={cx + 2} y={cy - R + 4} fontSize="7" fill="#3a3a45" fontFamily='"JetBrains Mono",monospace' textAnchor="start">
+          {gMax.toFixed(1)}
+        </text>
+        {/* dot */}
+        {dotX !== null && dotY !== null && (
+          <g>
+            <circle cx={dotX} cy={dotY} r={9} fill="#ff5e3a" fillOpacity={0.18} />
+            <circle cx={dotX} cy={dotY} r={4.5} fill="#ff5e3a" />
+            <circle cx={dotX} cy={dotY} r={4.5} fill="none" stroke="#fff" strokeWidth={1.2} strokeOpacity={0.8} />
+          </g>
+        )}
+      </svg>
+      <div className="track-map-gmeter-values">
+        <span style={{ color: latG !== null ? 'var(--cyan)' : 'var(--text-mute)' }}>
+          {latG !== null ? `${latG > 0 ? '+' : ''}${latG.toFixed(2)}` : '—'}
+        </span>
+        <span>lat</span>
+        <span style={{ color: longG !== null ? 'var(--signal)' : 'var(--text-mute)' }}>
+          {longG !== null ? `${longG > 0 ? '+' : ''}${longG.toFixed(2)}` : '—'}
+        </span>
+        <span>lng</span>
+      </div>
     </div>
   )
 }
