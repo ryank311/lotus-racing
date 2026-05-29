@@ -1,0 +1,57 @@
+{
+  "name": "catalyst-coach",
+  "version": "0.1.0",
+  "description": "Garmin Catalyst telemetry pipeline + coaching dashboard",
+  "main": "dist-main/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n vite,electron -c blue,magenta \"npm:dev:vite\" \"npm:dev:electron\"",
+    "dev:vite": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron .",
+    "build": "tsc -p tsconfig.main.json && vite build",
+    "package": "npm run build && electron-builder",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "fetch": "tsx src/garmin/cli/fetch.ts",
+    "load": "tsx src/garmin/cli/load.ts",
+    "brief": "tsx src/garmin/cli/brief.ts",
+    "corners": "tsx src/garmin/cli/corners.ts"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.2.0-alpha.14",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "framer-motion": "^11.13.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.ryanking.catalyst-coach",
+    "productName": "Catalyst Coach",
+    "files": [
+      "dist-main/**",
+      "dist-renderer/**",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.sports"
+    }
+  }
+}

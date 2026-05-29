@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist-main/
+dist-renderer/
+release/
+out/
+*.tsbuildinfo
+
+# Vite / dev caches
+.vite/
+.cache/
+.turbo/
+
+# Electron-builder
+*.dmg
+*.exe
+*.app
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env / local secrets
+.env
+.env.local
+.env.*.local
+
+# Test / coverage
+coverage/
+.nyc_output/
