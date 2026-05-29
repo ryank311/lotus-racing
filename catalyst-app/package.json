@@ -59,7 +59,8 @@
         { "target": "dmg", "arch": ["x64", "arm64"] }
       ],
       "category": "public.app-category.sports",
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "identity": null
     },
     "win": {
       "target": [
