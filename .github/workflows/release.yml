@@ -1,0 +1,87 @@
+# Build & release Catalyst Coach for macOS + Windows.
+#
+# Triggers:
+#   - Pushing a tag matching `v*` (e.g. `v0.2.0`). Bump package.json version
+#     first so installer filenames match the tag.
+#   - Manual run via the Actions tab ("Run workflow") — useful for testing
+#     the matrix on a non-tag commit.
+#
+# Output:
+#   electron-builder publishes a draft GitHub Release with `.dmg` (mac) and
+#   `.exe` NSIS installer (win) attached. Promote to a public release from
+#   the GitHub UI once you've verified the artifacts.
+#
+# Code signing is intentionally NOT configured. Unsigned mac builds need
+# `right-click → Open` on first launch; Windows installers will trip
+# SmartScreen until users click "More info → Run anyway". Add signing creds
+# (CSC_LINK / CSC_KEY_PASSWORD on mac, CSC_LINK / CSC_KEY_PASSWORD on win) as
+# repo secrets later when you want clean installs.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only, do not publish'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write  # needed for electron-builder to create the release
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: catalyst-app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: catalyst-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build & publish
+        env:
+          # electron-builder uses this token to create/update the GitHub
+          # release. The default GITHUB_TOKEN has the `contents: write` scope
+          # we granted above.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Skip auto-discovery of any local code-signing identities on the
+          # runner — they don't exist and the build wastes time looking.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          npm run build
+          npx electron-builder --publish ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'never' || 'always' }}
+
+      - name: Upload artifacts (workflow_dispatch dry-run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalyst-coach-${{ matrix.os }}
+          path: |
+            catalyst-app/release/*.dmg
+            catalyst-app/release/*.exe
+            catalyst-app/release/*.blockmap
+            catalyst-app/release/*.yml
+          if-no-files-found: warn
