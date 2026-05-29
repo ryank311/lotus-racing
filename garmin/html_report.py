@@ -730,6 +730,7 @@ h1{font-size:1.3em;color:var(--accent);white-space:nowrap}
   <button class="tb" onclick="showTab(this,4)">Track Map</button>
   <button class="tb" onclick="showTab(this,5)">Lateral Position</button>
   <button class="tb" onclick="showTab(this,6)">Long. Accel</button>
+  <button class="tb" onclick="showTab(this,7)" style="border-color:#4fc3f7;color:#4fc3f7">Annotate Corners</button>
 </nav>
 
 <div id="p0" class="pane active">
@@ -743,8 +744,37 @@ h1{font-size:1.3em;color:var(--accent);white-space:nowrap}
 <div id="p5" class="pane"><div class="cw"><div id="c5" class="ch"></div></div></div>
 <div id="p6" class="pane"><div class="cw"><div id="c6" class="ch"></div></div></div>
 
+<div id="p7" class="pane">
+  <div class="cw">
+    <p style="padding:8px 4px 6px;color:var(--sub);font-size:.85em">
+      Click anywhere on the speed trace to drop a corner marker. Enter the turn label when prompted (e.g. <em>T1 Horseshoe</em>).
+      When finished, click <strong style="color:var(--accent)">Copy YAML</strong> and paste it back to Claude.
+    </p>
+    <div id="c-anno" class="ch-lg"></div>
+  </div>
+  <div class="cw" style="padding:14px">
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <button onclick="copyAnno()" style="background:var(--accent);color:#000;border:none;padding:8px 18px;border-radius:4px;cursor:pointer;font-weight:700">Copy YAML</button>
+      <button onclick="clearAnno()" style="background:transparent;color:var(--text);border:1px solid #555;padding:8px 18px;border-radius:4px;cursor:pointer">Clear all</button>
+      <span id="anno-msg" style="color:var(--accent);font-size:.85em"></span>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:.85em;margin-bottom:14px">
+      <thead><tr style="color:var(--sub);text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:6px 10px">Turn</th>
+        <th style="padding:6px 10px">apex_dist_m</th>
+        <th style="padding:6px 10px">speed_mph</th>
+        <th></th>
+      </tr></thead>
+      <tbody id="anno-tbody"></tbody>
+    </table>
+    <pre id="anno-pre" style="background:#0a0a14;border:1px solid var(--border);border-radius:4px;padding:14px;font-size:.78em;color:#adf;white-space:pre-wrap"># Click the chart above, then paste this back to Claude
+corners: []</pre>
+  </div>
+</div>
+
 <script>
 const FIGS=__FIGS_JSON__;
+const BEST_LAP=__BEST_LAP_JSON__;
 const DIVS=['c0','c1','c2','c3','c4','c5','c6'];
 const KEYS=['speed','heatmap','gg','corners','map','lateral','longg'];
 const done={};
@@ -754,6 +784,7 @@ const CFG={responsive:true,displayModeBar:true,
 
 function render(idx){
   if(done[idx])return;done[idx]=true;
+  if(idx===7){_renderAnnotator();return;}
   const f=FIGS[KEYS[idx]];
   Plotly.newPlot(DIVS[idx],f.data,f.layout,CFG);
 }
@@ -765,6 +796,86 @@ function showTab(btn,idx){
   render(idx);
 }
 render(0);
+
+// ── Corner Annotator ────────────────────────────────────────────────────────
+let annos=[];
+function _renderAnnotator(){
+  const lyt={
+    paper_bgcolor:'#0f0f1a',plot_bgcolor:'#16213e',
+    font:{color:'#d0d0d0',family:'-apple-system,system-ui,sans-serif',size:12},
+    xaxis:{title:'Distance (m)',color:'#d0d0d0',gridcolor:'#1e2a45',linecolor:'#444'},
+    yaxis:{title:'Speed (mph)',color:'#d0d0d0',gridcolor:'#1e2a45',linecolor:'#444'},
+    title:{text:'Best Lap Speed — click to mark a corner apex',font:{color:'#d0d0d0',size:14}},
+    margin:{l:60,r:20,t:50,b:60},hovermode:'x unified',
+    legend:{bgcolor:'#1a1a2e',bordercolor:'#444',font:{color:'#d0d0d0'}}
+  };
+  Plotly.newPlot('c-anno',[{
+    x:BEST_LAP.x,y:BEST_LAP.y,mode:'lines',name:'Best lap',
+    line:{color:'#FFD700',width:2},hovertemplate:'%{y:.1f} mph<extra></extra>'
+  }],lyt,CFG);
+  document.getElementById('c-anno').on('plotly_click',function(data){
+    const pt=data.points[0];
+    const dist=Math.round(pt.x);
+    const spd=parseFloat(pt.y.toFixed(1));
+    const nm=prompt('Turn label (e.g. "T1 Horseshoe" or just "T1"):');
+    if(!nm||!nm.trim())return;
+    annos.push({turn:nm.trim(),apex_dist_m:dist,apex_speed_mph:spd});
+    annos.sort((a,b)=>a.apex_dist_m-b.apex_dist_m);
+    _redrawMarkers();
+    _updateAnnoUI();
+  });
+}
+function _redrawMarkers(){
+  const el=document.getElementById('c-anno');
+  if(!el||!el.data)return;
+  const toRm=[];
+  for(let t=1;t<el.data.length;t++)toRm.push(t);
+  if(toRm.length)Plotly.deleteTraces('c-anno',toRm);
+  if(!annos.length)return;
+  Plotly.addTraces('c-anno',{
+    x:annos.map(a=>a.apex_dist_m),
+    y:annos.map(a=>a.apex_speed_mph),
+    mode:'markers+text',
+    text:annos.map(a=>a.turn),
+    textposition:'top center',
+    textfont:{color:'#FFD700',size:11},
+    marker:{color:'#FFD700',size:10,symbol:'triangle-up'},
+    showlegend:false,hoverinfo:'none',type:'scatter'
+  });
+}
+function _updateAnnoUI(){
+  document.getElementById('anno-tbody').innerHTML=annos.map((a,i)=>
+    '<tr style="border-bottom:1px solid #1e2a45">'+
+    '<td style="padding:5px 10px;color:#FFD700">'+a.turn+'</td>'+
+    '<td style="padding:5px 10px">'+a.apex_dist_m+'</td>'+
+    '<td style="padding:5px 10px">'+a.apex_speed_mph+'</td>'+
+    '<td style="padding:5px 10px"><button onclick="delAnno('+i+')" style="background:none;border:1px solid #555;color:#888;cursor:pointer;border-radius:3px;padding:2px 8px">✕</button></td>'+
+    '</tr>'
+  ).join('');
+  const yaml='corners:\\n'+annos.map(a=>
+    '  - turn: "'+a.turn+'"\\n'+
+    '    apex_dist_m: '+a.apex_dist_m+'\\n'+
+    '    apex_speed_mph: '+a.apex_speed_mph
+  ).join('\\n');
+  document.getElementById('anno-pre').textContent=
+    '# Paste this back to Claude to update vir-full-course.yaml\\n'+yaml;
+}
+function delAnno(i){annos.splice(i,1);_redrawMarkers();_updateAnnoUI();}
+function copyAnno(){
+  navigator.clipboard.writeText(document.getElementById('anno-pre').textContent)
+    .then(()=>{
+      const m=document.getElementById('anno-msg');
+      m.textContent='✓ Copied to clipboard!';
+      setTimeout(()=>m.textContent='',2500);
+    }).catch(()=>{
+      document.getElementById('anno-msg').textContent='Select + copy the text below manually';
+    });
+}
+function clearAnno(){
+  if(!annos.length||confirm('Clear all annotations?')){
+    annos=[];_redrawMarkers();_updateAnnoUI();
+  }
+}
 </script>
 </body>
 </html>
@@ -814,6 +925,20 @@ def generate_html_report(
     figs["lateral"] = fig_lateral(lat_tr, corners)
     figs["longg"]   = fig_longg(longg_tr, corners, segments)
 
+    # ── Best-lap trace for annotation tab (every 5 m) ─────────────────────────
+    _best_rows = con.execute("""
+        SELECT distance_m, gnss_speed_mps * 2.23694
+        FROM samples
+        WHERE session_guid = ? AND lap_index = ?
+          AND gnss_speed_mps IS NOT NULL
+          AND distance_m % 5 = 0
+        ORDER BY distance_m
+    """, [best_lap["sg"], best_lap["lap_idx"]]).fetchall()
+    best_lap_json = json.dumps({
+        "x": [r[0] for r in _best_rows],
+        "y": [round(r[1], 1) if r[1] is not None else None for r in _best_rows],
+    })
+
     # ── Serialise ──────────────────────────────────────────────────────────────
     figs_json = json.dumps(figs, allow_nan=False,
                            default=lambda o: None)  # drop any stray non-serializables
@@ -834,5 +959,6 @@ def generate_html_report(
         .replace("__META__", meta)
         .replace("__STAT_CARDS__", stat_cards_html)
         .replace("__FIGS_JSON__", figs_json)
+        .replace("__BEST_LAP_JSON__", best_lap_json)
     )
     return html
