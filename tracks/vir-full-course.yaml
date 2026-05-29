@@ -117,11 +117,11 @@ corners:
     name: "Snake Exit"
     direction: right
     character: "full throttle ideal, avoid inside curb"
-    apex_idx: 1225
-    dist_idx_start: 1185
-    dist_idx_end: 1265
-    apex_lat: 36.5654956
-    apex_lon: -79.2042101
+    apex_idx: 1244
+    dist_idx_start: 1209
+    dist_idx_end: 1279
+    apex_lat: 36.5653285
+    apex_lon: -79.2041718
     apex_radius_m: 43.5
   - turn: T5b
     name: "Snake Exit"
@@ -203,19 +203,19 @@ corners:
     name: "Oak Tree Entry"
     direction: right
     character: "approach to Oak Tree"
-    apex_idx: 2707
-    dist_idx_start: 2652
-    dist_idx_end: 2762
-    apex_lat: 36.5525211
-    apex_lon: -79.2043517
+    apex_idx: 2721
+    dist_idx_start: 2676
+    dist_idx_end: 2766
+    apex_lat: 36.5523960
+    apex_lon: -79.2043657
     apex_radius_m: 51.2
   - turn: T12
     name: "Oak Tree"
     direction: right
     character: "MOST IMPORTANT corner for lap time — feeds 4000ft back straight"
     apex_idx: 2791
-    dist_idx_start: 2766
-    dist_idx_end: 2816
+    dist_idx_start: 2761
+    dist_idx_end: 2821
     apex_lat: 36.5519049
     apex_lon: -79.2047897
     apex_radius_m: 38.3

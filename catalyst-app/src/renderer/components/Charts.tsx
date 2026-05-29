@@ -833,31 +833,5 @@ export function CornerChart({ data, height }: { data: AnalysisData; height: numb
   )
 }
 
-// ─── Series builders ─────────────────────────────────────────────────────────
-
-export function speedSeries(data: AnalysisData): LineSeries[] {
-  return data.speedTraces.map((t, i) => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,
-    xs: t.dist, ys: t.speed_mph,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
-    width: t.isBest ? 2.5 : 1.4, opacity: t.isBest ? 1 : 0.6,
-  }))
-}
-
-export function lateralSeries(data: AnalysisData): LineSeries[] {
-  return data.lateralTraces.map((t, i) => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,
-    xs: t.dist, ys: t.pos,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
-    width: t.isBest ? 2.5 : 1.2, opacity: t.isBest ? 1 : 0.5,
-  }))
-}
-
-export function longGSeries(data: AnalysisData): LineSeries[] {
-  return data.longgTraces.map((t, i) => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,
-    xs: t.dist, ys: t.long_g,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
-    width: t.isBest ? 2.5 : 1.2, opacity: t.isBest ? 1 : 0.5,
-  }))
-}
+// Series builders moved to ./chartSeries.ts so Fast Refresh can hot-reload
+// the components in this file without falling back to a full page reload.

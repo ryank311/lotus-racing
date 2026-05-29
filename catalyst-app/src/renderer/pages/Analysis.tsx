@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
-import { LineChart, GGChart, HeatmapGrid, CornerChart, speedSeries, lateralSeries, longGSeries } from '../components/Charts'
+import { LineChart, GGChart, HeatmapGrid, CornerChart } from '../components/Charts'
+import { speedSeries, lateralSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import type { AnalysisData } from '../../garmin/analysisData'
 
