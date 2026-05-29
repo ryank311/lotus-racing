@@ -1,28 +1,26 @@
-# Build & release Catalyst Coach for macOS + Windows.
+# Auto-release on version bump.
 #
-# Triggers:
-#   - Pushing a tag matching `v*` (e.g. `v0.2.0`). Bump package.json version
-#     first so installer filenames match the tag.
-#   - Manual run via the Actions tab ("Run workflow") — useful for testing
-#     the matrix on a non-tag commit.
+# Trigger: any push to main that modifies catalyst-app/package.json. The
+# `detect` job reads the version, and if no matching `vX.Y.Z` tag exists yet,
+# creates and pushes it. The matrix `build` job then runs and electron-builder
+# uploads the .dmg / .exe to a GitHub draft release at that tag.
 #
-# Output:
-#   electron-builder publishes a draft GitHub Release with `.dmg` (mac) and
-#   `.exe` NSIS installer (win) attached. Promote to a public release from
-#   the GitHub UI once you've verified the artifacts.
+# To cut a release locally:
+#   cd catalyst-app && npm version patch && cd ..
+#   git push origin main          # the workflow handles the rest
 #
-# Code signing is intentionally NOT configured. Unsigned mac builds need
-# `right-click → Open` on first launch; Windows installers will trip
-# SmartScreen until users click "More info → Run anyway". Add signing creds
-# (CSC_LINK / CSC_KEY_PASSWORD on mac, CSC_LINK / CSC_KEY_PASSWORD on win) as
-# repo secrets later when you want clean installs.
+# Manual dry-run (build without publishing): Actions tab → Release → Run
+# workflow → check Dry run. Useful for verifying changes to the build config
+# without burning a tag.
 
 name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    paths:
+      - 'catalyst-app/package.json'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -32,11 +30,53 @@ on:
         default: false
 
 permissions:
-  contents: write  # needed for electron-builder to create the release
+  contents: write  # tag + release creation
 
 jobs:
+  detect:
+    name: Detect version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.read.outputs.tag }}
+      version: ${{ steps.read.outputs.version }}
+      should_release: ${{ steps.read.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # we need existing tags to dedupe
+
+      - id: read
+        name: Read package.json version
+        run: |
+          VERSION=$(node -p "require('./catalyst-app/package.json').version")
+          TAG="v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # If the tag already exists, this is a re-push of a commit we've
+          # already released — skip silently so we don't double-release.
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists — nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version detected: $TAG"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create + push tag
+        if: steps.read.outputs.should_release == 'true' && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.read.outputs.tag }}" -m "Release ${{ steps.read.outputs.tag }}"
+          git push origin "${{ steps.read.outputs.tag }}"
+
   build:
     name: Build (${{ matrix.os }})
+    needs: detect
+    # Run when:
+    #   - a version bump landed on main (detect created a fresh tag), or
+    #   - the workflow was triggered manually (release or dry-run).
+    if: needs.detect.outputs.should_release == 'true' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -63,12 +103,7 @@ jobs:
 
       - name: Build & publish
         env:
-          # electron-builder uses this token to create/update the GitHub
-          # release. The default GITHUB_TOKEN has the `contents: write` scope
-          # we granted above.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Skip auto-discovery of any local code-signing identities on the
-          # runner — they don't exist and the build wastes time looking.
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
           npm run build
