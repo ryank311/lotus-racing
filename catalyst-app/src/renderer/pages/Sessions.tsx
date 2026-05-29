@@ -7,9 +7,10 @@ interface Props {
   selected: Set<string>
   setSelected: (s: Set<string>) => void
   onAnalyze: () => void
+  activeAccount: string | null
 }
 
-export function Sessions({ refreshTick, selected, setSelected, onAnalyze }: Props) {
+export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount }: Props) {
   const [rows, setRows] = useState<DbSessionRow[]>([])
   const [hasDb, setHasDb] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -18,12 +19,12 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze }: Prop
   useEffect(() => {
     void (async () => {
       setLoading(true)
-      const [list, db] = await Promise.all([api.listSessions(), api.hasDb()])
+      const [list, db] = await Promise.all([api.listSessions(activeAccount), api.hasDb()])
       setRows(list)
       setHasDb(db)
       setLoading(false)
     })()
-  }, [refreshTick])
+  }, [refreshTick, activeAccount])
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase()

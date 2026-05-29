@@ -454,6 +454,39 @@ input, textarea, select { font-family: inherit; color: inherit; }
   border-color: var(--border);
 }
 
+.btn.tiny {
+  font-size: 9px;
+  padding: 5px 10px;
+  letter-spacing: 0.14em;
+}
+
+.text-input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 9px 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  outline: none;
+}
+.text-input:focus { border-color: var(--signal); }
+
+.pill {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 2px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-mute);
+}
+.pill.ok   { color: var(--green); border-color: rgba(93,209,127,0.35); }
+.pill.warn { color: var(--amber); border-color: rgba(245,166,35,0.35); }
+.pill.err  { color: var(--red);   border-color: rgba(255,71,87,0.35); }
+
 .btn-row {
   display: flex;
   gap: 12px;

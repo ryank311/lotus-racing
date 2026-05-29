@@ -76,11 +76,7 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
 
         <section style={{ marginTop: 32 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-            <InfoCard label="Account" rows={[
-              ['email', email ?? '—'],
-              ['token', auth?.tokenValid ? 'valid (Catalyst OAuth2)' : 'missing/expired'],
-              ['garth tokens', auth?.hasGarthTokens ? 'present' : 'absent'],
-            ]} />
+            <AccountWidget state={accounts} onChange={onAccountsChange} />
             <InfoCard label="Pipeline" rows={[
               ['data dir', '~/garmin/data/sessions'],
               ['db file', '~/garmin/data/catalyst.duckdb'],
