@@ -10,10 +10,18 @@ export interface PlotlyChartProps {
   layout?: Partial<Plotly.Layout>
   height?: number
   config?: Partial<Plotly.Config>
+  // Fires for charts whose x-axis is distance_m, so other panels (the track
+  // map) can sync a crosshair to the hovered point. Callback receives the
+  // hovered x value, or null when the pointer leaves the chart.
+  onHoverDistance?: (distanceM: number | null) => void
 }
 
-export function PlotlyChart({ data, layout, height = 420, config }: PlotlyChartProps) {
+export function PlotlyChart({ data, layout, height = 420, config, onHoverDistance }: PlotlyChartProps) {
   const ref = useRef<HTMLDivElement | null>(null)
+  // Keep the latest callback in a ref so we don't have to re-init Plotly when
+  // the handler identity changes (which happens every parent render).
+  const hoverCbRef = useRef(onHoverDistance)
+  useEffect(() => { hoverCbRef.current = onHoverDistance }, [onHoverDistance])
 
   useEffect(() => {
     if (!ref.current) return
@@ -24,9 +32,21 @@ export function PlotlyChart({ data, layout, height = 420, config }: PlotlyChartP
       toImageButtonOptions: { format: 'png', scale: 2 },
       ...config,
     }
-    Plotly.newPlot(ref.current, data, { ...themeLayout(), ...layout }, cfg)
+    const el = ref.current
+    Plotly.newPlot(el, data, { ...themeLayout(), ...layout }, cfg).then(() => {
+      // Plotly's typed events are loose — cast through unknown.
+      ;(el as any).on('plotly_hover', (e: any) => {
+        const cb = hoverCbRef.current
+        if (!cb || !e?.points?.length) return
+        const x = e.points[0].x
+        if (typeof x === 'number') cb(x)
+      })
+      ;(el as any).on('plotly_unhover', () => {
+        hoverCbRef.current?.(null)
+      })
+    })
     return () => {
-      if (ref.current) Plotly.purge(ref.current)
+      if (el) Plotly.purge(el)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, layout])

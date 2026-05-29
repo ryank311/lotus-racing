@@ -1256,3 +1256,131 @@ input, textarea, select { font-family: inherit; color: inherit; }
   gap: 10px;
   margin-top: 18px;
 }
+
+/* ── track map (SVG) ─────────────────────────────────────────────────── */
+
+.track-map {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-radius: var(--radius);
+  user-select: none;
+  position: relative;
+}
+
+.track-map-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elev);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.track-map-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-soft);
+}
+.track-map-controls .spacer { flex: 1; }
+
+.layer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  background: transparent;
+  color: var(--text-mute);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.layer-toggle:hover { color: var(--text-dim); border-color: var(--border-strong); }
+.layer-toggle.on   { color: var(--text); border-color: var(--signal); background: rgba(255,94,58,0.06); }
+.layer-toggle .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-mute);
+}
+.layer-toggle.on .dot { background: var(--signal); box-shadow: 0 0 6px var(--signal); }
+
+.track-map-legend {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  background: rgba(10,10,14,0.78);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+.track-map-legend-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 1px;
+  overflow: hidden;
+}
+.track-map-legend-labels {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-mute);
+}
+.track-map-legend-best {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--accent, var(--signal));
+  margin-top: 2px;
+}
+
+/* ── analysis 2-column layout (scrolling charts + sticky track map) ── */
+
+.analysis-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 560px);
+  gap: 18px;
+  align-items: start;
+}
+
+.analysis-charts {
+  min-width: 0;            /* allow children to shrink inside the grid */
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.analysis-trackmap-sticky {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+}
+
+/* On narrow viewports drop to a stacked layout — track map slots in after
+   speed/heatmap rather than disappearing below the fold. */
+@media (max-width: 1180px) {
+  .analysis-layout { grid-template-columns: 1fr; }
+  .analysis-trackmap-sticky { position: static; }
+}
+
+.track-map-legend-hover {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: #fff;
+  margin-top: 2px;
+}

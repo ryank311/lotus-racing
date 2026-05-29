@@ -8,6 +8,7 @@ import {
   PlotlyChart, PALETTE, LAP_PALETTE, lapColor,
   cornerShapes, cornerAnnotations, segmentLines,
 } from '../components/PlotlyChart'
+import { TrackMap } from '../components/TrackMap'
 import type { AnalysisData } from '../../garmin/analysisData'
 
 interface Props {
@@ -115,6 +116,12 @@ function AnalysisBody({ data, selected, setSelected }: {
     [data.sessions],
   )
 
+  // Shared crosshair — distance_m hovered on any of the time-series charts
+  // with a distance x-axis. TrackMap renders a white dot at that point on
+  // the best-lap racing line so the user can correlate any chart row to
+  // the exact spatial location on the track.
+  const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
+
   const dateRange = useMemo(() => {
     const dates = sessionsSorted.map(s => s.start ?? '').filter(Boolean).map(s => s.slice(0, 10)).sort()
     if (!dates.length) return ''
@@ -149,87 +156,97 @@ function AnalysisBody({ data, selected, setSelected }: {
         <Stat label="Track" value={data.config} sub={`${data.totalDistM.toFixed(0)} m`} />
       </div>
 
-      {/* SPEED */}
-      <ChartCard
-        channel="CH·01 SPEED"
-        meta={`${data.speedTraces.length} laps · mph`}
-      >
-        <PlotlyChart
-          height={460}
-          data={speedFigure(data).data}
-          layout={speedFigure(data).layout}
-        />
-      </ChartCard>
+      {/* 2-column layout: scrolling chart column + sticky track map.
+          Track map stays pinned as the chart column scrolls, and the white
+          crosshair on it tracks whichever chart you're hovering on. */}
+      <div className="analysis-layout">
+        <div className="analysis-charts">
+          {/* SPEED */}
+          <ChartCard
+            channel="CH·01 SPEED"
+            meta={`${data.speedTraces.length} laps · mph`}
+          >
+            <PlotlyChart
+              height={460}
+              data={speedFigure(data).data}
+              layout={speedFigure(data).layout}
+              onHoverDistance={setHoverDistanceM}
+            />
+          </ChartCard>
 
-      {/* HEATMAP */}
-      {data.heatmap && (
-        <ChartCard
-          channel="CH·02 SEGMENT Δ"
-          meta="seconds · best per segment = 0"
-        >
-          <PlotlyChart
-            height={Math.max(360, data.heatmap.rows.length * 22 + 80)}
-            data={heatmapFigure(data).data}
-            layout={heatmapFigure(data).layout}
-          />
-        </ChartCard>
-      )}
+          {/* HEATMAP */}
+          {data.heatmap && (
+            <ChartCard
+              channel="CH·02 SEGMENT Δ"
+              meta="seconds · best per segment = 0"
+            >
+              <PlotlyChart
+                height={Math.max(360, data.heatmap.rows.length * 22 + 80)}
+                data={heatmapFigure(data).data}
+                layout={heatmapFigure(data).layout}
+              />
+            </ChartCard>
+          )}
 
-      {/* G-G + TRACK MAP side by side */}
-      <div className="chart-grid-2">
-        <ChartCard channel="CH·03 G-G" meta={`p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
-          <PlotlyChart
-            height={520}
-            data={ggFigure(data).data}
-            layout={ggFigure(data).layout}
-          />
-        </ChartCard>
-        <ChartCard channel="CH·04 TRACK MAP" meta="best lap · colour = mph">
-          <PlotlyChart
-            height={520}
-            data={trackMapFigure(data).data}
-            layout={trackMapFigure(data).layout}
-          />
-        </ChartCard>
+          {/* G-G */}
+          <ChartCard channel="CH·03 G-G" meta={`p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
+            <PlotlyChart
+              height={460}
+              data={ggFigure(data).data}
+              layout={ggFigure(data).layout}
+            />
+          </ChartCard>
+
+          {/* LATERAL POSITION */}
+          <ChartCard
+            channel="CH·05 LATERAL POSITION"
+            meta="0 = inner · 1 = outer · 0.5 = centre"
+          >
+            <PlotlyChart
+              height={300}
+              data={lateralFigure(data).data}
+              layout={lateralFigure(data).layout}
+              onHoverDistance={setHoverDistanceM}
+            />
+          </ChartCard>
+
+          {/* LONGITUDINAL G */}
+          <ChartCard
+            channel="CH·06 LONG. G"
+            meta="braking (neg) · acceleration (pos)"
+          >
+            <PlotlyChart
+              height={320}
+              data={longgFigure(data).data}
+              layout={longgFigure(data).layout}
+              onHoverDistance={setHoverDistanceM}
+            />
+          </ChartCard>
+
+          {/* CORNERS */}
+          {data.cornerRows.length > 0 && (
+            <ChartCard
+              channel="CH·07 CORNER STATS"
+              meta="entry · apex · exit"
+            >
+              <PlotlyChart
+                height={560}
+                data={cornersFigure(data).data}
+                layout={cornersFigure(data).layout}
+              />
+            </ChartCard>
+          )}
+        </div>
+
+        <aside className="analysis-trackmap-sticky">
+          <ChartCard
+            channel="CH·04 TRACK MAP"
+            meta="racing line · drag to pan · ⌘+scroll to zoom"
+          >
+            <TrackMap data={data} height={620} hoverDistanceM={hoverDistanceM} />
+          </ChartCard>
+        </aside>
       </div>
-
-      {/* LATERAL POSITION */}
-      <ChartCard
-        channel="CH·05 LATERAL POSITION"
-        meta="0 = inner · 1 = outer · 0.5 = centre"
-      >
-        <PlotlyChart
-          height={300}
-          data={lateralFigure(data).data}
-          layout={lateralFigure(data).layout}
-        />
-      </ChartCard>
-
-      {/* LONGITUDINAL G */}
-      <ChartCard
-        channel="CH·06 LONG. G"
-        meta="braking (neg) · acceleration (pos)"
-      >
-        <PlotlyChart
-          height={320}
-          data={longgFigure(data).data}
-          layout={longgFigure(data).layout}
-        />
-      </ChartCard>
-
-      {/* CORNERS */}
-      {data.cornerRows.length > 0 && (
-        <ChartCard
-          channel="CH·07 CORNER STATS"
-          meta="entry · apex · exit"
-        >
-          <PlotlyChart
-            height={560}
-            data={cornersFigure(data).data}
-            layout={cornersFigure(data).layout}
-          />
-        </ChartCard>
-      )}
     </>
   )
 }

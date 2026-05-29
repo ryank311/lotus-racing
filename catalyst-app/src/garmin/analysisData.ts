@@ -9,6 +9,7 @@ import { DuckDBConnection } from '@duckdb/node-api'
 import { openDb } from './loadToDb.js'
 import { DB_PATH, TRACKS_DIR } from './paths.js'
 import { loadTrackYaml, TrackCorner, TrackSegment } from './trackYaml.js'
+import { buildTrackGeometry, projectLatLon, TrackGeometry } from './trackGeometry.js'
 
 const MPH = (mps: number | null | undefined): number | null =>
   mps == null ? null : mps * 2.23694
@@ -55,6 +56,32 @@ export interface TrackMapData {
   speed_mph: number[]
 }
 
+// One lap projected into track-local meters for the SVG track map.
+export interface RacingLineLap extends LapMeta {
+  x: number[]            // east, metres from projection origin
+  y: number[]            // north, metres from projection origin
+  dist: number[]         // cumulative metres along the lap
+  speed_mph: number[]
+  long_g: number[]
+  lat_g: number[]
+}
+
+// Lightweight, transport-friendly subset of TrackGeometry — we drop the
+// `projection` (renderer doesn't need it; lap samples are pre-projected)
+// and keep only the polylines + sector marks the SVG needs.
+export interface TrackGeometryPayload {
+  meanLineGuid: string
+  trackName: string
+  configName: string
+  totalDistM: number
+  widthM: number
+  bbox: { minX: number; maxX: number; minY: number; maxY: number }
+  centerline: { x: number; y: number; dist: number }[]
+  leftEdge: { x: number; y: number }[]
+  rightEdge: { x: number; y: number }[]
+  sectorMarks: { distM: number; type: 'start' | 'end' }[]
+}
+
 export interface HeatmapData {
   z: (number | null)[][]
   text: string[][]
@@ -87,6 +114,8 @@ export interface AnalysisData {
   longgTraces: LongGTrace[]
   gg: GGData
   trackMap: TrackMapData
+  trackGeometry: TrackGeometryPayload | null
+  racingLines: RacingLineLap[]
   heatmap: HeatmapData | null
   cornerRows: CornerRow[]
   // Theoretical best = sum of personal-best per segment (only when segments exist)
@@ -222,6 +251,37 @@ async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], nBest = 12, e
     y: theta.map(t => p95 * Math.sin(t)),
   }
   return { lat_g, long_g, speed_mph, p95_g: Math.round(p95 * 100) / 100, circle }
+}
+
+async function fetchRacingLines(
+  con: DuckDBConnection,
+  laps: LapMeta[],
+  geom: TrackGeometry,
+  strideM = 5,
+): Promise<RacingLineLap[]> {
+  const out: RacingLineLap[] = []
+  for (const lap of laps) {
+    const r = await rows(con, `
+      SELECT distance_m, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2
+      FROM samples
+      WHERE session_guid = ? AND lap_index = ?
+        AND distance_m % ? = 0
+        AND lat IS NOT NULL AND lon IS NOT NULL
+      ORDER BY distance_m
+    `, [lap.sg, lap.lapIdx, strideM])
+    if (!r.length) continue
+    const xs: number[] = [], ys: number[] = [], ds: number[] = []
+    const speeds: number[] = [], lg: number[] = [], yg: number[] = []
+    for (const row of r) {
+      const pos = projectLatLon(Number(row[1]), Number(row[2]), geom.projection)
+      xs.push(pos.x); ys.push(pos.y); ds.push(Number(row[0]))
+      speeds.push(MPH(Number(row[3])) ?? 0)
+      lg.push(G(Number(row[4])) ?? 0)
+      yg.push(G(Number(row[5])) ?? 0)
+    }
+    out.push({ ...lap, x: xs, y: ys, dist: ds, speed_mph: speeds, long_g: lg, lat_g: yg })
+  }
+  return out
 }
 
 async function fetchTrackMap(con: DuckDBConnection, best: LapMeta, strideM = 10): Promise<TrackMapData> {
@@ -403,6 +463,12 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     trackConfig: r[3] ? String(r[3]) : null,
   }))
 
+  // Pick the mean_line_guid that the majority of selected sessions share.
+  const meanLineGuids = sessRows.map(r => (r[5] != null ? String(r[5]) : null)).filter(Boolean) as string[]
+  const mlgCounts = new Map<string, number>()
+  for (const g of meanLineGuids) mlgCounts.set(g, (mlgCounts.get(g) ?? 0) + 1)
+  const meanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+
   // Use the most-common config to pick which track YAML to load.
   const configCounts = new Map<string, number>()
   for (const s of sessions) {
@@ -424,6 +490,7 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
       speedTraces: [], lateralTraces: [], longgTraces: [],
       gg: { lat_g: [], long_g: [], speed_mph: [], p95_g: 0, circle: { x: [], y: [] } },
       trackMap: { dist: [], lat: [], lon: [], speed_mph: [] },
+      trackGeometry: null, racingLines: [],
       heatmap: null, cornerRows: [],
       theoreticalBestMs: null, avgLapMs: null,
     }
@@ -441,6 +508,36 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
   const longgTraces = await fetchLongGTraces(con, laps, 25)
   const gg = await fetchGGData(con, laps)
   const trackMap = await fetchTrackMap(con, bestLap, 10)
+
+  // Build the SVG-ready track geometry + projected racing lines for each lap.
+  // Cap the lap count so we don't ship a megabyte of polylines to the renderer
+  // for huge session sets; the SVG draws best-lap prominently and a handful
+  // of the next fastest as faint comparison traces.
+  let trackGeometry: TrackGeometryPayload | null = null
+  let racingLines: RacingLineLap[] = []
+  if (meanLineGuid) {
+    const geom = buildTrackGeometry(meanLineGuid)
+    if (geom) {
+      trackGeometry = {
+        meanLineGuid: geom.meanLineGuid,
+        trackName: geom.trackName,
+        configName: geom.configName,
+        totalDistM: geom.totalDistM,
+        widthM: geom.widthM,
+        bbox: geom.bbox,
+        centerline: geom.centerline.map(p => ({ x: p.x, y: p.y, dist: p.dist })),
+        leftEdge: geom.leftEdge,
+        rightEdge: geom.rightEdge,
+        sectorMarks: geom.sectorMarks,
+      }
+      const top = [...laps]
+        .filter(L => L.durationMs > 0)
+        .sort((a, b) => a.durationMs - b.durationMs)
+        .slice(0, 8)
+      racingLines = await fetchRacingLines(con, top, geom, 5)
+    }
+  }
+
   const heatmap = await buildHeatmap(con, laps, segments)
   const cornerRows = await fetchCornerRows(con, laps, corners)
 
@@ -479,7 +576,7 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     segments, corners, sessions,
     laps, bestLap,
     speedTraces, lateralTraces, longgTraces,
-    gg, trackMap, heatmap, cornerRows,
+    gg, trackMap, trackGeometry, racingLines, heatmap, cornerRows,
     theoreticalBestMs, avgLapMs,
   }
 }
