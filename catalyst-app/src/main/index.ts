@@ -7,6 +7,11 @@ import { loadInitialBounds, trackWindowState } from './windowState.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 
+const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+const iconPath = app.isPackaged
+  ? path.join(process.resourcesPath, 'build', iconFile)
+  : path.join(__dirname, '..', '..', 'build', iconFile)
+
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
@@ -17,6 +22,7 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 640,
     backgroundColor: '#0a0a0b',
+    icon: iconPath,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -44,6 +50,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(iconPath) } catch {}
+  }
   registerIpc(() => mainWindow)
   createWindow()
   app.on('activate', () => {

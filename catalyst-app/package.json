@@ -46,6 +46,10 @@
       "dist-renderer/**",
       "package.json"
     ],
+    "extraResources": [
+      { "from": "build/icon.png", "to": "build/icon.png" },
+      { "from": "build/icon.ico", "to": "build/icon.ico" }
+    ],
     "directories": {
       "buildResources": "build",
       "output": "release"
@@ -54,12 +58,14 @@
       "target": [
         { "target": "dmg", "arch": ["x64", "arm64"] }
       ],
-      "category": "public.app-category.sports"
+      "category": "public.app-category.sports",
+      "icon": "build/icon.icns"
     },
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
