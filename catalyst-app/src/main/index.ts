@@ -53,8 +53,21 @@ function createWindow(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   seedUserData()
+
+  // Migrate the existing database schema on every startup.
+  // All statements use IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so this is
+  // safe to run repeatedly — it's a no-op when the schema is current.
+  if (fs.existsSync(DB_PATH)) {
+    try {
+      const { con } = await openDb(DB_PATH)
+      await initSchema(con)
+    } catch (e) {
+      console.error('[startup] schema migration failed:', e)
+    }
+  }
+
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(iconPath) } catch {}
   }
