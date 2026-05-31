@@ -152,6 +152,8 @@ export interface AiSettings {
   harness: 'local' | 'remote'
   apiKey?: string
   model?: string
+  maxTokens?: number
+  stream?: boolean
 }
 
 export interface BriefOptions {

@@ -13,7 +13,7 @@ import path from 'node:path'
 
 export type HarnessConfig =
   | { harness: 'local'; cliPath?: string }
-  | { harness: 'remote'; apiKey: string; model: string }
+  | { harness: 'remote'; apiKey: string; model: string; maxTokens?: number; stream?: boolean }
 
 export async function runAgent(
   prompt: string,
@@ -21,7 +21,7 @@ export async function runAgent(
   onChunk: (text: string) => void,
 ): Promise<string> {
   if (config.harness === 'local') return runLocal(prompt, config.cliPath, onChunk)
-  return runRemote(prompt, config.apiKey, config.model, onChunk)
+  return runRemote(prompt, config.apiKey, config.model, onChunk, config.maxTokens ?? 32000, config.stream ?? true)
 }
 
 // ─── Async helpers ────────────────────────────────────────────────────────────
@@ -166,11 +166,13 @@ function runRemote(
   apiKey: string,
   model: string,
   onChunk: (text: string) => void,
+  maxTokens: number,
+  stream: boolean,
 ): Promise<string> {
   const body = JSON.stringify({
     model,
-    max_tokens: 32000,
-    stream: true,
+    max_tokens: maxTokens,
+    stream,
     messages: [{ role: 'user', content: prompt }],
   })
 
@@ -208,39 +210,39 @@ function runRemote(
         return
       }
 
-      let full = '', buf = ''
-      // Second-phase timer: once the model starts generating, show char count every 5 s
-      let generatingTimer: ReturnType<typeof setInterval> | null = null
-
-      res.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf-8')
-        const lines = buf.split('\n')
-        buf = lines.pop() ?? ''
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const raw = line.slice(6).trim()
-          if (raw === '[DONE]') continue
-          let evt: any
-          try { evt = JSON.parse(raw) } catch { continue }
-          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-            full += evt.delta.text ?? ''
-          }
-          if (evt.type === 'message_start') {
-            clearInterval(statusTimer)
-            onChunk('Generating response…\n')
-            // Show how much text has been generated every 5 s
-            generatingTimer = setInterval(() => {
-              onChunk(`${(full.length / 1024).toFixed(1)} KB generated…\n`)
-            }, 5000)
-          }
-          if (evt.type === 'message_stop') {
-            if (generatingTimer) clearInterval(generatingTimer)
-          }
-        }
-      })
+      let rawBody = ''
+      res.on('data', (chunk: Buffer) => { rawBody += chunk.toString('utf-8') })
       res.on('end', () => {
         clearInterval(statusTimer)
-        if (generatingTimer) clearInterval(generatingTimer)
+
+        let full = ''
+        if (stream) {
+          // Parse SSE — each line is "data: {...}"
+          let generatingStarted = false
+          for (const line of rawBody.split('\n')) {
+            if (!line.startsWith('data: ')) continue
+            const raw = line.slice(6).trim()
+            if (raw === '[DONE]') continue
+            let evt: any
+            try { evt = JSON.parse(raw) } catch { continue }
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+              full += evt.delta.text ?? ''
+            }
+            if (evt.type === 'message_start' && !generatingStarted) {
+              generatingStarted = true
+              onChunk('Generating response…\n')
+            }
+          }
+        } else {
+          // Non-streaming: single JSON response object
+          try {
+            const resp = JSON.parse(rawBody)
+            full = resp.content?.[0]?.text ?? ''
+          } catch {
+            onChunk('[error] Failed to parse non-streaming response\n')
+          }
+        }
+
         if (!full) {
           onChunk('[error] Response ended with no content\n')
         } else {
@@ -250,7 +252,6 @@ function runRemote(
       })
       res.on('error', (err) => {
         clearInterval(statusTimer)
-        if (generatingTimer) clearInterval(generatingTimer)
         onChunk(`[error] ${err.message}\n`)
         reject(err)
       })

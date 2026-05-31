@@ -144,7 +144,7 @@ function AiSettingsCard() {
           <div style={{ marginTop: 12 }}>
             <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
             <select
-              value={settings.model ?? 'claude-opus-4-5'}
+              value={settings.model ?? 'claude-opus-4-8'}
               onChange={e => setSettings(s => s ? { ...s, model: e.target.value } : s)}
               style={{
                 width: '100%', background: 'var(--bg-elev)',
@@ -159,6 +159,38 @@ function AiSettingsCard() {
               <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
               <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
             </select>
+          </div>
+          <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Max tokens</div>
+              <input
+                type="number"
+                min={1000} max={200000} step={1000}
+                value={settings.maxTokens ?? 32000}
+                onChange={e => setSettings(s => s ? { ...s, maxTokens: Number(e.target.value) } : s)}
+                style={{
+                  width: '100%', background: 'var(--bg-elev)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                  padding: '7px 10px', color: 'var(--text)',
+                  fontFamily: 'var(--font-mono)', fontSize: 11,
+                }}
+              />
+            </div>
+            <div>
+              <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Response mode</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {([true, false] as const).map(v => (
+                  <div
+                    key={String(v)}
+                    className={`radio ${(settings.stream ?? true) === v ? 'selected' : ''}`}
+                    style={{ flex: 1, padding: '6px 0', textAlign: 'center', fontSize: 11 }}
+                    onClick={() => setSettings(s => s ? { ...s, stream: v } : s)}
+                  >
+                    {v ? 'Stream' : 'Batch'}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </>
       )}

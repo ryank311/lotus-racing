@@ -333,15 +333,23 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('ai:getSettings', (): AiSettings => {
     const cfg = loadConfig()
     return {
-      harness: cfg.ai?.harness ?? 'local',
-      apiKey: cfg.ai?.api_key,
-      model: cfg.ai?.model ?? 'claude-opus-4-8',
+      harness:   cfg.ai?.harness   ?? 'local',
+      apiKey:    cfg.ai?.api_key,
+      model:     cfg.ai?.model     ?? 'claude-opus-4-8',
+      maxTokens: cfg.ai?.max_tokens ?? 32000,
+      stream:    cfg.ai?.stream    ?? true,
     }
   })
 
   ipcMain.handle('ai:saveSettings', (_e, s: AiSettings) => {
     const cfg = loadConfig()
-    cfg.ai = { harness: s.harness, api_key: s.apiKey, model: s.model }
+    cfg.ai = {
+      harness:    s.harness,
+      api_key:    s.apiKey,
+      model:      s.model,
+      max_tokens: s.maxTokens,
+      stream:     s.stream,
+    }
     saveConfig(cfg)
   })
 
@@ -402,7 +410,13 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         const cfg = loadConfig()
         const harnessConfig: Parameters<typeof runAgent>[1] =
           cfg.ai?.harness === 'remote' && cfg.ai?.api_key
-            ? { harness: 'remote', apiKey: cfg.ai.api_key, model: cfg.ai.model ?? 'claude-opus-4-8' }
+            ? {
+                harness:   'remote',
+                apiKey:    cfg.ai.api_key,
+                model:     cfg.ai.model     ?? 'claude-opus-4-8',
+                maxTokens: cfg.ai.max_tokens ?? 32000,
+                stream:    cfg.ai.stream    ?? true,
+              }
             : { harness: 'local' }
 
         const rawResponse = await runAgent(prompt, harnessConfig, (text) => {

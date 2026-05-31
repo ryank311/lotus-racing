@@ -23,6 +23,8 @@ export interface AppConfig {
     harness?: 'local' | 'remote'
     api_key?: string
     model?: string
+    max_tokens?: number
+    stream?: boolean
   }
 }
 
