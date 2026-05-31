@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
 import { humaniseBytes, api } from '../api'
 import { BriefDialog } from '../components/BriefDialog'
@@ -90,15 +90,18 @@ function Tile({ label, value, mono, valueClass }: { label: string; value: string
 
 function AiSettingsCard() {
   const [settings, setSettings] = useState<AiSettings | null>(null)
-  const [saved, setSaved] = useState(false)
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => { void api.getAiSettings().then(setSettings) }, [])
 
-  const save = async () => {
-    if (!settings) return
-    await api.saveAiSettings(settings)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+  const updateSettings = (updater: (s: AiSettings) => AiSettings) => {
+    setSettings(prev => {
+      if (!prev) return prev
+      const next = updater(prev)
+      clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(() => { void api.saveAiSettings(next) }, 300)
+      return next
+    })
   }
 
   if (!settings) return null
@@ -116,7 +119,7 @@ function AiSettingsCard() {
               key={h}
               className={`radio ${settings.harness === h ? 'selected' : ''}`}
               style={{ flex: 1, padding: '7px 12px', textAlign: 'center', fontSize: 12 }}
-              onClick={() => setSettings(s => s ? { ...s, harness: h } : s)}
+              onClick={() => updateSettings(s => ({ ...s, harness: h }))}
             >
               {h === 'local' ? 'Local (claude CLI)' : 'Remote (API)'}
             </div>
@@ -131,7 +134,7 @@ function AiSettingsCard() {
             <input
               type="password"
               value={settings.apiKey ?? ''}
-              onChange={e => setSettings(s => s ? { ...s, apiKey: e.target.value } : s)}
+              onChange={e => updateSettings(s => ({ ...s, apiKey: e.target.value }))}
               placeholder="sk-ant-api…"
               style={{
                 width: '100%', background: 'var(--bg-elev)',
@@ -145,7 +148,7 @@ function AiSettingsCard() {
             <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
             <select
               value={settings.model ?? 'claude-sonnet-4-6'}
-              onChange={e => setSettings(s => s ? { ...s, model: e.target.value } : s)}
+              onChange={e => updateSettings(s => ({ ...s, model: e.target.value }))}
               style={{
                 width: '100%', background: 'var(--bg-elev)',
                 border: '1px solid var(--border)', borderRadius: 'var(--radius)',
@@ -166,7 +169,7 @@ function AiSettingsCard() {
                 type="number"
                 min={1000} max={200000} step={1000}
                 value={settings.maxTokens ?? 32000}
-                onChange={e => setSettings(s => s ? { ...s, maxTokens: Number(e.target.value) } : s)}
+                onChange={e => updateSettings(s => ({ ...s, maxTokens: Number(e.target.value) }))}
                 style={{
                   width: '100%', background: 'var(--bg-elev)',
                   border: '1px solid var(--border)', borderRadius: 'var(--radius)',
@@ -183,7 +186,7 @@ function AiSettingsCard() {
                     key={String(v)}
                     className={`radio ${(settings.stream ?? true) === v ? 'selected' : ''}`}
                     style={{ flex: 1, padding: '6px 0', textAlign: 'center', fontSize: 11 }}
-                    onClick={() => setSettings(s => s ? { ...s, stream: v } : s)}
+                    onClick={() => updateSettings(s => ({ ...s, stream: v }))}
                   >
                     {v ? 'Stream' : 'Batch'}
                   </div>
@@ -201,11 +204,6 @@ function AiSettingsCard() {
         </div>
       )}
 
-      <div className="btn-row" style={{ marginTop: 16 }}>
-        <button className="btn primary" onClick={save} style={{ padding: '6px 16px' }}>
-          {saved ? 'Saved ✓' : 'Save'}
-        </button>
-      </div>
     </div>
   )
 }
