@@ -144,7 +144,7 @@ function AiSettingsCard() {
           <div style={{ marginTop: 12 }}>
             <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
             <select
-              value={settings.model ?? 'claude-opus-4-8'}
+              value={settings.model ?? 'claude-sonnet-4-6'}
               onChange={e => setSettings(s => s ? { ...s, model: e.target.value } : s)}
               style={{
                 width: '100%', background: 'var(--bg-elev)',
@@ -153,11 +153,10 @@ function AiSettingsCard() {
                 fontFamily: 'var(--font-mono)', fontSize: 11,
               }}
             >
-              <option value="claude-opus-4-8">claude-opus-4-8 (latest)</option>
-              <option value="claude-opus-4-7">claude-opus-4-7</option>
-              <option value="claude-opus-4-5">claude-opus-4-5</option>
-              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+              <option value="claude-opus-4-8">High — claude-opus-4-8</option>
+              <option value="claude-opus-4-6">High — claude-opus-4-6</option>
+              <option value="claude-sonnet-4-6">Medium — claude-sonnet-4-6</option>
+              <option value="claude-haiku-4-5-20251001">Low — claude-haiku-4-5</option>
             </select>
           </div>
           <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

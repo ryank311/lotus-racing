@@ -184,6 +184,8 @@ function runRemote(
     let phraseIdx = 0
     const statusTimer = setInterval(() => {
       onChunk(`[status] ${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
+      const elapsed = ((Date.now() - requestStart) / 1000).toFixed(0)
+      onChunk(`[diag] waiting for response… ${elapsed}s elapsed\n`)
       phraseIdx++
     }, 4000)
 

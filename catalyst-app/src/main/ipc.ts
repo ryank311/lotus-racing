@@ -335,7 +335,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return {
       harness:   cfg.ai?.harness   ?? 'local',
       apiKey:    cfg.ai?.api_key,
-      model:     cfg.ai?.model     ?? 'claude-opus-4-8',
+      model:     cfg.ai?.model     ?? 'claude-sonnet-4-6',
       maxTokens: cfg.ai?.max_tokens ?? 32000,
       stream:    cfg.ai?.stream    ?? true,
     }
@@ -413,7 +413,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
             ? {
                 harness:   'remote',
                 apiKey:    cfg.ai.api_key,
-                model:     cfg.ai.model     ?? 'claude-opus-4-8',
+                model:     cfg.ai.model     ?? 'claude-sonnet-4-6',
                 maxTokens: cfg.ai.max_tokens ?? 32000,
                 stream:    cfg.ai.stream    ?? true,
               }
