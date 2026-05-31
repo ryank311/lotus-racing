@@ -1,6 +1,6 @@
 {
   "name": "catalyst-coach",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Garmin Catalyst telemetry pipeline + coaching dashboard",
   "main": "dist-main/main/index.js",
   "scripts": {
