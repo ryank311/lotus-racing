@@ -8,7 +8,7 @@
 //   - Comparison laps as faint single-colour traces
 //   - Sample markers showing per-point speed/G on hover
 //
-// Pan = drag; zoom = wheel (anchored on the cursor); double-click = fit-to-track.
+// Pan = drag; zoom = wheel (anchored on the cursor); double-click = zoom in on cursor; Fit button = fit-to-track.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisData, RacingLineLap, TrackGeometryPayload, CoachLinePoint } from '../../garmin/analysisData'
@@ -47,8 +47,9 @@ interface Props {
   hoverDistanceM?: number | null
   edit?: TrackMapEditState
   coachAnnotations?: CoachAnnotation[]
-  focusCorner?: string  // turn ID to animate-zoom to (e.g. "T7", "S6")
-  hoverRef?: string     // turn/segment ID being hovered in coach notes (shows zone, no zoom)
+  focusCorner?: string      // turn ID to animate-zoom to (e.g. "T7", "S6")
+  hoverRef?: string         // turn/segment ID being hovered in coach notes (shows zone, no zoom)
+  focusAnnotation?: CoachAnnotation | null  // annotation to pin in HUD when tip is clicked
   coachLine?: CoachLinePoint[] | null      // computed optimal line from data
   aiCoachLine?: CoachLinePoint[] | null   // AI-recommended line (from coach JSON)
 }
@@ -171,7 +172,7 @@ function HeatmapPath({ lap, values, vmin, vmax }: {
   return <g>{segments}</g>
 }
 
-export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner, hoverRef, coachLine, aiCoachLine }: Props) {
+export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner, hoverRef, focusAnnotation, coachLine, aiCoachLine }: Props) {
   const { trackGeometry: geom, racingLines } = data
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -202,6 +203,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
   const [hoverIdx,    setHoverIdx]    = useState<number | null>(null)
   const [activeAnnotation, setActiveAnnotation] = useState<CoachAnnotation | null>(null)
   const [tooltipPos,  setTooltipPos]  = useState<{ x: number; y: number } | null>(null)
+  const [zoneHover,   setZoneHover]   = useState<{ annotation: CoachAnnotation; x: number; y: number } | null>(null)
 
   const bestLap = racingLines[0] ?? null
 
@@ -427,6 +429,19 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
     return Math.max(1.5, Math.ceil(max / 0.5) * 0.5)
   }, [bestLap])
 
+  // Build SVG event handlers for a zone highlight path — sets/clears the hover tooltip.
+  const zoneHandlers = (annotation: CoachAnnotation) => ({
+    onMouseEnter: (e: React.MouseEvent<SVGPathElement>) => {
+      const cRect = containerRef.current?.getBoundingClientRect()
+      if (cRect) setZoneHover({ annotation, x: e.clientX - cRect.left, y: e.clientY - cRect.top })
+    },
+    onMouseMove: (e: React.MouseEvent<SVGPathElement>) => {
+      const cRect = containerRef.current?.getBoundingClientRect()
+      if (cRect) setZoneHover(prev => prev ? { ...prev, x: e.clientX - cRect.left, y: e.clientY - cRect.top } : prev)
+    },
+    onMouseLeave: () => setZoneHover(null),
+  })
+
   // Fade turn labels when zoomed in — at 2x+ zoom they clutter the view.
   const labelOpacity = useMemo(() => {
     if (!fitBox || !vb) return 1
@@ -550,7 +565,13 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
       focusAnimRef.current = requestAnimationFrame(step)
       return from
     })
+
   }, [focusCorner, geom])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pin the tip's annotation in the HUD when a coach note is clicked.
+  useEffect(() => {
+    if (focusAnnotation !== undefined) setActiveAnnotation(focusAnnotation ?? null)
+  }, [focusAnnotation])
 
   if (!geom) {
     return (
@@ -582,7 +603,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         <span className="spacer" />
         <button className="btn tiny ghost" title="Zoom in"   onClick={() => zoomCenter(0.8)}>+</button>
         <button className="btn tiny ghost" title="Zoom out"  onClick={() => zoomCenter(1.25)}>−</button>
-        <button className="btn tiny ghost" title="Fit to track (or double-click)" onClick={fitToTrack}>Fit</button>
+        <button className="btn tiny ghost" title="Fit to track" onClick={fitToTrack}>Fit</button>
       </div>
 
       <svg
@@ -593,7 +614,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerLeave}
-        onDoubleClick={fitToTrack}
+        onDoubleClick={(e) => zoomAt(e.clientX, e.clientY, 0.45)}
         style={{
           width: '100%',
           flex: 1,
@@ -816,13 +837,14 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
                 >
                   {isSelected && zoneSlice && zoneSlice.length >= 2 && (() => {
                     const zd = zoneSlice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
-                    return <>
+                    return (
                       <path d={zd} fill="none" stroke="#22d3ee"
                         strokeOpacity={0.25} strokeWidth={geom.widthM} strokeLinecap="round"
-                        pointerEvents="none" />
-                    </>
+                        style={{ cursor: 'default' }}
+                        {...zoneHandlers(a)} />
+                    )
                   })()}
-                  <g opacity={labelOpacity}>
+                  <g opacity={labelOpacity} {...zoneHandlers(a)}>
                     <circle cx={m.x} cy={-m.y}
                       r={isSelected ? 13 : 11}
                       fill="#22d3ee" fillOpacity={isSelected ? 0.35 : 0.15}
@@ -858,12 +880,13 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
                   const d = slice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
                   return (
                     <path d={d} fill="none" stroke="#22d3ee"
-                      strokeOpacity={0.2} strokeWidth={geom.widthM} strokeLinecap="round"
-                      pointerEvents="none" />
+                      strokeOpacity={0.25} strokeWidth={geom.widthM} strokeLinecap="round"
+                      style={{ cursor: 'default' }}
+                      {...zoneHandlers(a)} />
                   )
                 })()}
-                {/* Turn number indicator — fades when zoomed in */}
-                <g opacity={labelOpacity}>
+                {/* Turn number indicator — fades when zoomed in; inherits zone hover so dot shows tooltip too */}
+                <g opacity={labelOpacity} {...zoneHandlers(a)}>
                   {/* Severity ring (color = severity-coded) */}
                   <circle cx={m.x} cy={-m.y}
                     r={isSelected ? 15 : 13}
@@ -970,37 +993,63 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         <GMeter latG={gMeterValues?.lat_g ?? null} longG={gMeterValues?.long_g ?? null} gMax={gMax} />
       )}
 
-      {/* Coach annotation tooltip — shown when user clicks an L8 marker */}
-      {activeAnnotation && (
-        <div
-          className="track-map-tooltip"
-          style={{ position: 'absolute', bottom: 80, left: 14, maxWidth: 280, zIndex: 60 }}
-          onClick={() => setActiveAnnotation(null)}
-        >
-          <div className="track-map-tooltip-dist" style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>{activeAnnotation.ref}</span>
-            <span style={{ cursor: 'pointer', opacity: 0.6 }}>×</span>
+      {/* Coach Intel HUD — fixed bottom-left panel, replaces both floating tooltips */}
+      {(activeAnnotation ?? zoneHover?.annotation) && (
+        <CoachIntelPanel
+          annotation={(activeAnnotation ?? zoneHover!.annotation)}
+          pinned={!!activeAnnotation}
+          onDismiss={() => setActiveAnnotation(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Coach Intel HUD panel ───────────────────────────────────────────────────
+
+function CoachIntelPanel({
+  annotation, pinned, onDismiss,
+}: {
+  annotation: CoachAnnotation
+  pinned: boolean
+  onDismiss: () => void
+}) {
+  const color = annotation.severity === 3 ? 'var(--signal)' : annotation.severity === 2 ? '#f5a623' : 'var(--cyan)'
+  const hasSpeed = annotation.actual_apex_mps != null && annotation.target_apex_mps != null
+  const actualMph = hasSpeed ? (annotation.actual_apex_mps! * 2.237).toFixed(1) : null
+  const targetMph = hasSpeed ? (annotation.target_apex_mps! * 2.237).toFixed(1) : null
+  const deltaMph  = hasSpeed ? ((annotation.target_apex_mps! - annotation.actual_apex_mps!) * 2.237) : null
+
+  return (
+    <div className="coach-intel-panel" style={{ '--intel-color': color } as React.CSSProperties}>
+      <div className="coach-intel-ref">{annotation.ref}</div>
+      <div className="coach-intel-divider" />
+      <div className="coach-intel-body">{annotation.body}</div>
+
+      {hasSpeed && (
+        <div className="coach-intel-speeds">
+          <div className="coach-intel-speed-block">
+            <span className="coach-intel-speed-label">actual</span>
+            <span className="coach-intel-speed-value">{actualMph}</span>
+            <span className="coach-intel-speed-unit">mph</span>
           </div>
-          <div style={{
-            fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)',
-            lineHeight: 1.55, marginTop: 4,
-          }}>
-            {activeAnnotation.body}
+          <div className="coach-intel-speed-arrow" style={{ color }}>
+            {deltaMph! > 0 ? '▲' : '▼'}{Math.abs(deltaMph!).toFixed(1)}
           </div>
-          {activeAnnotation.actual_apex_mps != null && activeAnnotation.target_apex_mps != null && (
-            <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
-              <div className="track-map-tooltip-row">
-                <span style={{ color: 'var(--text-mute)' }}>actual</span>
-                <span>{(activeAnnotation.actual_apex_mps * 2.237).toFixed(1)} mph</span>
-              </div>
-              <div className="track-map-tooltip-row">
-                <span style={{ color: 'var(--signal)' }}>target</span>
-                <span>{(activeAnnotation.target_apex_mps * 2.237).toFixed(1)} mph</span>
-              </div>
-            </div>
-          )}
+          <div className="coach-intel-speed-block">
+            <span className="coach-intel-speed-label">target</span>
+            <span className="coach-intel-speed-value" style={{ color }}>{targetMph}</span>
+            <span className="coach-intel-speed-unit">mph</span>
+          </div>
         </div>
       )}
+
+      <div className="coach-intel-actions">
+        {!pinned
+          ? <span className="coach-intel-hint">click to pin</span>
+          : <button className="coach-intel-close" onClick={onDismiss}>×</button>
+        }
+      </div>
     </div>
   )
 }

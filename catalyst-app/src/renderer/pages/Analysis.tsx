@@ -28,6 +28,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [coachRunning, setCoachRunning] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
+  const [focusedAnnotation, setFocusedAnnotation] = useState<CoachAnnotation | null | undefined>(undefined)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
 
@@ -180,7 +181,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             )}
 
             {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} onFocusRef={setFocusedRef} onHoverRef={setHoveredRef} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} onFocusRef={setFocusedRef} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
             )}
           </div>
         </div>
@@ -191,7 +192,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
           {data && !loading && !err
-            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} coachResult={coachResult} />
+            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} focusAnnotation={focusedAnnotation} coachResult={coachResult} />
             : <div className="analysis-map-placeholder" />
           }
         </div>
@@ -267,12 +268,13 @@ function waypointsToXY(
 }
 
 // TrackMapPanel — right pane content, full height, no extra chrome
-function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, hoverRef, coachResult }: {
+function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, hoverRef, focusAnnotation, coachResult }: {
   data: AnalysisData
   hoverDistanceM: number | null
   coachAnnotations?: CoachAnnotation[]
   focusCorner?: string | null
   hoverRef?: string | null
+  focusAnnotation?: CoachAnnotation | null
   coachResult?: CoachingResult | null
 }) {
   const aiCoachLine = useMemo(() => {
@@ -293,13 +295,14 @@ function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, ho
       coachAnnotations={coachAnnotations}
       focusCorner={focusCorner ?? undefined}
       hoverRef={hoverRef ?? undefined}
+      focusAnnotation={focusAnnotation}
       coachLine={coachResult && !aiCoachLine ? data.coachLine : null}
       aiCoachLine={coachResult ? aiCoachLine : null}
     />
   )
 }
 
-function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult, onFocusRef, onHoverRef }: {
+function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult, onFocusRef, onHoverRef, onFocusAnnotation }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
@@ -307,6 +310,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
   coachResult?: CoachingResult | null
   onFocusRef?: (ref: string) => void
   onHoverRef?: (ref: string | null) => void
+  onFocusAnnotation?: (a: CoachAnnotation | null) => void
 }) {
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
@@ -350,7 +354,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
       </div>
 
       {/* COACH NOTES */}
-      {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} onHoverRef={onHoverRef} />}
+      {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} onHoverRef={onHoverRef} onFocusAnnotation={onFocusAnnotation} />}
 
       {/* RECOMMENDED PRACTICE */}
       {coachResult && coachResult.drills.length > 0 && (
@@ -422,10 +426,11 @@ function Stat({ label, value, sub, featured }: { label: string; value: string; s
   )
 }
 
-function CoachNotesPanel({ result, onFocusRef, onHoverRef }: {
+function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: {
   result: CoachingResult
   onFocusRef?: (ref: string) => void
   onHoverRef?: (ref: string | null) => void
+  onFocusAnnotation?: (a: CoachAnnotation | null) => void
 }) {
   const [open, setOpen] = useState(true)
 
@@ -477,10 +482,14 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef }: {
               {result.tips.map((tip, i) => {
                 const ref = refForTip(tip)
                 const clickable = !!ref && !!onFocusRef
+                const firstAnnotation = tip.annotations[0] ?? null
                 return (
                   <div
                     key={i}
-                    onClick={clickable ? () => onFocusRef!(ref!) : undefined}
+                    onClick={clickable ? () => {
+                      onFocusRef!(ref!)
+                      onFocusAnnotation?.(firstAnnotation)
+                    } : undefined}
                     style={{
                       background: 'var(--bg-elev)',
                       border: '1px solid var(--border)',

@@ -1883,6 +1883,122 @@ input, textarea, select { font-family: inherit; color: inherit; }
   margin-top: 2px;
 }
 
+/* ── Coach Intel HUD panel ────────────────────────────────────────────── */
+.coach-intel-panel {
+  position: absolute;
+  top: 58px;       /* clears the two-row controls bar */
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: rgba(10, 10, 16, 0.88);
+  border-top: 2px solid var(--intel-color, var(--cyan));
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  padding: 10px 16px;
+  z-index: 55;
+  pointer-events: auto;
+  animation: intel-in 0.16s ease;
+  backdrop-filter: blur(8px);
+}
+@keyframes intel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.coach-intel-ref {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--intel-color, var(--cyan));
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+  min-width: 36px;
+}
+
+.coach-intel-divider {
+  width: 1px;
+  height: 32px;
+  background: rgba(255,255,255,0.1);
+  flex-shrink: 0;
+}
+
+.coach-intel-body {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.coach-intel-speeds {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-left: 12px;
+  border-left: 1px solid rgba(255,255,255,0.08);
+}
+.coach-intel-speed-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.coach-intel-speed-label {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  color: var(--text-mute);
+  text-transform: uppercase;
+}
+.coach-intel-speed-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+.coach-intel-speed-unit {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  color: var(--text-mute);
+}
+.coach-intel-speed-arrow {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.coach-intel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.coach-intel-hint {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  letter-spacing: 0.1em;
+  color: var(--text-mute);
+  opacity: 0.5;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.coach-intel-close {
+  background: none;
+  border: none;
+  color: var(--text-mute);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+.coach-intel-close:hover { color: var(--text); }
+
 /* ── G-meter overlay ──────────────────────────────────────────────────── */
 .track-map-gmeter {
   position: absolute;

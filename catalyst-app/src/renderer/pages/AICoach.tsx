@@ -230,16 +230,9 @@ function SessionViewer({ session, onLoad, onDelete }: {
               }}>
                 {tip.section}
               </div>
-              <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-dim)', marginBottom: 8 }}>
+              <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-dim)' }}>
                 {tip.body}
               </div>
-              {tip.annotations.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                  {tip.annotations.map((a, j) => (
-                    <AnnotationPill key={j} annotation={a} />
-                  ))}
-                </div>
-              )}
             </div>
           ))}
         </div>
