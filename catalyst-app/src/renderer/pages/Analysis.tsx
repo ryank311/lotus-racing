@@ -249,12 +249,14 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
       </div>
 
       {/* STAT STRIP */}
+      <div className="analysis-stat-strip-container">
       <div className="analysis-stat-strip">
         <Stat label="Best lap" value={msToLap(data.bestLap?.durationMs)} sub={data.bestLap ? `${data.bestLap.sgShort}… L${data.bestLap.lapIdx + 1}` : ''} featured />
         <Stat label="Theoretical" value={msToLap(data.theoreticalBestMs)} sub="sum of segment PBs" />
         <Stat label="Average" value={msToLap(data.avgLapMs)} sub={`${data.laps.length} laps`} />
         <Stat label="Sessions" value={String(data.sessions.length)} sub="selected" />
         <Stat label="Track" value={data.config} sub={`${data.totalDistM.toFixed(0)} m`} />
+      </div>
       </div>
 
       {/* COACH NOTES */}

@@ -408,6 +408,13 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
     return Math.max(1.5, Math.ceil(max / 0.5) * 0.5)
   }, [bestLap])
 
+  // Fade turn labels when zoomed in — at 2x+ zoom they clutter the view.
+  const labelOpacity = useMemo(() => {
+    if (!fitBox || !vb) return 1
+    const zoomFactor = fitBox.w / vb.w
+    return Math.max(0, Math.min(1, (3 - zoomFactor) / 1.2))
+  }, [fitBox, vb])
+
   // L8 — coach annotation markers: resolve corner refs to centerline positions.
   const coachMarkers = useMemo(() => {
     if (!coachAnnotations?.length || !geom) return []
@@ -671,50 +678,70 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         )}
 
         {/* L8 — coach annotation markers */}
-        {coachMarkers.map((m, i) => {
-          const a = m.annotation
-          const color = a.severity === 3 ? '#ff5e3a' : a.severity === 2 ? '#f5a623' : '#7dd3fc'
-          if (m.kind === 'recommended') {
+        {(() => {
+          const activeRef = activeAnnotation?.ref ?? focusCorner ?? null
+          const hasSelection = activeRef !== null
+          return coachMarkers.map((m, i) => {
+            const a = m.annotation
+            const color = a.severity === 3 ? '#ff5e3a' : a.severity === 2 ? '#f5a623' : '#7dd3fc'
+            const isSelected = a.ref === activeRef
+            const markerOpacity = hasSelection ? (isSelected ? 1 : 0.25) : 1
+
+            if (m.kind === 'recommended') {
+              return (
+                <g key={`rec-${i}`} pointerEvents="none" opacity={markerOpacity}>
+                  <circle cx={m.x} cy={-m.y} r={10}
+                    fill="none" stroke="#ffffff" strokeWidth={1.5} strokeDasharray="3 2"
+                    strokeOpacity={0.7} vectorEffect="non-scaling-stroke" />
+                </g>
+              )
+            }
             return (
-              <g key={`rec-${i}`} pointerEvents="none">
-                <circle cx={m.x} cy={-m.y} r={10}
-                  fill="none" stroke="#ffffff" strokeWidth={1.5} strokeDasharray="3 2"
-                  strokeOpacity={0.7} vectorEffect="non-scaling-stroke" />
+              <g key={`ann-${i}`}
+                style={{ cursor: 'pointer' }}
+                opacity={markerOpacity}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setActiveAnnotation(prev => prev?.ref === a.ref ? null : a)
+                }}
+              >
+                {/* Corner zone highlight — always visible */}
+                {m.distStart != null && m.distEnd != null && (() => {
+                  const lo = Math.max(0, Math.round(m.distStart))
+                  const hi = Math.min(geom.centerline.length - 1, Math.round(m.distEnd))
+                  const slice = geom.centerline.slice(lo, hi + 1)
+                  if (slice.length < 2) return null
+                  const d = slice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
+                  return (
+                    <path d={d} fill="none" stroke={color}
+                      strokeOpacity={isSelected ? 0.55 : 0.35}
+                      strokeWidth={Math.max(4, geom.widthM * 0.9)} strokeLinecap="round"
+                      pointerEvents="none" vectorEffect="non-scaling-stroke" />
+                  )
+                })()}
+                {/* Turn number indicator — fades when zoomed in */}
+                <g opacity={labelOpacity}>
+                  <circle cx={m.x} cy={-m.y}
+                    r={isSelected ? 13 : 11}
+                    fill={color} fillOpacity={isSelected ? 0.35 : 0.15}
+                    stroke={color} strokeWidth={isSelected ? 2 : 1.5}
+                    vectorEffect="non-scaling-stroke" />
+                  {isSelected && (
+                    <circle cx={m.x} cy={-m.y} r={16}
+                      fill="none" stroke={color} strokeWidth={1} strokeOpacity={0.4}
+                      strokeDasharray="3 2" vectorEffect="non-scaling-stroke" />
+                  )}
+                  <text x={m.x} y={-m.y + 3} textAnchor="middle"
+                    fontSize={isSelected ? 8 : 7} fontWeight={700}
+                    fill={isSelected ? '#fff' : color}
+                    fontFamily="'JetBrains Mono', monospace" pointerEvents="none">
+                    {a.ref}
+                  </text>
+                </g>
               </g>
             )
-          }
-          return (
-            <g key={`ann-${i}`}
-              style={{ cursor: 'pointer' }}
-              onClick={(e) => {
-                e.stopPropagation()
-                setActiveAnnotation(prev => prev?.ref === a.ref ? null : a)
-              }}
-            >
-              {/* Corner zone highlight */}
-              {m.distStart != null && m.distEnd != null && (() => {
-                const lo = Math.max(0, Math.round(m.distStart))
-                const hi = Math.min(geom.centerline.length - 1, Math.round(m.distEnd))
-                const slice = geom.centerline.slice(lo, hi + 1)
-                if (slice.length < 2) return null
-                const d = slice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
-                return (
-                  <path d={d} fill="none" stroke={color} strokeOpacity={0.35}
-                    strokeWidth={Math.max(4, geom.widthM * 0.9)} strokeLinecap="round"
-                    pointerEvents="none" vectorEffect="non-scaling-stroke" />
-                )
-              })()}
-              {/* Apex halo */}
-              <circle cx={m.x} cy={-m.y} r={11} fill={color} fillOpacity={0.15}
-                stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-              {/* Turn label */}
-              <text x={m.x} y={-m.y + 3} textAnchor="middle" fontSize={7} fontWeight={700}
-                fill={color} fontFamily="'JetBrains Mono', monospace" pointerEvents="none">
-                {a.ref}
-              </text>
-            </g>
-          )
-        })}
+          })
+        })()}
       </svg>
 
       <div className="track-map-legend">
