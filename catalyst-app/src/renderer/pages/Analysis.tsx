@@ -203,19 +203,47 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 // ============================================================================
 
 // Convert sparse AI waypoints [{dist_m, lateral_pos}] to XY using track geometry.
-// lateral_pos: 0 = driver-left edge, 1 = driver-right edge.
+// Convert sparse AI waypoints to a dense XY polyline that follows track curvature.
+// Between each pair of waypoints, lateral_pos is linearly interpolated but sampled
+// at every STRIDE metres using the actual left/right edge geometry — so the path
+// curves with the track instead of cutting straight through corners.
 function waypointsToXY(
   waypoints: CoachLineWaypoint[],
   geom: import('../../garmin/analysisData').TrackGeometryPayload,
 ): CoachLinePoint[] {
-  return waypoints.flatMap(wp => {
-    const idx = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(wp.dist_m)))
-    const left = geom.leftEdge[idx]
-    const right = geom.rightEdge[idx]
-    if (!left || !right) return []
-    const t = Math.max(0, Math.min(1, wp.lateral_pos))
-    return [{ dist: wp.dist_m, x: left.x + (right.x - left.x) * t, y: left.y + (right.y - left.y) * t }]
-  })
+  if (!waypoints.length) return []
+  const STRIDE = 5 // metres between interpolated samples
+  const maxIdx = geom.centerline.length - 1
+
+  function edgeLerp(dist: number, lateralPos: number): CoachLinePoint | null {
+    const idx = Math.max(0, Math.min(maxIdx, Math.round(dist)))
+    const left = geom.leftEdge[idx], right = geom.rightEdge[idx]
+    if (!left || !right) return null
+    const t = Math.max(0, Math.min(1, lateralPos))
+    return { dist, x: left.x + (right.x - left.x) * t, y: left.y + (right.y - left.y) * t }
+  }
+
+  const result: CoachLinePoint[] = []
+  for (let i = 0; i < waypoints.length; i++) {
+    const w1 = waypoints[i]
+    const w2 = waypoints[i + 1]
+    if (!w2) {
+      // Last waypoint — just add it
+      const pt = edgeLerp(w1.dist_m, w1.lateral_pos)
+      if (pt) result.push(pt)
+      break
+    }
+    const distSpan = w2.dist_m - w1.dist_m
+    if (distSpan <= 0) continue
+    // Walk from w1 to w2 at STRIDE intervals, interpolating lateral_pos
+    for (let d = w1.dist_m; d < w2.dist_m; d += STRIDE) {
+      const t = (d - w1.dist_m) / distSpan
+      const lat = w1.lateral_pos + (w2.lateral_pos - w1.lateral_pos) * t
+      const pt = edgeLerp(d, lat)
+      if (pt) result.push(pt)
+    }
+  }
+  return result
 }
 
 // TrackMapPanel — right pane content, full height, no extra chrome
@@ -240,8 +268,8 @@ function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, ho
       coachAnnotations={coachAnnotations}
       focusCorner={focusCorner ?? undefined}
       hoverRef={hoverRef ?? undefined}
-      coachLine={data.coachLine}
-      aiCoachLine={aiCoachLine}
+      coachLine={coachResult && !aiCoachLine ? data.coachLine : null}
+      aiCoachLine={coachResult ? aiCoachLine : null}
     />
   )
 }

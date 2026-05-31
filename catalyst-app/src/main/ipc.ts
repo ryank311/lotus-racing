@@ -420,8 +420,13 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
             : { harness: 'local' }
 
         const rawResponse = await runAgent(prompt, harnessConfig, (text) => {
-          broadcast(win, { kind: 'coach', type: 'log', payload: text })
-          collectedLogs.push(text)
+          if (text.startsWith('[status] ')) {
+            const label = text.slice(9).trim()
+            broadcast(win, { kind: 'coach', type: 'progress', progress: { current: 2, total: 3, label } })
+          } else {
+            broadcast(win, { kind: 'coach', type: 'log', payload: text })
+            collectedLogs.push(text)
+          }
         })
 
         log('[coach] Response received. Parsing annotations…')

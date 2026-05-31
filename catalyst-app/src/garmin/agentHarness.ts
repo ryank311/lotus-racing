@@ -176,13 +176,14 @@ function runRemote(
     messages: [{ role: 'user', content: prompt }],
   })
 
-  onChunk(`Connecting to ${model}…\n`)
+  onChunk(`[status] Connecting to ${model}…\n`)
+  onChunk(`[diag] model=${model} max_tokens=${maxTokens} stream=${stream} prompt=${(prompt.length/1024).toFixed(1)}KB\n`)
 
   return new Promise((resolve, reject) => {
-    // Cycle through fun status phrases while waiting for the response.
+    const requestStart = Date.now()
     let phraseIdx = 0
     const statusTimer = setInterval(() => {
-      onChunk(`${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
+      onChunk(`[status] ${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
       phraseIdx++
     }, 4000)
 
@@ -228,9 +229,19 @@ function runRemote(
             if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
               full += evt.delta.text ?? ''
             }
-            if (evt.type === 'message_start' && !generatingStarted) {
-              generatingStarted = true
-              onChunk('Generating response…\n')
+            if (evt.type === 'message_start') {
+              if (!generatingStarted) {
+                generatingStarted = true
+                onChunk('[status] Generating response…\n')
+                onChunk(`[diag] first-token latency: ${((Date.now() - requestStart) / 1000).toFixed(1)}s\n`)
+              }
+              if (evt.message?.usage) {
+                const u = evt.message.usage
+                onChunk(`[diag] input_tokens=${u.input_tokens ?? '?'}\n`)
+              }
+            }
+            if (evt.type === 'message_delta' && evt.usage) {
+              onChunk(`[diag] output_tokens=${evt.usage.output_tokens ?? '?'}\n`)
             }
           }
         } else {
@@ -246,7 +257,9 @@ function runRemote(
         if (!full) {
           onChunk('[error] Response ended with no content\n')
         } else {
-          onChunk(`Done — ${(full.length / 1024).toFixed(1)} KB\n`)
+          const elapsed = ((Date.now() - requestStart) / 1000).toFixed(1)
+          onChunk(`[diag] response complete: ${(full.length / 1024).toFixed(1)}KB in ${elapsed}s\n`)
+          onChunk('[status] Parsing coaching report…\n')
         }
         resolve(full)
       })
