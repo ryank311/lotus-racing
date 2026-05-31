@@ -2,7 +2,7 @@
 // Extracts the last ```json ... ``` block and validates it permissively —
 // malformed entries are skipped rather than failing the whole parse.
 
-import type { CoachingResult, CoachAnnotation, CoachAnnotationType } from '../shared/types.js'
+import type { CoachingResult, CoachAnnotation, CoachAnnotationType, CoachLineWaypoint } from '../shared/types.js'
 
 const VALID_ANNOTATION_TYPES = new Set<CoachAnnotationType>([
   'corner_tip', 'segment_tip', 'speed_annotation', 'line_deviation',
@@ -42,7 +42,16 @@ function validate(o: unknown): CoachingResult | null {
   const drills = Array.isArray(r.drills)
     ? r.drills.filter((d): d is string => typeof d === 'string')
     : []
-  return { headline: r.headline, consistency_loss_ms, tips, drills, annotations }
+  const coach_line = Array.isArray(r.coach_line)
+    ? (r.coach_line as unknown[]).flatMap((w): CoachLineWaypoint[] => {
+        if (typeof w !== 'object' || w === null) return []
+        const wp = w as Record<string, unknown>
+        if (typeof wp.dist_m !== 'number' || typeof wp.lateral_pos !== 'number') return []
+        const lateral_pos = Math.max(0, Math.min(1, wp.lateral_pos))
+        return [{ dist_m: wp.dist_m, lateral_pos, note: typeof wp.note === 'string' ? wp.note : undefined }]
+      })
+    : undefined
+  return { headline: r.headline, consistency_loss_ms, tips, drills, annotations, coach_line }
 }
 
 function coerceAnnotation(a: unknown): CoachAnnotation | null {

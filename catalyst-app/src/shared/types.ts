@@ -122,12 +122,19 @@ export interface CoachAnnotation {
   severity?: 1 | 2 | 3             // 1=minor/cyan  2=moderate/amber  3=critical/signal
 }
 
+export interface CoachLineWaypoint {
+  dist_m: number
+  lateral_pos: number    // 0 = driver-left edge, 1 = driver-right edge
+  note?: string
+}
+
 export interface CoachingResult {
   headline: string
   consistency_loss_ms: number
   tips: Array<{ section: string; body: string; annotations: CoachAnnotation[] }>
   drills: string[]
   annotations: CoachAnnotation[]   // flat list of all annotations across all tips
+  coach_line?: CoachLineWaypoint[] // optional sparse AI-recommended line waypoints
 }
 
 export interface CoachingSession {

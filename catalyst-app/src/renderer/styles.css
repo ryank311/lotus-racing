@@ -310,7 +310,6 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .ask-coach-btn {
   -webkit-app-region: no-drag;
   flex-shrink: 0;
-  /* Fixed dimensions so no layout shift between idle / coaching / clear states */
   min-width: 148px;
   padding: 10px 22px;
   font-size: 12px;
@@ -321,18 +320,39 @@ input, textarea, select { font-family: inherit; color: inherit; }
   border-radius: var(--radius);
   white-space: nowrap;
   text-align: center;
+  /* Cyan coaching theme */
+  background: transparent;
+  color: var(--cyan);
+  border: 1px solid var(--cyan);
 }
-.ask-coach-btn:not(:disabled) {
-  box-shadow: 0 0 18px rgba(255,94,58,0.25);
+.ask-coach-btn:not(:disabled):not(.clearing) {
+  box-shadow: 0 0 18px rgba(125,211,252,0.25), inset 0 0 12px rgba(125,211,252,0.06);
 }
-/* Pulse the border while coaching to signal activity without changing size */
+.ask-coach-btn:hover:not(:disabled) {
+  background: rgba(125,211,252,0.08);
+}
+.ask-coach-btn.clearing {
+  color: var(--text-mute);
+  border-color: var(--border);
+}
+/* Pulse the border while coaching to signal activity */
 .ask-coach-btn:disabled {
   box-shadow: none;
   animation: coach-pulse 1.4s ease-in-out infinite;
 }
 @keyframes coach-pulse {
-  0%, 100% { opacity: 0.55; }
-  50%       { opacity: 0.85; }
+  0%, 100% { opacity: 0.45; border-color: var(--cyan); }
+  50%       { opacity: 0.85; border-color: var(--cyan); box-shadow: 0 0 20px rgba(125,211,252,0.4); }
+}
+
+/* Coach notes card — cyan header instead of signal/orange */
+.chart-card.coach-card .chart-card-header .channel-tag {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+.chart-card.coach-card .chart-card-header .channel-tag::before {
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
 }
 
 .page-body {

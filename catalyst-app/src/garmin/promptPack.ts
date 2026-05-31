@@ -404,12 +404,43 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
       pbCorner.set(row.turn, cur)
     }
 
+    // Fetch lateral positions at entry/apex/exit for every (lap, corner) pair.
+    const lateralRows = new Map<string, { entry: number | null; apex: number | null; exit: number | null }>()
+    for (const sg of sgList) {
+      const laps = bySession.get(sg) ?? []
+      for (const L of laps) {
+        for (const c of corners) {
+          const lo = c.dist_idx_start, apx = c.apex_idx, hi = c.dist_idx_end
+          if (lo == null || hi == null || apx == null) continue
+          const WINDOW = 10
+          const r = await rowsToDicts(con, `
+            SELECT distance_m, lateral_position FROM samples
+            WHERE session_guid = ? AND lap_index = ?
+              AND distance_m BETWEEN ? AND ?
+              AND lateral_position IS NOT NULL
+            ORDER BY distance_m
+          `, [sg, L.lap_index, lo, hi])
+          if (!r.length) continue
+          const entry = r.filter(p => (p.distance_m as number) <= lo + WINDOW)
+          const exit = r.filter(p => (p.distance_m as number) >= hi - WINDOW)
+          const apexPts = r.filter(p => Math.abs((p.distance_m as number) - apx) <= WINDOW)
+          const avg = (pts: typeof r) => pts.length ? pts.reduce((s, p) => s + (p.lateral_position as number), 0) / pts.length : null
+          lateralRows.set(`${sg}:${L.lap_index}:${c.turn}`, {
+            entry: avg(entry), apex: avg(apexPts), exit: avg(exit),
+          })
+        }
+      }
+    }
+
     parts.push('### One row per (lap, corner)')
     parts.push('Speed columns in m/s. lat_g = |accel_y_mps2| m/s². min_accel_g = min(accel_x_mps2) m/s² (negative = braking). ÷9.81 for g-force.')
-    parts.push('| Sess | Lap | Turn | Name | Entry (m/s) | Apex (m/s) | Exit (m/s) | Drop | LatG (m/s²) | MinAccX (m/s²) |')
-    parts.push('|------|----:|------|------|------------:|-----------:|-----------:|-----:|------------:|---------------:|')
+    parts.push('lateral_pos: 0=driver-left edge, 1=driver-right edge, 0.5=centerline. entry/apex/exit lateral_pos shows line choice through the corner.')
+    parts.push('| Sess | Lap | Turn | Name | Entry (m/s) | Apex (m/s) | Exit (m/s) | Drop | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |')
+    parts.push('|------|----:|------|------|------------:|-----------:|-----------:|-----:|------------:|---------------:|-----------:|----------:|----------:|')
     for (const r of allCornerRows) {
-      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${r.entry_speed.toFixed(2)} | ${r.apex_speed.toFixed(2)} | ${r.exit_speed.toFixed(2)} | ${r.speed_drop.toFixed(2)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} |`)
+      const lat = lateralRows.get(`${r.sg}:${r.lap - 1}:${r.turn}`)
+      const fmtL = (v: number | null | undefined) => v == null ? '—' : v.toFixed(2)
+      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${r.entry_speed.toFixed(2)} | ${r.apex_speed.toFixed(2)} | ${r.exit_speed.toFixed(2)} | ${r.speed_drop.toFixed(2)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
     }
     parts.push('')
 
@@ -720,7 +751,12 @@ After your written analysis, append a SINGLE JSON block in exactly this format (
     }
   ],
   "drills": ["drill description"],
-  "annotations": []
+  "annotations": [],
+  "coach_line": [
+    {"dist_m": 100, "lateral_pos": 0.85, "note": "hold wide on entry"},
+    {"dist_m": 150, "lateral_pos": 0.10, "note": "late apex, hug inside"},
+    {"dist_m": 200, "lateral_pos": 0.90, "note": "track out fully"}
+  ]
 }
 \`\`\`
 
@@ -732,6 +768,13 @@ Rules for annotations:
 - For speed_annotation: include entry/apex/exit actual and target speeds in m/s
 - The flat \`annotations\` array must duplicate all annotations from all tips for easy map rendering
 - If no structured data applies, use empty arrays rather than omitting fields
+
+Rules for coach_line:
+- Emit one waypoint per key position change — brake zone entry, apex, track-out. Skip straights where line is obvious.
+- \`dist_m\` must be within the track distance range shown in the segment/corner tables above
+- \`lateral_pos\`: 0 = driver-left track edge, 1 = driver-right track edge, 0.5 = centerline
+- Cover every named corner (T1…TN) with at least 3 waypoints (entry wide, apex tight, exit wide or vice versa for left-handers)
+- \`note\` is a brief cue (≤40 chars) shown as a label on the track map
 
 Consistency loss: calculate as theoretical_best_ms − actual_best_ms from the lap table.
 `

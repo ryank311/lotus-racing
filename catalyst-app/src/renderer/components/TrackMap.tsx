@@ -11,7 +11,7 @@
 // Pan = drag; zoom = wheel (anchored on the cursor); double-click = fit-to-track.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AnalysisData, RacingLineLap, TrackGeometryPayload } from '../../garmin/analysisData'
+import type { AnalysisData, RacingLineLap, TrackGeometryPayload, CoachLinePoint } from '../../garmin/analysisData'
 import type { CoachAnnotation } from '../../shared/types'
 import { LAP_PALETTE } from './PlotlyChart'
 
@@ -48,6 +48,9 @@ interface Props {
   edit?: TrackMapEditState
   coachAnnotations?: CoachAnnotation[]
   focusCorner?: string  // turn ID to animate-zoom to (e.g. "T7", "S6")
+  hoverRef?: string     // turn/segment ID being hovered in coach notes (shows zone, no zoom)
+  coachLine?: CoachLinePoint[] | null      // computed optimal line from data
+  aiCoachLine?: CoachLinePoint[] | null   // AI-recommended line (from coach JSON)
 }
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -86,6 +89,21 @@ function speedColor(t: number): string {
 // Flip the y-axis once at projection time: SVG +y is down, our geometry is
 // north-up. We pass the *raw* metres in and apply -y in the path-builders so
 // downstream maths stays in real-world coords.
+// Expand a ref that may be a range ("T7-T9") into individual refs ["T7","T8","T9"].
+// Single refs ("T7", "S3") are returned as a one-element array.
+function expandRef(ref: string): string[] {
+  const range = ref.match(/^([TS])(\d+)[a-z]?-[TS]?(\d+)[a-z]?$/i)
+  if (range) {
+    const prefix = range[1].toUpperCase()
+    const start = parseInt(range[2], 10)
+    const end   = parseInt(range[3], 10)
+    if (end > start && end - start < 20) {
+      return Array.from({ length: end - start + 1 }, (_, i) => `${prefix}${start + i}`)
+    }
+  }
+  return [ref]
+}
+
 function pathFromPoints(pts: Array<{ x: number; y: number }>, closed = false): string {
   if (!pts.length) return ''
   let d = `M${pts[0].x.toFixed(2)} ${(-pts[0].y).toFixed(2)}`
@@ -153,7 +171,7 @@ function HeatmapPath({ lap, values, vmin, vmax }: {
   return <g>{segments}</g>
 }
 
-export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner }: Props) {
+export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner, hoverRef, coachLine, aiCoachLine }: Props) {
   const { trackGeometry: geom, racingLines } = data
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -175,6 +193,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
   // Layer toggles + metric selector
   const [showCenter,      setShowCenter]    = useState(false)
   const [showGMeter,      setShowGMeter]    = useState(true)
+  const [showCoachLine,   setShowCoachLine] = useState(true)
   // Index 0 = best lap; indices 1+ = comparison laps. Best lap selected by default.
   const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set([0]))
   const [metric,          setMetric]        = useState<TrackMetric>('speed_mph')
@@ -415,58 +434,110 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
     return Math.max(0, Math.min(1, (3 - zoomFactor) / 1.2))
   }, [fitBox, vb])
 
-  // L8 — coach annotation markers: resolve corner refs to centerline positions.
+  // L8 — coach annotation markers: resolve corner and segment refs to centerline positions.
   const coachMarkers = useMemo(() => {
     if (!coachAnnotations?.length || !geom) return []
     const dataCorners: Array<{ turn: string; apex_idx: number; dist_idx_start?: number; dist_idx_end?: number }>
       = (data as AnalysisData).corners ?? []
-    return coachAnnotations
-      .filter(a => a.type !== 'segment_tip')  // corners only for now
-      .flatMap(a => {
-        const corner = dataCorners.find(c => c.turn === a.ref)
-        if (!corner || corner.apex_idx == null) return []
-        const apexPt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(corner.apex_idx)))]
-        if (!apexPt) return []
-        const items: Array<{ x: number; y: number; annotation: CoachAnnotation; kind: 'actual' | 'recommended'; distStart?: number; distEnd?: number }> = []
-        items.push({ x: apexPt.x, y: apexPt.y, annotation: a, kind: 'actual',
-          distStart: corner.dist_idx_start, distEnd: corner.dist_idx_end })
-        // Recommended apex (if provided and meaningfully different)
-        if (a.recommended_apex_dist_m != null) {
-          const recIdx = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(a.recommended_apex_dist_m)))
-          const recPt = geom.centerline[recIdx]
-          if (recPt) items.push({ x: recPt.x, y: recPt.y, annotation: a, kind: 'recommended' })
-        }
-        return items
-      })
+    const dataSegments: Array<{ id: number; start_dist_m: number; end_dist_m: number }>
+      = (data as AnalysisData).segments ?? []
+
+    // Deduplicate by ref — the flat annotations array repeats refs across tips.
+    // Keep the highest-severity entry per ref so the marker color is meaningful.
+    const seen = new Map<string, typeof coachAnnotations[0]>()
+    for (const a of coachAnnotations) {
+      const existing = seen.get(a.ref)
+      if (!existing || (a.severity ?? 0) > (existing.severity ?? 0)) seen.set(a.ref, a)
+    }
+
+    return [...seen.values()].flatMap(a => {
+      if (a.type === 'segment_tip') {
+        // Segment marker: zone highlight along the full segment, label at midpoint.
+        const segId = parseInt(a.ref.replace(/^S/i, ''), 10)
+        const seg = dataSegments.find(s => s.id === segId)
+        if (!seg) return []
+        const midDist = (seg.start_dist_m + seg.end_dist_m) / 2
+        const midPt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(midDist)))]
+        if (!midPt) return []
+        return [{ x: midPt.x, y: midPt.y, annotation: a, kind: 'segment' as const,
+          distStart: seg.start_dist_m, distEnd: seg.end_dist_m }]
+      }
+
+      // Corner tip: apex marker + optional recommended apex.
+      const corner = dataCorners.find(c => c.turn === a.ref)
+      if (!corner || corner.apex_idx == null) return []
+      const apexPt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(corner.apex_idx)))]
+      if (!apexPt) return []
+      const items: Array<{ x: number; y: number; annotation: CoachAnnotation; kind: 'actual' | 'recommended' | 'segment'; distStart?: number; distEnd?: number }> = []
+      items.push({ x: apexPt.x, y: apexPt.y, annotation: a, kind: 'actual',
+        distStart: corner.dist_idx_start, distEnd: corner.dist_idx_end })
+      if (a.recommended_apex_dist_m != null) {
+        const recIdx = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(a.recommended_apex_dist_m)))
+        const recPt = geom.centerline[recIdx]
+        if (recPt) items.push({ x: recPt.x, y: recPt.y, annotation: a, kind: 'recommended' })
+      }
+      return items
+    })
   }, [coachAnnotations, geom, data])
 
-  // Smooth zoom-to-corner when focusCorner changes.
+  // Smooth zoom-to-corner-or-segment when focusCorner changes.
   const focusAnimRef = useRef<number>(0)
   useEffect(() => {
     if (!focusCorner || !geom) return
-    const dataCorners: Array<{ turn: string; apex_idx: number }> = (data as AnalysisData).corners ?? []
-    const corner = dataCorners.find(c => c.turn === focusCorner)
-    if (!corner || corner.apex_idx == null) return
-    const pt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(corner.apex_idx)))]
-    if (!pt) return
 
-    const ZOOM_R = Math.max(150, (geom.bbox.maxX - geom.bbox.minX) * 0.18)
+    let centerPt: { x: number; y: number } | null = null
+    let ZOOM_R = Math.max(150, (geom.bbox.maxX - geom.bbox.minX) * 0.18)
+
+    if (/^S\d+$/i.test(focusCorner)) {
+      // Segment ref — zoom to the midpoint of the segment and fit its length.
+      const dataSegments: Array<{ id: number; start_dist_m: number; end_dist_m: number }> =
+        (data as AnalysisData).segments ?? []
+      const segId = parseInt(focusCorner.slice(1), 10)
+      const seg = dataSegments.find(s => s.id === segId)
+      if (!seg) return
+      const midDist = (seg.start_dist_m + seg.end_dist_m) / 2
+      centerPt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(midDist)))]
+      // Pad the zoom radius to show the whole segment with a bit of margin.
+      ZOOM_R = Math.max(150, (seg.end_dist_m - seg.start_dist_m) / 2 + 80)
+    } else {
+      // Corner ref — may be a range like "T7-T9"; zoom to fit all referenced apexes.
+      const dataCorners: Array<{ turn: string; apex_idx: number }> = (data as AnalysisData).corners ?? []
+      const refs = expandRef(focusCorner)
+      const pts = refs.flatMap(r => {
+        const c = dataCorners.find(dc => dc.turn === r)
+        if (!c || c.apex_idx == null) return []
+        const pt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(c.apex_idx)))]
+        return pt ? [pt] : []
+      })
+      if (!pts.length) return
+      if (pts.length === 1) {
+        centerPt = pts[0]
+      } else {
+        // Fit bounding box of all apexes with padding.
+        const xs = pts.map(p => p.x), ys = pts.map(p => p.y)
+        const minX = Math.min(...xs), maxX = Math.max(...xs)
+        const minY = Math.min(...ys), maxY = Math.max(...ys)
+        centerPt = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+        ZOOM_R = Math.max(150, Math.max(maxX - minX, maxY - minY) / 2 + 80)
+      }
+    }
+
+    if (!centerPt) return
     const target: ViewBox = {
-      x: pt.x - ZOOM_R,
-      y: -pt.y - ZOOM_R,
+      x: centerPt.x - ZOOM_R,
+      y: -centerPt.y - ZOOM_R,
       w: ZOOM_R * 2,
       h: ZOOM_R * 2,
     }
 
     cancelAnimationFrame(focusAnimRef.current)
-    const DURATION = 550 // ms
+    const DURATION = 550
     const startTime = performance.now()
 
     setVb(prev => {
       const from = prev ?? target
       const step = (now: number) => {
         const raw = Math.min(1, (now - startTime) / DURATION)
-        // ease-in-out cubic
         const t = raw < 0.5 ? 4 * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 3) / 2
         setVb({
           x: from.x + (target.x - from.x) * t,
@@ -498,6 +569,9 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         <MetricDropdown metric={metric} onChange={setMetric} />
         <LayerToggle on={showCenter} onChange={setShowCenter}>centerline</LayerToggle>
         <LayerToggle on={showGMeter} onChange={setShowGMeter}>g-meter</LayerToggle>
+        {(coachLine || aiCoachLine) && (
+          <LayerToggle on={showCoachLine} onChange={setShowCoachLine}>coach line</LayerToggle>
+        )}
         {racingLines.length > 0 && (
           <LapPickerDropdown
             laps={racingLines}
@@ -595,6 +669,34 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           <HeatmapPath lap={bestLap} values={getMetricValues(bestLap, metric)} vmin={vmin} vmax={vmax} />
         )}
 
+        {/* L5c — coach's line (data-derived optimal from per-segment PBs) */}
+        {showCoachLine && coachLine && coachLine.length > 1 && (
+          <path
+            d={pathFromPoints(coachLine.map(p => ({ x: p.x, y: p.y })))}
+            fill="none"
+            stroke="#7dd3fc"
+            strokeOpacity={0.7}
+            strokeWidth={1.8}
+            strokeDasharray="6 3"
+            vectorEffect="non-scaling-stroke"
+            pointerEvents="none"
+          />
+        )}
+
+        {/* L5d — AI coach line (sparse waypoints interpolated) */}
+        {showCoachLine && aiCoachLine && aiCoachLine.length > 1 && (
+          <path
+            d={pathFromPoints(aiCoachLine.map(p => ({ x: p.x, y: p.y })))}
+            fill="none"
+            stroke="#c4b5fd"
+            strokeOpacity={0.8}
+            strokeWidth={1.8}
+            strokeDasharray="4 4"
+            vectorEffect="non-scaling-stroke"
+            pointerEvents="none"
+          />
+        )}
+
         {/* L5z — corner zone of the selected corner. We draw a thick faint
              arc along the centerline between dist_idx_start..dist_idx_end so
              the user can see what window the Analysis charts will treat as
@@ -679,12 +781,13 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
 
         {/* L8 — coach annotation markers */}
         {(() => {
-          const activeRef = activeAnnotation?.ref ?? focusCorner ?? null
-          const hasSelection = activeRef !== null
+          const activeRef = activeAnnotation?.ref ?? hoverRef ?? focusCorner ?? null
+          const activeRefs = activeRef ? new Set(expandRef(activeRef)) : null
+          const hasSelection = activeRefs !== null
           return coachMarkers.map((m, i) => {
             const a = m.annotation
             const color = a.severity === 3 ? '#ff5e3a' : a.severity === 2 ? '#f5a623' : '#7dd3fc'
-            const isSelected = a.ref === activeRef
+            const isSelected = activeRefs ? activeRefs.has(a.ref) : false
             const markerOpacity = hasSelection ? (isSelected ? 1 : 0.25) : 1
 
             if (m.kind === 'recommended') {
@@ -696,6 +799,47 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
                 </g>
               )
             }
+
+            // Segment tip — zone highlight along the full segment + label at midpoint.
+            if (m.kind === 'segment') {
+              const zoneSlice = (() => {
+                if (m.distStart == null || m.distEnd == null) return null
+                const lo = Math.max(0, Math.round(m.distStart))
+                const hi = Math.min(geom.centerline.length - 1, Math.round(m.distEnd))
+                return geom.centerline.slice(lo, hi + 1)
+              })()
+              return (
+                <g key={`seg-${i}`}
+                  style={{ cursor: 'pointer' }}
+                  opacity={markerOpacity}
+                  onClick={(e) => { e.stopPropagation(); setActiveAnnotation(prev => prev?.ref === a.ref ? null : a) }}
+                >
+                  {isSelected && zoneSlice && zoneSlice.length >= 2 && (() => {
+                    const zd = zoneSlice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
+                    return <>
+                      <path d={zd} fill="none" stroke="#22d3ee"
+                        strokeOpacity={0.25} strokeWidth={geom.widthM} strokeLinecap="round"
+                        pointerEvents="none" />
+                    </>
+                  })()}
+                  <g opacity={labelOpacity}>
+                    <circle cx={m.x} cy={-m.y}
+                      r={isSelected ? 13 : 11}
+                      fill="#22d3ee" fillOpacity={isSelected ? 0.35 : 0.15}
+                      stroke="#22d3ee" strokeWidth={isSelected ? 2 : 1.5}
+                      vectorEffect="non-scaling-stroke" />
+                    <text x={m.x} y={-m.y + 3} textAnchor="middle"
+                      fontSize={isSelected ? 8 : 7} fontWeight={700}
+                      fill={isSelected ? '#fff' : '#22d3ee'}
+                      fontFamily="'JetBrains Mono', monospace" pointerEvents="none">
+                      {a.ref}
+                    </text>
+                  </g>
+                </g>
+              )
+            }
+
+            // Corner tip marker.
             return (
               <g key={`ann-${i}`}
                 style={{ cursor: 'pointer' }}
@@ -705,35 +849,42 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
                   setActiveAnnotation(prev => prev?.ref === a.ref ? null : a)
                 }}
               >
-                {/* Corner zone highlight — always visible */}
-                {m.distStart != null && m.distEnd != null && (() => {
+                {/* Corner zone highlight — only for active annotation, full track width */}
+                {isSelected && m.distStart != null && m.distEnd != null && (() => {
                   const lo = Math.max(0, Math.round(m.distStart))
                   const hi = Math.min(geom.centerline.length - 1, Math.round(m.distEnd))
                   const slice = geom.centerline.slice(lo, hi + 1)
                   if (slice.length < 2) return null
                   const d = slice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
                   return (
-                    <path d={d} fill="none" stroke={color}
-                      strokeOpacity={isSelected ? 0.55 : 0.35}
-                      strokeWidth={Math.max(4, geom.widthM * 0.9)} strokeLinecap="round"
-                      pointerEvents="none" vectorEffect="non-scaling-stroke" />
+                    <path d={d} fill="none" stroke="#22d3ee"
+                      strokeOpacity={0.2} strokeWidth={geom.widthM} strokeLinecap="round"
+                      pointerEvents="none" />
                   )
                 })()}
                 {/* Turn number indicator — fades when zoomed in */}
                 <g opacity={labelOpacity}>
+                  {/* Severity ring (color = severity-coded) */}
                   <circle cx={m.x} cy={-m.y}
-                    r={isSelected ? 13 : 11}
-                    fill={color} fillOpacity={isSelected ? 0.35 : 0.15}
-                    stroke={color} strokeWidth={isSelected ? 2 : 1.5}
+                    r={isSelected ? 15 : 13}
+                    fill="none" stroke={color}
+                    strokeOpacity={isSelected ? 0.8 : 0.5}
+                    strokeWidth={isSelected ? 2 : 1.5}
+                    vectorEffect="non-scaling-stroke" />
+                  {/* Cyan badge */}
+                  <circle cx={m.x} cy={-m.y}
+                    r={isSelected ? 11 : 9}
+                    fill="#22d3ee" fillOpacity={isSelected ? 0.35 : 0.15}
+                    stroke="#22d3ee" strokeWidth={1.5}
                     vectorEffect="non-scaling-stroke" />
                   {isSelected && (
-                    <circle cx={m.x} cy={-m.y} r={16}
-                      fill="none" stroke={color} strokeWidth={1} strokeOpacity={0.4}
+                    <circle cx={m.x} cy={-m.y} r={19}
+                      fill="none" stroke="#22d3ee" strokeWidth={1} strokeOpacity={0.3}
                       strokeDasharray="3 2" vectorEffect="non-scaling-stroke" />
                   )}
                   <text x={m.x} y={-m.y + 3} textAnchor="middle"
                     fontSize={isSelected ? 8 : 7} fontWeight={700}
-                    fill={isSelected ? '#fff' : color}
+                    fill={isSelected ? '#fff' : '#22d3ee'}
                     fontFamily="'JetBrains Mono', monospace" pointerEvents="none">
                     {a.ref}
                   </text>
@@ -769,6 +920,16 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         {crosshair && hoverDistanceM != null && (
           <div className="track-map-legend-hover">
             {Math.round(hoverDistanceM)} m · {crosshair.speed.toFixed(1)} mph
+          </div>
+        )}
+        {showCoachLine && coachLine && (
+          <div className="track-map-legend-best" style={{ color: '#7dd3fc' }}>
+            ── coach line (data)
+          </div>
+        )}
+        {showCoachLine && aiCoachLine && (
+          <div className="track-map-legend-best" style={{ color: '#c4b5fd' }}>
+            ── coach line (AI)
           </div>
         )}
       </div>

@@ -102,6 +102,12 @@ export interface CornerRow {
   max_lat_g: number
 }
 
+export interface CoachLinePoint {
+  dist: number
+  x: number
+  y: number
+}
+
 export interface AnalysisData {
   config: string
   totalDistM: number
@@ -123,6 +129,8 @@ export interface AnalysisData {
   theoreticalBestMs: number | null
   // Averages
   avgLapMs: number | null
+  // Optimal racing line stitched from per-segment personal bests
+  coachLine: CoachLinePoint[] | null
 }
 
 // ---------------------------------------------------------------------------
@@ -353,6 +361,77 @@ function msToLap(ms: number | null | undefined): string {
   return `${m}:${(s - m * 60).toFixed(3).padStart(6, '0')}`
 }
 
+// Stitch together the optimal racing line from per-segment personal-best laps.
+// For each Garmin segment, finds which of the top racing-line laps had the
+// fastest split, then takes that lap's XY trace through that segment. The
+// result is a dense polyline in track-local metres at ~5 m spacing.
+async function computeCoachLine(
+  con: DuckDBConnection,
+  racingLines: RacingLineLap[],
+  segments: TrackSegment[],
+): Promise<CoachLinePoint[] | null> {
+  if (!racingLines.length || !segments.length) return null
+
+  // Compute splits for each unique session in the racing line set.
+  const splitsCache = new Map<string, Map<number, Array<number | null>>>()
+  for (const lap of racingLines) {
+    if (!splitsCache.has(lap.sg)) {
+      splitsCache.set(lap.sg, await computeSplits(con, lap.sg, segments))
+    }
+  }
+
+  // For each segment pick the racing-line lap with the best split time.
+  const bestLapForSeg: RacingLineLap[] = segments.map((_, si) => {
+    let best = racingLines[0]
+    let bestTime = Infinity
+    for (const lap of racingLines) {
+      const t = splitsCache.get(lap.sg)?.get(lap.lapIdx)?.[si]
+      if (t != null && t < bestTime) { bestTime = t; best = lap }
+    }
+    return best
+  })
+
+  // Stitch XY points from each segment's best lap. Apply a ±30 m linear
+  // blend at each segment boundary to suppress discontinuities where the
+  // best lap changes.
+  const BLEND_M = 30
+  const result: CoachLinePoint[] = []
+
+  for (let si = 0; si < segments.length; si++) {
+    const seg = segments[si]
+    const lap = bestLapForSeg[si]
+    const nextLap = si + 1 < segments.length ? bestLapForSeg[si + 1] : null
+
+    for (let i = 0; i < lap.dist.length; i++) {
+      const d = lap.dist[i]
+      if (d < seg.start_dist_m || d >= seg.end_dist_m) continue
+
+      let x = lap.x[i]
+      let y = lap.y[i]
+
+      // Blend toward the next segment's lap near the boundary.
+      if (nextLap && nextLap !== lap) {
+        const distToEnd = seg.end_dist_m - d
+        if (distToEnd < BLEND_M) {
+          // Find the nearest point in nextLap at this distance.
+          let ni = 0, nearD = Infinity
+          for (let j = 0; j < nextLap.dist.length; j++) {
+            const dd = Math.abs(nextLap.dist[j] - d)
+            if (dd < nearD) { nearD = dd; ni = j }
+          }
+          const t = 1 - distToEnd / BLEND_M
+          x = x + (nextLap.x[ni] - x) * t
+          y = y + (nextLap.y[ni] - y) * t
+        }
+      }
+
+      result.push({ dist: d, x, y })
+    }
+  }
+
+  return result.length ? result : null
+}
+
 async function buildHeatmap(con: DuckDBConnection, laps: LapMeta[], segments: TrackSegment[]): Promise<HeatmapData | null> {
   if (!segments.length || !laps.length) return null
   const pb: number[] = new Array(segments.length).fill(Infinity)
@@ -498,7 +577,7 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
       trackMap: { dist: [], lat: [], lon: [], speed_mph: [] },
       trackGeometry: null, racingLines: [],
       heatmap: null, cornerRows: [],
-      theoreticalBestMs: null, avgLapMs: null,
+      theoreticalBestMs: null, avgLapMs: null, coachLine: null,
     }
   }
   const bestLap = laps.find(L => L.isBest) ?? laps[0]
@@ -546,6 +625,9 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
 
   const heatmap = await buildHeatmap(con, laps, segments)
   const cornerRows = await fetchCornerRows(con, laps, corners)
+  const coachLine = racingLines.length && segments.length
+    ? await computeCoachLine(con, racingLines, segments)
+    : null
 
   // Theoretical best = sum of segment personal bests
   let theoreticalBestMs: number | null = null
@@ -583,6 +665,6 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     laps, bestLap,
     speedTraces, lateralTraces, longgTraces,
     gg, trackMap, trackGeometry, racingLines, heatmap, cornerRows,
-    theoreticalBestMs, avgLapMs,
+    theoreticalBestMs, avgLapMs, coachLine,
   }
 }

@@ -5,7 +5,8 @@ import { LineChart, GGChart, HeatmapGrid, CornerChart } from '../components/Char
 import { speedSeries, lateralSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import type { AnalysisData } from '../../garmin/analysisData'
-import type { CoachingSession, CoachingResult, CoachAnnotation } from '../../shared/types'
+import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint } from '../../shared/types'
+import type { CoachLinePoint } from '../../garmin/analysisData'
 
 interface Props {
   selected: Set<string>
@@ -26,6 +27,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
+  const [hoveredRef, setHoveredRef] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
 
@@ -141,7 +143,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         </div>
 
         <button
-          className={`btn ${coachResult ? 'ghost' : 'primary'} ask-coach-btn`}
+          className={`btn ask-coach-btn${coachResult ? ' clearing' : ''}`}
           disabled={!data || !!busy}
           onClick={coachResult ? () => { setCoachResult(null); onClearCoachSession?.() } : askCoach}
         >
@@ -178,7 +180,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             )}
 
             {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} onFocusRef={setFocusedRef} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} onFocusRef={setFocusedRef} onHoverRef={setHoveredRef} />
             )}
           </div>
         </div>
@@ -189,7 +191,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
           {data && !loading && !err
-            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} focusCorner={focusedRef} />
+            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} coachResult={coachResult} />
             : <div className="analysis-map-placeholder" />
           }
         </div>
@@ -200,23 +202,58 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
 // ============================================================================
 
+// Convert sparse AI waypoints [{dist_m, lateral_pos}] to XY using track geometry.
+// lateral_pos: 0 = driver-left edge, 1 = driver-right edge.
+function waypointsToXY(
+  waypoints: CoachLineWaypoint[],
+  geom: import('../../garmin/analysisData').TrackGeometryPayload,
+): CoachLinePoint[] {
+  return waypoints.flatMap(wp => {
+    const idx = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(wp.dist_m)))
+    const left = geom.leftEdge[idx]
+    const right = geom.rightEdge[idx]
+    if (!left || !right) return []
+    const t = Math.max(0, Math.min(1, wp.lateral_pos))
+    return [{ dist: wp.dist_m, x: left.x + (right.x - left.x) * t, y: left.y + (right.y - left.y) * t }]
+  })
+}
+
 // TrackMapPanel — right pane content, full height, no extra chrome
-function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner }: {
+function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, hoverRef, coachResult }: {
   data: AnalysisData
   hoverDistanceM: number | null
   coachAnnotations?: CoachAnnotation[]
   focusCorner?: string | null
+  hoverRef?: string | null
+  coachResult?: CoachingResult | null
 }) {
-  return <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} coachAnnotations={coachAnnotations} focusCorner={focusCorner ?? undefined} />
+  const aiCoachLine = useMemo(() => {
+    if (!coachResult?.coach_line?.length || !data.trackGeometry) return null
+    return waypointsToXY(coachResult.coach_line, data.trackGeometry)
+  }, [coachResult?.coach_line, data.trackGeometry])
+
+  return (
+    <TrackMap
+      data={data}
+      height="100%"
+      hoverDistanceM={hoverDistanceM}
+      coachAnnotations={coachAnnotations}
+      focusCorner={focusCorner ?? undefined}
+      hoverRef={hoverRef ?? undefined}
+      coachLine={data.coachLine}
+      aiCoachLine={aiCoachLine}
+    />
+  )
 }
 
-function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult, onFocusRef }: {
+function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult, onFocusRef, onHoverRef }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
   onHoverDistance: (d: number | null) => void
   coachResult?: CoachingResult | null
   onFocusRef?: (ref: string) => void
+  onHoverRef?: (ref: string | null) => void
 }) {
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
@@ -260,7 +297,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
       </div>
 
       {/* COACH NOTES */}
-      {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} />}
+      {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} onHoverRef={onHoverRef} />}
 
       {/* RECOMMENDED PRACTICE */}
       {coachResult && coachResult.drills.length > 0 && (
@@ -332,22 +369,24 @@ function Stat({ label, value, sub, featured }: { label: string; value: string; s
   )
 }
 
-function CoachNotesPanel({ result, onFocusRef }: {
+function CoachNotesPanel({ result, onFocusRef, onHoverRef }: {
   result: CoachingResult
   onFocusRef?: (ref: string) => void
+  onHoverRef?: (ref: string | null) => void
 }) {
   const [open, setOpen] = useState(true)
 
-  // Extract the first ref from a tip's annotations or section label
+  // Extract the ref from a tip's section label, preserving ranges like "T7-T9".
   const refForTip = (tip: CoachingResult['tips'][0]): string | null => {
+    // Prefer section label — it may be a range like "T7-T9" or "S3"
+    const m = tip.section.match(/^([TS]\d+[a-z]?(?:-[TS]?\d+[a-z]?)*)/i)
+    if (m) return m[1]
     if (tip.annotations.length > 0) return tip.annotations[0].ref
-    // Parse first token like "T7", "T7-T9", "S6" from section
-    const m = tip.section.match(/^([TS]\d+[a-z]?)/i)
-    return m ? m[1] : null
+    return null
   }
 
   return (
-    <div className="chart-card" style={{ marginBottom: 18 }}>
+    <div className="chart-card coach-card" style={{ marginBottom: 18 }}>
       <div className="card-corner-marks"><i /></div>
       <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <span className="channel-tag">COACH NOTES</span>
@@ -399,19 +438,21 @@ function CoachNotesPanel({ result, onFocusRef }: {
                     }}
                     onMouseEnter={e => {
                       if (!clickable) return
-                      ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--signal)'
-                      ;(e.currentTarget as HTMLDivElement).style.background = 'var(--signal-soft)'
+                      ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--cyan)'
+                      ;(e.currentTarget as HTMLDivElement).style.background = 'var(--cyan-soft)'
+                      onHoverRef?.(ref!)
                     }}
                     onMouseLeave={e => {
                       ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'
                       ;(e.currentTarget as HTMLDivElement).style.background = 'var(--bg-elev)'
+                      onHoverRef?.(null)
                     }}
                   >
                     <div style={{
                       display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5,
                     }}>
                       <span style={{
-                        fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--signal)',
+                        fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--cyan)',
                         letterSpacing: '0.14em', textTransform: 'uppercase',
                       }}>
                         {tip.section}
@@ -442,7 +483,7 @@ function CoachNotesPanel({ result, onFocusRef }: {
 function RecommendedPracticePanel({ drills }: { drills: string[] }) {
   const [open, setOpen] = useState(true)
   return (
-    <div className="chart-card" style={{ marginBottom: 18 }}>
+    <div className="chart-card coach-card" style={{ marginBottom: 18 }}>
       <div className="card-corner-marks"><i /></div>
       <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <span className="channel-tag">Recommended Practice</span>
@@ -459,8 +500,8 @@ function RecommendedPracticePanel({ drills }: { drills: string[] }) {
             }}>
               <span style={{
                 fontFamily: 'var(--font-display)', fontWeight: 800,
-                fontSize: 22, lineHeight: 1, color: 'var(--signal)',
-                opacity: 0.35, flexShrink: 0, width: 28, textAlign: 'right',
+                fontSize: 22, lineHeight: 1, color: 'var(--cyan)',
+                opacity: 0.4, flexShrink: 0, width: 28, textAlign: 'right',
                 userSelect: 'none',
               }}>
                 {String(i + 1).padStart(2, '0')}
