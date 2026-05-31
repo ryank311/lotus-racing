@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Sidebar, NavKey } from './components/Sidebar'
 import { Home } from './pages/Home'
 import { Sessions } from './pages/Sessions'
@@ -10,6 +10,26 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { api } from './api'
 import { AccountState, getActiveAccount, loadAccounts, tokenValid } from './accounts'
 import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession } from '../shared/types'
+
+function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () => void }) {
+  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  useEffect(() => {
+    timerRef.current = setTimeout(onDismiss, 8000)
+    return () => clearTimeout(timerRef.current)
+  }, [onDismiss])
+
+  return (
+    <div className="coach-toast">
+      <span className="coach-toast-icon">✦</span>
+      <div className="coach-toast-body">
+        <div className="coach-toast-title">Coach analysis ready</div>
+        <div className="coach-toast-sub">New coaching results loaded in Analysis</div>
+      </div>
+      <button className="coach-toast-view" onClick={onView}>View</button>
+      <button className="coach-toast-close" onClick={onDismiss}>×</button>
+    </div>
+  )
+}
 
 export function App() {
   const [page, setPage] = useState<NavKey>('home')
@@ -23,6 +43,7 @@ export function App() {
   const [activeCoachSession, setActiveCoachSession] = useState<CoachingSession | null>(null)
   const [logLines, setLogLines] = useState<string[]>([])
   const [logsExpanded, setLogsExpanded] = useState(false)
+  const [coachToast, setCoachToast] = useState<{ sessionId: string } | null>(null)
 
   // Selected session guids — accumulated on the Sessions tab, consumed by Analysis.
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -48,7 +69,18 @@ export function App() {
         setLogLine(doneMsg)
         setLogLines(prev => [...prev.slice(-499), `✓ ${doneMsg}`])
         setProgress(null)
-        if (evt.kind !== 'coach') refresh()
+        if (evt.kind === 'coach' && evt.payload) {
+          // Auto-load the coaching session into the Analysis tab and notify the user.
+          void api.getCoachSession(evt.payload).then(session => {
+            if (!session) return
+            setSelected(new Set(session.session_guids))
+            setActiveCoachSession(session)
+            setPage('analysis')
+            setCoachToast({ sessionId: evt.payload! })
+          })
+        } else {
+          refresh()
+        }
         setRefreshTick(t => t + 1)
       }
       if (evt.type === 'error') {
@@ -153,6 +185,14 @@ export function App() {
           )}
         </ErrorBoundary>
 
+        {/* Coach analysis ready toast */}
+        {coachToast && (
+          <CoachToast
+            onView={() => { setPage('analysis'); setCoachToast(null) }}
+            onDismiss={() => setCoachToast(null)}
+          />
+        )}
+
         {/* Status bar — overlays content, slides up when busy */}
         <div
           className={`status-bar ${busy ? 'busy' : ''}`}
@@ -167,7 +207,7 @@ export function App() {
                 <div className="sync-progress-row">
                   <span className="sync-progress-counter">{progress.current}/{progress.total}</span>
                   <span className="sync-progress-log">
-                    {(logLine || progress.label).replace(/^\[\d+\/\d+\]\s*/, '')}
+                    {(progress.label || logLine).replace(/^\[\d+\/\d+\]\s*/, '')}
                   </span>
                   {progress.fileName && (
                     <span className="sync-progress-file">→ {progress.fileName}</span>
