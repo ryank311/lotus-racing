@@ -124,7 +124,7 @@ export interface CoachAnnotation {
 
 export interface CoachLineWaypoint {
   dist_m: number
-  lateral_pos: number    // 0 = driver-left edge, 1 = driver-right edge
+  delta: number   // shift from driver's best-lap lateral_pos: positive = toward right edge, negative = toward left edge
   note?: string
 }
 

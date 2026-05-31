@@ -755,9 +755,9 @@ After your written analysis, append a SINGLE JSON block in exactly this format (
   "drills": ["Practice T7-T9 on cool-down laps at 80% pace with deliberate full throttle through the apex to build confidence in the grip level."],
   "annotations": [],
   "coach_line": [
-    {"dist_m": 100, "lateral_pos": 0.85, "note": "hold wide on entry"},
-    {"dist_m": 150, "lateral_pos": 0.10, "note": "late apex, hug inside"},
-    {"dist_m": 200, "lateral_pos": 0.90, "note": "track out fully"}
+    {"dist_m": 100, "delta": +0.18, "note": "hold wider on entry"},
+    {"dist_m": 150, "delta": -0.22, "note": "tighter apex — 3 car-widths left"},
+    {"dist_m": 200, "delta": +0.15, "note": "full track-out"}
   ]
 }
 \`\`\`
@@ -777,11 +777,12 @@ Rules for annotations:
 - Use empty arrays rather than omitting array fields; omit optional speed fields rather than guessing
 
 Rules for coach_line:
-- One waypoint per key position change: brake zone entry, apex, track-out
-- \`dist_m\` must fall within the track distance range in the segment/corner tables
-- \`lateral_pos\`: 0 = driver-left edge, 1 = driver-right edge, 0.5 = centerline
-- At least 3 waypoints per named corner; skip featureless straights
-- \`note\`: short cue shown on the map (≤40 chars)
+- Each waypoint is a **delta from the driver's best lap** at that distance, as seen in the best-lap trace table above (the \`lateral_pos\` column). \`delta\` = recommended lateral_pos − driver's actual lateral_pos at that dist_m.
+- \`delta\` range: −1.0 to +1.0. Positive = shift toward right track edge; negative = shift toward left. Clamp the resulting position to the track (0–1).
+- Only emit waypoints where the recommended line meaningfully differs from the driver's — skip sections where the driver's line is already correct. Aim for 3–6 waypoints per problem corner (entry, turn-in, apex, mid-corner, exit), none on straights where delta is near zero.
+- Use the \`lateral_pos\` values in the best-lap trace and per-corner stats tables to anchor your deltas. If the driver's apex is at lateral_pos=0.56 but it should be 0.15, delta = −0.41.
+- \`dist_m\` must match a distance in the best-lap trace table (multiples of 50 m) or a corner apex/entry/exit distance from the corner tables — do not invent distances.
+- \`note\`: ≤40 chars, shown as a label on the track map
 
 Consistency loss: theoretical_best_ms − actual_best_ms from the lap table.
 `

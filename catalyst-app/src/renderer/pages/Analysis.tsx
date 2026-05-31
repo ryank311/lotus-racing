@@ -203,17 +203,34 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 // ============================================================================
 
 // Convert sparse AI waypoints [{dist_m, lateral_pos}] to XY using track geometry.
-// Convert sparse AI waypoints to a dense XY polyline that follows track curvature.
-// Between each pair of waypoints, lateral_pos is linearly interpolated but sampled
-// at every STRIDE metres using the actual left/right edge geometry — so the path
-// curves with the track instead of cutting straight through corners.
+// Look up the best lap's lateral_pos at a given distance by linear interpolation.
+function bestLapLatAt(dist: number, distArr: number[], posArr: number[]): number {
+  if (!distArr.length) return 0.5
+  if (dist <= distArr[0]) return posArr[0]
+  if (dist >= distArr[distArr.length - 1]) return posArr[posArr.length - 1]
+  let lo = 0, hi = distArr.length - 1
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >>> 1
+    if (distArr[mid] <= dist) lo = mid; else hi = mid
+  }
+  const t = (dist - distArr[lo]) / (distArr[hi] - distArr[lo])
+  return posArr[lo] + (posArr[hi] - posArr[lo]) * t
+}
+
+// Convert sparse AI delta-from-best-lap waypoints into a dense XY polyline that
+// follows track curvature. Each waypoint's delta is added to the driver's actual
+// lateral_pos at that distance; between waypoints the delta is linearly interpolated.
+// Where no waypoints are specified the delta is 0 (coach line = driver's line).
 function waypointsToXY(
   waypoints: CoachLineWaypoint[],
   geom: import('../../garmin/analysisData').TrackGeometryPayload,
+  bestLatDist: number[],
+  bestLatPos: number[],
 ): CoachLinePoint[] {
   if (!waypoints.length) return []
-  const STRIDE = 5 // metres between interpolated samples
+  const STRIDE = 5
   const maxIdx = geom.centerline.length - 1
+  const sorted = [...waypoints].sort((a, b) => a.dist_m - b.dist_m)
 
   function edgeLerp(dist: number, lateralPos: number): CoachLinePoint | null {
     const idx = Math.max(0, Math.min(maxIdx, Math.round(dist)))
@@ -223,25 +240,28 @@ function waypointsToXY(
     return { dist, x: left.x + (right.x - left.x) * t, y: left.y + (right.y - left.y) * t }
   }
 
+  // Build interpolated delta at any distance: 0 outside waypoint range, lerped between them.
+  function deltaAt(d: number): number {
+    if (d <= sorted[0].dist_m) return sorted[0].delta
+    if (d >= sorted[sorted.length - 1].dist_m) return sorted[sorted.length - 1].delta
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i], b = sorted[i + 1]
+      if (d >= a.dist_m && d <= b.dist_m) {
+        const t = (d - a.dist_m) / (b.dist_m - a.dist_m)
+        return a.delta + (b.delta - a.delta) * t
+      }
+    }
+    return 0
+  }
+
+  const startDist = sorted[0].dist_m
+  const endDist = sorted[sorted.length - 1].dist_m
   const result: CoachLinePoint[] = []
-  for (let i = 0; i < waypoints.length; i++) {
-    const w1 = waypoints[i]
-    const w2 = waypoints[i + 1]
-    if (!w2) {
-      // Last waypoint — just add it
-      const pt = edgeLerp(w1.dist_m, w1.lateral_pos)
-      if (pt) result.push(pt)
-      break
-    }
-    const distSpan = w2.dist_m - w1.dist_m
-    if (distSpan <= 0) continue
-    // Walk from w1 to w2 at STRIDE intervals, interpolating lateral_pos
-    for (let d = w1.dist_m; d < w2.dist_m; d += STRIDE) {
-      const t = (d - w1.dist_m) / distSpan
-      const lat = w1.lateral_pos + (w2.lateral_pos - w1.lateral_pos) * t
-      const pt = edgeLerp(d, lat)
-      if (pt) result.push(pt)
-    }
+  for (let d = startDist; d <= endDist; d += STRIDE) {
+    const baseLat = bestLapLatAt(d, bestLatDist, bestLatPos)
+    const coachLat = baseLat + deltaAt(d)
+    const pt = edgeLerp(d, coachLat)
+    if (pt) result.push(pt)
   }
   return result
 }
@@ -257,8 +277,13 @@ function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, ho
 }) {
   const aiCoachLine = useMemo(() => {
     if (!coachResult?.coach_line?.length || !data.trackGeometry) return null
-    return waypointsToXY(coachResult.coach_line, data.trackGeometry)
-  }, [coachResult?.coach_line, data.trackGeometry])
+    const bestTrace = data.lateralTraces.find(
+      t => t.sg === data.bestLap?.sg && t.lapIdx === data.bestLap?.lapIdx
+    ) ?? data.lateralTraces[0]
+    const bestLatDist = bestTrace?.dist ?? []
+    const bestLatPos  = bestTrace?.pos  ?? []
+    return waypointsToXY(coachResult.coach_line, data.trackGeometry, bestLatDist, bestLatPos)
+  }, [coachResult?.coach_line, data.trackGeometry, data.lateralTraces, data.bestLap])
 
   return (
     <TrackMap

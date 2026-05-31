@@ -46,9 +46,9 @@ function validate(o: unknown): CoachingResult | null {
     ? (r.coach_line as unknown[]).flatMap((w): CoachLineWaypoint[] => {
         if (typeof w !== 'object' || w === null) return []
         const wp = w as Record<string, unknown>
-        if (typeof wp.dist_m !== 'number' || typeof wp.lateral_pos !== 'number') return []
-        const lateral_pos = Math.max(0, Math.min(1, wp.lateral_pos))
-        return [{ dist_m: wp.dist_m, lateral_pos, note: typeof wp.note === 'string' ? wp.note : undefined }]
+        if (typeof wp.dist_m !== 'number' || typeof wp.delta !== 'number') return []
+        const delta = Math.max(-1, Math.min(1, wp.delta))
+        return [{ dist_m: wp.dist_m, delta, note: typeof wp.note === 'string' ? wp.note : undefined }]
       })
     : undefined
   return { headline: r.headline, consistency_loss_ms, tips, drills, annotations, coach_line }
