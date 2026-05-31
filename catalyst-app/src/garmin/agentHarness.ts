@@ -169,7 +169,7 @@ function runRemote(
 ): Promise<string> {
   const body = JSON.stringify({
     model,
-    max_tokens: 8192,
+    max_tokens: 16000,
     stream: true,
     messages: [{ role: 'user', content: prompt }],
   })
@@ -188,6 +188,8 @@ function runRemote(
       hostname: 'api.anthropic.com',
       path: '/v1/messages',
       method: 'POST',
+      // 5-minute overall timeout — surfaced as an error if the server goes silent
+      timeout: 300_000,
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
@@ -207,6 +209,9 @@ function runRemote(
       }
 
       let full = '', buf = ''
+      // Second-phase timer: once the model starts generating, show char count every 5 s
+      let generatingTimer: ReturnType<typeof setInterval> | null = null
+
       res.on('data', (chunk: Buffer) => {
         buf += chunk.toString('utf-8')
         const lines = buf.split('\n')
@@ -222,26 +227,41 @@ function runRemote(
           }
           if (evt.type === 'message_start') {
             clearInterval(statusTimer)
-            onChunk('Response received, processing…\n')
+            onChunk('Generating response…\n')
+            // Show how much text has been generated every 5 s
+            generatingTimer = setInterval(() => {
+              onChunk(`${(full.length / 1024).toFixed(1)} KB generated…\n`)
+            }, 5000)
+          }
+          if (evt.type === 'message_stop') {
+            if (generatingTimer) clearInterval(generatingTimer)
           }
         }
       })
       res.on('end', () => {
         clearInterval(statusTimer)
+        if (generatingTimer) clearInterval(generatingTimer)
         if (!full) {
           onChunk('[error] Response ended with no content\n')
         } else {
-          onChunk(`Done — ${(full.length / 1024).toFixed(1)} KB received\n`)
+          onChunk(`Done — ${(full.length / 1024).toFixed(1)} KB\n`)
         }
         resolve(full)
       })
       res.on('error', (err) => {
         clearInterval(statusTimer)
+        if (generatingTimer) clearInterval(generatingTimer)
         onChunk(`[error] ${err.message}\n`)
         reject(err)
       })
     })
 
+    req.on('timeout', () => {
+      clearInterval(statusTimer)
+      onChunk('[error] Request timed out (5 min)\n')
+      req.destroy()
+      reject(new Error('Request timed out after 5 minutes'))
+    })
     req.on('error', (err) => {
       clearInterval(statusTimer)
       onChunk(`[error] ${err.message}\n`)
