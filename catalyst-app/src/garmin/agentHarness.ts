@@ -170,11 +170,16 @@ function runRemote(
         'content-length': Buffer.byteLength(body),
       },
     }, (res) => {
-      onChunk(`[harness] HTTP ${res.statusCode}\n`)
+      onChunk(`[harness] HTTP ${res.statusCode} ${res.statusMessage ?? ''}\n`)
+      onChunk(`[harness] headers: ${JSON.stringify(res.headers).slice(0, 200)}\n`)
+
       if (res.statusCode && res.statusCode >= 400) {
         let errBody = ''
         res.on('data', (c: Buffer) => { errBody += c.toString() })
-        res.on('end', () => reject(new Error(`Anthropic API ${res.statusCode}: ${errBody.slice(0, 300)}`)))
+        res.on('end', () => {
+          onChunk(`[harness] error body: ${errBody}\n`)
+          reject(new Error(`Anthropic API ${res.statusCode}: ${errBody.slice(0, 500)}`))
+        })
         return
       }
 
@@ -194,13 +199,28 @@ function runRemote(
             full += text
             if (text) onChunk(text)
           }
+          if (evt.type === 'message_start') {
+            onChunk(`[harness] message started (model=${evt.message?.model ?? '?'})\n`)
+          }
+          if (evt.type === 'message_stop') {
+            onChunk(`[harness] message complete (${full.length} chars)\n`)
+          }
         }
       })
-      res.on('end', () => resolve(full))
-      res.on('error', reject)
+      res.on('end', () => {
+        if (!full) onChunk('[harness] ⚠ response ended with no content\n')
+        resolve(full)
+      })
+      res.on('error', (err) => {
+        onChunk(`[harness] response stream error: ${err.message}\n`)
+        reject(err)
+      })
     })
 
-    req.on('error', reject)
+    req.on('error', (err) => {
+      onChunk(`[harness] request error: ${err.message}\n`)
+      reject(err)
+    })
     req.write(body)
     req.end()
   })

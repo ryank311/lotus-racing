@@ -335,7 +335,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return {
       harness: cfg.ai?.harness ?? 'local',
       apiKey: cfg.ai?.api_key,
-      model: cfg.ai?.model ?? 'claude-opus-4-5',
+      model: cfg.ai?.model ?? 'claude-opus-4-8',
     }
   })
 
@@ -371,9 +371,16 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     if (activeWorker) throw new Error('Another worker is already running')
     activeWorker = { kind: 'coach' }
     const win = getMainWindow()
-    const log = (msg: string) => broadcast(win, { kind: 'coach', type: 'log', payload: msg })
 
     void (async () => {
+      let builtPrompt = ''
+      let resolvedProfileName = opts.profile
+      const collectedLogs: string[] = []
+      const log = (msg: string) => {
+        broadcast(win, { kind: 'coach', type: 'log', payload: msg })
+        collectedLogs.push(msg)
+      }
+
       try {
         log('[coach] Building prompt from telemetry…')
         broadcast(win, { kind: 'coach', type: 'progress',
@@ -385,6 +392,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           scope: opts.scope,
           dbPath: DB_PATH,
         })
+        builtPrompt = prompt
+        resolvedProfileName = resolvedProfile
 
         log(`[coach] Prompt ready (${prompt.length.toLocaleString()} chars). Sending to LLM…`)
         broadcast(win, { kind: 'coach', type: 'progress',
@@ -393,11 +402,12 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         const cfg = loadConfig()
         const harnessConfig: Parameters<typeof runAgent>[1] =
           cfg.ai?.harness === 'remote' && cfg.ai?.api_key
-            ? { harness: 'remote', apiKey: cfg.ai.api_key, model: cfg.ai.model ?? 'claude-opus-4-5' }
+            ? { harness: 'remote', apiKey: cfg.ai.api_key, model: cfg.ai.model ?? 'claude-opus-4-8' }
             : { harness: 'local' }
 
         const rawResponse = await runAgent(prompt, harnessConfig, (text) => {
           broadcast(win, { kind: 'coach', type: 'log', payload: text })
+          collectedLogs.push(text)
         })
 
         log('[coach] Response received. Parsing annotations…')
@@ -430,7 +440,29 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         broadcast(win, { kind: 'coach', type: 'done', payload: sessionId })
         log(`[coach] Session saved (${sessionId.slice(0, 8)}…)`)
       } catch (e: any) {
-        broadcast(win, { kind: 'coach', type: 'error', payload: String(e.message ?? e) })
+        const errMsg = String(e.message ?? e)
+        broadcast(win, { kind: 'coach', type: 'error', payload: errMsg })
+        log(`[coach] ERROR: ${errMsg}`)
+
+        // Save a failed session so the error + logs are visible in the AI Coach tab.
+        try {
+          if (fs.existsSync(DB_PATH)) {
+            const errorSession: CoachingSession = {
+              id: randomUUID(),
+              created_at: new Date().toISOString(),
+              session_guids: opts.sessionGuids,
+              profile_name: resolvedProfileName,
+              model_used: 'error',
+              title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
+              prompt: builtPrompt,
+              raw_response: collectedLogs.join('') + '\n\nERROR: ' + errMsg,
+              parsed_result: null,
+            }
+            const { con } = await openDb(DB_PATH)
+            await insertCoachingSession(con, errorSession)
+            broadcast(win, { kind: 'coach', type: 'done', payload: errorSession.id })
+          }
+        } catch { /* DB may not exist yet — ignore */ }
       } finally {
         activeWorker = null
       }

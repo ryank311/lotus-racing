@@ -153,7 +153,8 @@ function AiSettingsCard() {
                 fontFamily: 'var(--font-mono)', fontSize: 11,
               }}
             >
-              <option value="claude-opus-4-7">claude-opus-4-7 (latest)</option>
+              <option value="claude-opus-4-8">claude-opus-4-8 (latest)</option>
+              <option value="claude-opus-4-7">claude-opus-4-7</option>
               <option value="claude-opus-4-5">claude-opus-4-5</option>
               <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
               <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
