@@ -5,6 +5,9 @@ import path from 'node:path'
 import { registerIpc } from './ipc.js'
 import { loadInitialBounds, trackWindowState } from './windowState.js'
 import { seedUserData } from '../garmin/paths.js'
+import { openDb, initSchema } from '../garmin/loadToDb.js'
+import { DB_PATH } from '../garmin/paths.js'
+import fs from 'node:fs'
 
 const isDev = process.env.NODE_ENV === 'development'
 

@@ -143,6 +143,24 @@ function spawnWithArg(bin: string, prompt: string, onChunk: (t: string) => void)
 
 // ─── Remote: Anthropic Messages API (SSE streaming) ──────────────────────────
 
+const THINKING_PHRASES = [
+  'Reviewing lap data…',
+  'Studying the sectors…',
+  'Scrubbing tires…',
+  'Analyzing corner entries…',
+  'Checking brake points…',
+  'Calculating time deltas…',
+  'Studying your racing line…',
+  'Fueling up the analysis…',
+  'Mapping the circuit…',
+  'Cross-referencing segments…',
+  'Computing theoretical best…',
+  'Watching onboard footage…',
+  'Talking to the engineers…',
+  'Reviewing telemetry traces…',
+  'Dialing in the suspension…',
+]
+
 function runRemote(
   prompt: string,
   apiKey: string,
@@ -156,9 +174,16 @@ function runRemote(
     messages: [{ role: 'user', content: prompt }],
   })
 
-  onChunk(`[harness] POST api.anthropic.com/v1/messages model=${model}\n`)
+  onChunk(`Connecting to ${model}…\n`)
 
   return new Promise((resolve, reject) => {
+    // Cycle through fun status phrases while waiting for the response.
+    let phraseIdx = 0
+    const statusTimer = setInterval(() => {
+      onChunk(`${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
+      phraseIdx++
+    }, 4000)
+
     const req = https.request({
       hostname: 'api.anthropic.com',
       path: '/v1/messages',
@@ -170,14 +195,12 @@ function runRemote(
         'content-length': Buffer.byteLength(body),
       },
     }, (res) => {
-      onChunk(`[harness] HTTP ${res.statusCode} ${res.statusMessage ?? ''}\n`)
-      onChunk(`[harness] headers: ${JSON.stringify(res.headers).slice(0, 200)}\n`)
-
       if (res.statusCode && res.statusCode >= 400) {
+        clearInterval(statusTimer)
         let errBody = ''
         res.on('data', (c: Buffer) => { errBody += c.toString() })
         res.on('end', () => {
-          onChunk(`[harness] error body: ${errBody}\n`)
+          onChunk(`[error] HTTP ${res.statusCode}: ${errBody}\n`)
           reject(new Error(`Anthropic API ${res.statusCode}: ${errBody.slice(0, 500)}`))
         })
         return
@@ -195,30 +218,33 @@ function runRemote(
           let evt: any
           try { evt = JSON.parse(raw) } catch { continue }
           if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-            const text: string = evt.delta.text ?? ''
-            full += text
-            if (text) onChunk(text)
+            full += evt.delta.text ?? ''
           }
           if (evt.type === 'message_start') {
-            onChunk(`[harness] message started (model=${evt.message?.model ?? '?'})\n`)
-          }
-          if (evt.type === 'message_stop') {
-            onChunk(`[harness] message complete (${full.length} chars)\n`)
+            clearInterval(statusTimer)
+            onChunk('Response received, processing…\n')
           }
         }
       })
       res.on('end', () => {
-        if (!full) onChunk('[harness] ⚠ response ended with no content\n')
+        clearInterval(statusTimer)
+        if (!full) {
+          onChunk('[error] Response ended with no content\n')
+        } else {
+          onChunk(`Done — ${(full.length / 1024).toFixed(1)} KB received\n`)
+        }
         resolve(full)
       })
       res.on('error', (err) => {
-        onChunk(`[harness] response stream error: ${err.message}\n`)
+        clearInterval(statusTimer)
+        onChunk(`[error] ${err.message}\n`)
         reject(err)
       })
     })
 
     req.on('error', (err) => {
-      onChunk(`[harness] request error: ${err.message}\n`)
+      clearInterval(statusTimer)
+      onChunk(`[error] ${err.message}\n`)
       reject(err)
     })
     req.write(body)

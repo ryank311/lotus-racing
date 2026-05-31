@@ -433,6 +433,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         }
 
         const { con } = await openDb(DB_PATH)
+        await initSchema(con)
         await insertCoachingSession(con, coachingSession)
 
         broadcast(win, { kind: 'coach', type: 'progress',
@@ -441,28 +442,31 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         log(`[coach] Session saved (${sessionId.slice(0, 8)}…)`)
       } catch (e: any) {
         const errMsg = String(e.message ?? e)
+        log(`[coach] ✗ ${errMsg}`)
         broadcast(win, { kind: 'coach', type: 'error', payload: errMsg })
-        log(`[coach] ERROR: ${errMsg}`)
 
-        // Save a failed session so the error + logs are visible in the AI Coach tab.
+        // Always save a failed session — create the DB/schema if needed.
+        const errorId = randomUUID()
         try {
-          if (fs.existsSync(DB_PATH)) {
-            const errorSession: CoachingSession = {
-              id: randomUUID(),
-              created_at: new Date().toISOString(),
-              session_guids: opts.sessionGuids,
-              profile_name: resolvedProfileName,
-              model_used: 'error',
-              title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
-              prompt: builtPrompt,
-              raw_response: collectedLogs.join('') + '\n\nERROR: ' + errMsg,
-              parsed_result: null,
-            }
-            const { con } = await openDb(DB_PATH)
-            await insertCoachingSession(con, errorSession)
-            broadcast(win, { kind: 'coach', type: 'done', payload: errorSession.id })
+          const { con } = await openDb(DB_PATH)
+          await initSchema(con)
+          const errorSession: CoachingSession = {
+            id: errorId,
+            created_at: new Date().toISOString(),
+            session_guids: opts.sessionGuids,
+            profile_name: resolvedProfileName,
+            model_used: 'error',
+            title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
+            prompt: builtPrompt,
+            raw_response: collectedLogs.join('') + '\n\nERROR: ' + errMsg,
+            parsed_result: null,
           }
-        } catch { /* DB may not exist yet — ignore */ }
+          await insertCoachingSession(con, errorSession)
+        } catch (saveErr: any) {
+          log(`[coach] (could not save error session: ${saveErr.message})`)
+        }
+        // Always fire done so the UI unlocks and the AI Coach tab can refresh.
+        broadcast(win, { kind: 'coach', type: 'done', payload: errorId })
       } finally {
         activeWorker = null
       }
