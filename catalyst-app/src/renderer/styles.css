@@ -1383,6 +1383,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
   .analysis-stat-strip {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .analysis-stat-strip .analysis-stat:last-child {
+    grid-column: span 2;
+  }
 }
 
 .analysis-stat {
