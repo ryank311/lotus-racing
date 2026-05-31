@@ -446,18 +446,19 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   }
 
   if (includeGuides) {
-    parts.push('## Setup & improvement guides (from profile)')
-    const guides = fs.readdirSync(profileDir)
+    // Only include a track-specific guide if one exists for the current config.
+    // We match by slugified config name (e.g. "VIR Full Course" → "vir-full-course")
+    // against the available .md files, excluding Car.md which is always included above.
+    const configSlug = configName.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    const trackGuide = fs.readdirSync(profileDir)
       .filter(n => n.toLowerCase().endsWith('.md') && n.toLowerCase() !== 'car.md')
-      .sort()
-    if (guides.length) {
-      for (const g of guides) {
-        parts.push(`### ${g}`)
-        parts.push(inlineMd(path.join(profileDir, g), 3))
-        parts.push('')
-      }
-    } else {
-      parts.push(`_(no additional .md files in ${profileName}/)_`)
+      .find(n => {
+        const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/\.md$/, '')
+        return slug.includes(configSlug) || configSlug.includes(slug.split('-').slice(0, 3).join('-'))
+      })
+    if (trackGuide) {
+      parts.push(`## Track guide — ${trackGuide}`)
+      parts.push(inlineMd(path.join(profileDir, trackGuide), 2))
       parts.push('')
     }
   }
@@ -682,4 +683,101 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
   })
   fs.writeFileSync(outPath, brief)
   return { outPath, sessions: sessions.length }
+}
+
+// ─── AI Coach: structured-output prompt ──────────────────────────────────────
+
+const STRUCTURED_OUTPUT_INSTRUCTIONS = `
+
+---
+
+## Coaching output instructions
+
+You are a professional HPDE coach analysing the telemetry data above. Produce a coaching report with:
+
+1. **Headline** — one sentence summarising the biggest opportunity (pace gap to theoretical best, key consistency issue).
+2. **Tips** — 3–6 focused coaching tips. Each tip MUST reference a specific corner (e.g. T4, T7) or segment (e.g. S3) from the data above. Be specific with speed targets, braking points, and apex timing.
+3. **Drills** — 3–5 concrete exercises for the next track day that address the weaknesses identified.
+
+After your written analysis, append a SINGLE JSON block in exactly this format (do not omit it — the app will fail to parse the response without it):
+
+\`\`\`json
+{
+  "headline": "string ≤120 chars",
+  "consistency_loss_ms": 0,
+  "tips": [
+    {
+      "section": "T4",
+      "body": "coaching text ≤300 chars",
+      "annotations": [
+        {
+          "type": "corner_tip",
+          "ref": "T4",
+          "body": "annotation text ≤200 chars",
+          "severity": 2
+        }
+      ]
+    }
+  ],
+  "drills": ["drill description"],
+  "annotations": []
+}
+\`\`\`
+
+Rules for annotations:
+- \`type\` must be one of: corner_tip | segment_tip | speed_annotation | line_deviation
+- \`ref\` must exactly match a corner label (T1, T2…) or segment label (S1, S2…) from the data tables above
+- \`severity\`: 1 = minor improvement, 2 = meaningful gain, 3 = critical issue
+- For corner_tip: include \`actual_apex_mps\` and \`target_apex_mps\` (in m/s) when data is available
+- For speed_annotation: include entry/apex/exit actual and target speeds in m/s
+- The flat \`annotations\` array must duplicate all annotations from all tips for easy map rendering
+- If no structured data applies, use empty arrays rather than omitting fields
+
+Consistency loss: calculate as theoretical_best_ms − actual_best_ms from the lap table.
+`
+
+export async function buildCoachPrompt(opts: BuildBriefOpts): Promise<string> {
+  const brief = await buildBrief(opts)
+  return brief + STRUCTURED_OUTPUT_INSTRUCTIONS
+}
+
+export interface CoachRunOpts {
+  sessionGuids: string[]
+  profile: string
+  scope: 'overview' | 'corner' | 'compare'
+  dbPath?: string
+}
+
+export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; profile: string }> {
+  const dbPath = opts.dbPath ?? DB_PATH
+  if (!fs.existsSync(dbPath)) throw new Error(`no database at ${dbPath}. Run load first.`)
+  const { con } = await openDb(dbPath, true)
+
+  const sessions = await fetchSessions(con, opts.sessionGuids, null)
+  if (!sessions.length) throw new Error('no sessions matched the provided GUIDs.')
+
+  const counts = new Map<string, number>()
+  for (const s of sessions) {
+    const c = s.track_configuration_name ?? ''
+    counts.set(c, (counts.get(c) ?? 0) + 1)
+  }
+  const topConfig = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+  const mlgCounts = new Map<string, number>()
+  for (const s of sessions) {
+    if (s.mean_line_guid) mlgCounts.set(s.mean_line_guid, (mlgCounts.get(s.mean_line_guid) ?? 0) + 1)
+  }
+  const topMeanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+  const topTrackName = sessions.find(s => s.track_name)?.track_name ?? ''
+  const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
+  const trackYaml = loadTrackYaml(trackPath)
+
+  const profile = resolveProfileDir(opts.profile)
+
+  const prompt = await buildCoachPrompt({
+    sessions, trackYaml, scope: opts.scope, con,
+    profileDir: profile.dir, profileName: profile.name,
+    includeGuides: true,
+  })
+
+  return { prompt, profile: profile.name }
 }

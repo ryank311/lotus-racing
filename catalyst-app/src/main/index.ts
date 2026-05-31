@@ -5,6 +5,9 @@ import path from 'node:path'
 import { registerIpc } from './ipc.js'
 import { loadInitialBounds, trackWindowState } from './windowState.js'
 import { seedUserData } from '../garmin/paths.js'
+import { openDb, initSchema } from '../garmin/loadToDb.js'
+import { DB_PATH } from '../garmin/paths.js'
+import fs from 'node:fs'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -50,8 +53,21 @@ function createWindow(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   seedUserData()
+
+  // Migrate the existing database schema on every startup.
+  // All statements use IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so this is
+  // safe to run repeatedly — it's a no-op when the schema is current.
+  if (fs.existsSync(DB_PATH)) {
+    try {
+      const { con } = await openDb(DB_PATH)
+      await initSchema(con)
+    } catch (e) {
+      console.error('[startup] schema migration failed:', e)
+    }
+  }
+
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(iconPath) } catch {}
   }

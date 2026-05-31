@@ -79,7 +79,7 @@ export interface LogLine {
   line: string
 }
 
-export type WorkerKind = 'sync' | 'load' | 'brief'
+export type WorkerKind = 'sync' | 'load' | 'brief' | 'coach'
 
 // Structured progress for the status bar. `current/total` drive the bar; the
 // other fields populate the human-readable label. Emitted alongside `log`
@@ -102,6 +102,58 @@ export interface CarProfile {
   name: string
   dir: string
   carMdPath: string
+}
+
+// ─── AI Coach ──────────────────────────────────────────────────────────────
+
+export type CoachAnnotationType = 'corner_tip' | 'segment_tip' | 'speed_annotation' | 'line_deviation'
+
+export interface CoachAnnotation {
+  type: CoachAnnotationType
+  ref: string                       // 'T1'–'TN' for corners, 'S1'–'SN' for segments
+  body: string
+  actual_apex_dist_m?: number       // corner_tip: where driver apexed (m along track)
+  recommended_apex_dist_m?: number  // corner_tip: where AI says apex should be
+  actual_entry_mps?: number
+  actual_apex_mps?: number
+  actual_exit_mps?: number
+  target_apex_mps?: number
+  deviation_desc?: string
+  severity?: 1 | 2 | 3             // 1=minor/cyan  2=moderate/amber  3=critical/signal
+}
+
+export interface CoachingResult {
+  headline: string
+  consistency_loss_ms: number
+  tips: Array<{ section: string; body: string; annotations: CoachAnnotation[] }>
+  drills: string[]
+  annotations: CoachAnnotation[]   // flat list of all annotations across all tips
+}
+
+export interface CoachingSession {
+  id: string
+  created_at: string
+  session_guids: string[]
+  profile_name: string
+  model_used: string
+  title: string
+  prompt: string
+  raw_response: string
+  parsed_result: CoachingResult | null
+}
+
+export interface CoachOptions {
+  profile: string
+  scope: 'overview' | 'corner' | 'compare'
+  sessionGuids: string[]
+}
+
+export interface AiSettings {
+  harness: 'local' | 'remote'
+  apiKey?: string
+  model?: string
+  maxTokens?: number
+  stream?: boolean
 }
 
 export interface BriefOptions {
@@ -205,6 +257,14 @@ export interface CatalystBridge {
   startSync(opts?: { token?: string; accountLabel?: string }): Promise<void>
   startLoad(): Promise<void>
   onWorker(cb: (evt: WorkerEvent) => void): () => void
+
+  // AI Coach
+  runCoach(opts: CoachOptions): Promise<{ sessionId: null }>
+  listCoachSessions(): Promise<CoachingSession[]>
+  getCoachSession(id: string): Promise<CoachingSession | null>
+  deleteCoachSession(id: string): Promise<void>
+  getAiSettings(): Promise<AiSettings>
+  saveAiSettings(s: AiSettings): Promise<void>
 
   // Analysis (Plotly data)
   buildAnalysis(sessionGuids: string[]): Promise<AnalysisDataPayload>

@@ -267,9 +267,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 
 .page-header {
-  padding: 22px 36px 12px;
+  padding: 18px 36px 12px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 24px;
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
@@ -304,6 +304,35 @@ input, textarea, select { font-family: inherit; color: inherit; }
   text-transform: uppercase;
   text-align: right;
   -webkit-app-region: no-drag;
+}
+
+/* ── Ask Coach button in Analysis header ── */
+.ask-coach-btn {
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  /* Fixed dimensions so no layout shift between idle / coaching / clear states */
+  min-width: 148px;
+  padding: 10px 22px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: var(--radius);
+  white-space: nowrap;
+  text-align: center;
+}
+.ask-coach-btn:not(:disabled) {
+  box-shadow: 0 0 18px rgba(255,94,58,0.25);
+}
+/* Pulse the border while coaching to signal activity without changing size */
+.ask-coach-btn:disabled {
+  box-shadow: none;
+  animation: coach-pulse 1.4s ease-in-out infinite;
+}
+@keyframes coach-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 0.85; }
 }
 
 .page-body {
@@ -596,16 +625,26 @@ input, textarea, select { font-family: inherit; color: inherit; }
  * ========================================================================= */
 
 .status-bar {
-  padding: 12px 36px;
+  /* Overlay: sits above content, slides up from the bottom edge of .main-pane */
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
   border-top: 1px solid var(--border);
-  background: linear-gradient(0deg, var(--bg-elev), transparent);
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  background: rgba(19, 19, 22, 0.96);
+  backdrop-filter: blur(8px);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
-  min-height: 40px;
+  /* Start off-screen below the fold */
+  transform: translateY(100%);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Don't interfere with pointer events when hidden */
+  pointer-events: none;
+}
+
+.status-bar.busy {
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 .status-bar .log {
@@ -1229,19 +1268,29 @@ input, textarea, select { font-family: inherit; color: inherit; }
  * ANALYSIS PAGE
  * ========================================================================= */
 
+.analysis-stat-strip-container {
+  container-type: inline-size;
+  margin-bottom: 24px;
+}
 .analysis-stat-strip {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 14px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+@container (max-width: 860px) {
+  .analysis-stat-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .analysis-stat {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px 18px 16px;
+  padding: 14px 12px 12px;
   position: relative;
+  min-width: 0;  /* allow grid item to shrink below content */
+  overflow: hidden;
 }
 .analysis-stat.featured {
   border-color: var(--signal);
@@ -1257,11 +1306,14 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 .analysis-stat .value {
   font-family: var(--font-mono);
-  font-size: 26px;
+  font-size: clamp(16px, 2vw, 26px);
   font-weight: 500;
   color: var(--text);
   letter-spacing: -0.02em;
   line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .analysis-stat.featured .value { color: var(--signal); }
 .analysis-stat .sub {
@@ -1300,9 +1352,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  pointer-events: none;
 }
 .chart-card-header .channel-tag {
+  pointer-events: none;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1670,6 +1722,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .analysis-left-body {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;  /* prevent children from pushing width beyond the pane */
   overflow-y: auto;
   padding: 24px 28px 36px;
 }
