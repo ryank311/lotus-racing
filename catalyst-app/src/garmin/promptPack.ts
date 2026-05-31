@@ -724,33 +724,35 @@ const STRUCTURED_OUTPUT_INSTRUCTIONS = `
 
 ## Coaching output instructions
 
-You are a professional HPDE coach analysing the telemetry data above. Produce a coaching report with:
+You are a professional HPDE coach analysing the telemetry data above. Write like you're talking directly to the driver — specific, clear, and grounded in the numbers. Produce:
 
-1. **Headline** — one sentence summarising the biggest opportunity (pace gap to theoretical best, key consistency issue).
-2. **Tips** — 3–6 focused coaching tips. Each tip MUST reference a specific corner (e.g. T4, T7) or segment (e.g. S3) from the data above. Be specific with speed targets, braking points, and apex timing.
-3. **Drills** — 3–5 concrete exercises for the next track day that address the weaknesses identified.
+1. **Headline** — one sentence naming the single biggest opportunity. Quantify the gap and name the area (e.g. "2.8s gap to theoretical best — Esses commitment and Oak Tree exit are the primary limiters").
+2. **Tips** — 3–6 coaching tips, each focused on a specific corner (T4, T7-T9) or segment (S3). Describe what the driver is doing, why it costs time, and what to change. Express all speeds in mph.
+3. **Drills** — 3–5 concrete practice exercises for the next track day that directly target the problems identified.
 
-After your written analysis, append a SINGLE JSON block in exactly this format (do not omit it — the app will fail to parse the response without it):
+After your written analysis, append a SINGLE JSON block in exactly this format (the app cannot display your coaching without it):
 
 \`\`\`json
 {
-  "headline": "string ≤120 chars",
-  "consistency_loss_ms": 0,
+  "headline": "2.8s gap to theoretical best — Esses commitment and Oak Tree exit are the primary limiters",
+  "consistency_loss_ms": 2800,
   "tips": [
     {
-      "section": "T4",
-      "body": "coaching text ≤300 chars",
+      "section": "T7-T9",
+      "body": "You're lifting mid-corner through the Esses and losing 1-2 mph at each apex. Data shows entry at 116 mph with apex dropping to 112 mph — it should stay flat. Trust the grip and commit to throttle through all three crests.",
       "annotations": [
         {
           "type": "corner_tip",
-          "ref": "T4",
-          "body": "annotation text ≤200 chars",
-          "severity": 2
+          "ref": "T7",
+          "body": "Apex is 112 mph where it should be 114 mph minimum. You're lifting when the car has grip to spare — stay flat through the crest.",
+          "severity": 2,
+          "actual_apex_mps": 50.07,
+          "target_apex_mps": 50.97
         }
       ]
     }
   ],
-  "drills": ["drill description"],
+  "drills": ["Practice T7-T9 on cool-down laps at 80% pace with deliberate full throttle through the apex to build confidence in the grip level."],
   "annotations": [],
   "coach_line": [
     {"dist_m": 100, "lateral_pos": 0.85, "note": "hold wide on entry"},
@@ -760,23 +762,28 @@ After your written analysis, append a SINGLE JSON block in exactly this format (
 }
 \`\`\`
 
+Rules for tip and annotation body text:
+- Write in plain sentences — no bullet points, no m/s, no raw data dumps
+- Always use mph for any speed mentioned in body text (multiply m/s × 2.237 to convert)
+- tip \`body\`: 2–4 sentences. Describe the pattern you see, the time cost, and the specific fix
+- annotation \`body\`: 1–2 sentences shown as a callout on the track map — direct and actionable, written to the driver
+
 Rules for annotations:
-- \`type\` must be one of: corner_tip | segment_tip | speed_annotation | line_deviation
-- \`ref\` must exactly match a corner label (T1, T2…) or segment label (S1, S2…) from the data tables above
-- \`severity\`: 1 = minor improvement, 2 = meaningful gain, 3 = critical issue
-- For corner_tip: include \`actual_apex_mps\` and \`target_apex_mps\` (in m/s) when data is available
-- For speed_annotation: include entry/apex/exit actual and target speeds in m/s
-- The flat \`annotations\` array must duplicate all annotations from all tips for easy map rendering
-- If no structured data applies, use empty arrays rather than omitting fields
+- \`type\`: corner_tip | segment_tip | speed_annotation | line_deviation
+- \`ref\` must be a single label exactly matching a corner (T4) or segment (S3) from the data — no ranges in ref, one annotation per corner
+- \`severity\`: 1 = minor, 2 = meaningful gain available, 3 = critical issue affecting safety or significant time
+- \`actual_apex_mps\` / \`target_apex_mps\`: include in m/s for corner_tip when the data supports it (displayed as mph in the app)
+- The flat \`annotations\` array must list every annotation from every tip — this duplication is required
+- Use empty arrays rather than omitting array fields; omit optional speed fields rather than guessing
 
 Rules for coach_line:
-- Emit one waypoint per key position change — brake zone entry, apex, track-out. Skip straights where line is obvious.
-- \`dist_m\` must be within the track distance range shown in the segment/corner tables above
-- \`lateral_pos\`: 0 = driver-left track edge, 1 = driver-right track edge, 0.5 = centerline
-- Cover every named corner (T1…TN) with at least 3 waypoints (entry wide, apex tight, exit wide or vice versa for left-handers)
-- \`note\` is a brief cue (≤40 chars) shown as a label on the track map
+- One waypoint per key position change: brake zone entry, apex, track-out
+- \`dist_m\` must fall within the track distance range in the segment/corner tables
+- \`lateral_pos\`: 0 = driver-left edge, 1 = driver-right edge, 0.5 = centerline
+- At least 3 waypoints per named corner; skip featureless straights
+- \`note\`: short cue shown on the map (≤40 chars)
 
-Consistency loss: calculate as theoretical_best_ms − actual_best_ms from the lap table.
+Consistency loss: theoretical_best_ms − actual_best_ms from the lap table.
 `
 
 export async function buildCoachPrompt(opts: BuildBriefOpts): Promise<string> {

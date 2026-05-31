@@ -320,20 +320,25 @@ input, textarea, select { font-family: inherit; color: inherit; }
   border-radius: var(--radius);
   white-space: nowrap;
   text-align: center;
-  /* Cyan coaching theme */
-  background: transparent;
-  color: var(--cyan);
-  border: 1px solid var(--cyan);
+  background: #38bdf8 !important;
+  color: #050a10 !important;
+  border: 1px solid #38bdf8 !important;
+  box-shadow: 0 0 20px rgba(125,211,252,0.35);
 }
 .ask-coach-btn:not(:disabled):not(.clearing) {
-  box-shadow: 0 0 18px rgba(125,211,252,0.25), inset 0 0 12px rgba(125,211,252,0.06);
+  box-shadow: 0 0 24px rgba(125,211,252,0.4);
 }
-.ask-coach-btn:hover:not(:disabled) {
-  background: rgba(125,211,252,0.08);
+.ask-coach-btn:hover:not(:disabled):not(.clearing) {
+  background: #5bc8f0 !important;
+  color: #050508 !important;
+  border-color: #5bc8f0 !important;
+  box-shadow: 0 0 28px rgba(125,211,252,0.5);
 }
 .ask-coach-btn.clearing {
-  color: var(--text-mute);
-  border-color: var(--border);
+  background: transparent !important;
+  color: var(--text-mute) !important;
+  border-color: var(--border) !important;
+  box-shadow: none;
 }
 /* Pulse the border while coaching to signal activity */
 .ask-coach-btn:disabled {
@@ -341,8 +346,8 @@ input, textarea, select { font-family: inherit; color: inherit; }
   animation: coach-pulse 1.4s ease-in-out infinite;
 }
 @keyframes coach-pulse {
-  0%, 100% { opacity: 0.45; border-color: var(--cyan); }
-  50%       { opacity: 0.85; border-color: var(--cyan); box-shadow: 0 0 20px rgba(125,211,252,0.4); }
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 0.9; box-shadow: 0 0 24px rgba(125,211,252,0.5); }
 }
 
 /* Coach notes card — cyan header instead of signal/orange */
