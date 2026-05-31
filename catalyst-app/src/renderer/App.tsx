@@ -70,13 +70,15 @@ export function App() {
         setLogLines(prev => [...prev.slice(-499), `✓ ${doneMsg}`])
         setProgress(null)
         if (evt.kind === 'coach' && evt.payload) {
-          // Auto-load the coaching session into the Analysis tab and notify the user.
-          void api.getCoachSession(evt.payload).then(session => {
+          // Auto-load into Analysis tab. Use setTimeout to ensure state updates
+          // flush before navigation (avoids React batching edge cases with async events).
+          const sessionId = evt.payload
+          void api.getCoachSession(sessionId).then(session => {
             if (!session) return
-            setSelected(new Set(session.session_guids))
-            setActiveCoachSession(session)
-            setPage('analysis')
-            setCoachToast({ sessionId: evt.payload! })
+            setTimeout(() => {
+              loadCoachSession(session)
+              setCoachToast({ sessionId })
+            }, 0)
           })
         } else {
           refresh()

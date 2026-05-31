@@ -38,6 +38,7 @@ import { loadTrackYaml, resolveTrackYamlPath, saveTrackYamlCorners, TrackCorner 
 import { runBrief, runCoach } from '../garmin/promptPack.js'
 import { parseCoachResponse } from '../garmin/coachParser.js'
 import { runAgent } from '../garmin/agentHarness.js'
+import { COACHING_TOOL } from '../garmin/coachingTool.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import {
   discoverProfiles,
@@ -416,6 +417,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
                 model:     cfg.ai.model     ?? 'claude-sonnet-4-6',
                 maxTokens: cfg.ai.max_tokens ?? 32000,
                 stream:    cfg.ai.stream    ?? true,
+                tools:     [COACHING_TOOL],
+                toolChoice: { type: 'tool' as const, name: COACHING_TOOL.name },
               }
             : { harness: 'local' }
 

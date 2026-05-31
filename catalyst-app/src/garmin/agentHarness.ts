@@ -13,7 +13,8 @@ import path from 'node:path'
 
 export type HarnessConfig =
   | { harness: 'local'; cliPath?: string }
-  | { harness: 'remote'; apiKey: string; model: string; maxTokens?: number; stream?: boolean }
+  | { harness: 'remote'; apiKey: string; model: string; maxTokens?: number; stream?: boolean
+      tools?: object[]; toolChoice?: { type: 'tool'; name: string } }
 
 export async function runAgent(
   prompt: string,
@@ -21,7 +22,11 @@ export async function runAgent(
   onChunk: (text: string) => void,
 ): Promise<string> {
   if (config.harness === 'local') return runLocal(prompt, config.cliPath, onChunk)
-  return runRemote(prompt, config.apiKey, config.model, onChunk, config.maxTokens ?? 32000, config.stream ?? true)
+  return runRemote(
+    prompt, config.apiKey, config.model, onChunk,
+    config.maxTokens ?? 32000, config.stream ?? true,
+    config.tools, config.toolChoice,
+  )
 }
 
 // ─── Async helpers ────────────────────────────────────────────────────────────
@@ -168,13 +173,20 @@ function runRemote(
   onChunk: (text: string) => void,
   maxTokens: number,
   stream: boolean,
+  tools?: object[],
+  toolChoice?: { type: 'tool'; name: string },
 ): Promise<string> {
-  const body = JSON.stringify({
+  const reqObj: Record<string, unknown> = {
     model,
     max_tokens: maxTokens,
     stream,
     messages: [{ role: 'user', content: prompt }],
-  })
+  }
+  if (tools?.length) {
+    reqObj.tools = tools
+    reqObj.tool_choice = toolChoice ?? { type: 'any' }
+  }
+  const body = JSON.stringify(reqObj)
 
   onChunk(`[status] Connecting to ${model}…\n`)
   onChunk(`[diag] model=${model} max_tokens=${maxTokens} stream=${stream} prompt=${(prompt.length/1024).toFixed(1)}KB\n`)
@@ -222,14 +234,29 @@ function runRemote(
         if (stream) {
           // Parse SSE — each line is "data: {...}"
           let generatingStarted = false
+          let toolInputJson = ''
+          let inToolUse = false
           for (const line of rawBody.split('\n')) {
             if (!line.startsWith('data: ')) continue
             const raw = line.slice(6).trim()
             if (raw === '[DONE]') continue
             let evt: any
             try { evt = JSON.parse(raw) } catch { continue }
+            // Text response
             if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
               full += evt.delta.text ?? ''
+            }
+            // Tool use — collect JSON fragments
+            if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+              inToolUse = true
+              toolInputJson = ''
+            }
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta') {
+              toolInputJson += evt.delta.partial_json ?? ''
+            }
+            if (evt.type === 'content_block_stop' && inToolUse) {
+              inToolUse = false
+              full = toolInputJson  // tool input replaces text output
             }
             if (evt.type === 'message_start') {
               if (!generatingStarted) {
@@ -250,7 +277,13 @@ function runRemote(
           // Non-streaming: single JSON response object
           try {
             const resp = JSON.parse(rawBody)
-            full = resp.content?.[0]?.text ?? ''
+            // Tool use response
+            const toolBlock = resp.content?.find((b: any) => b.type === 'tool_use')
+            if (toolBlock?.input) {
+              full = JSON.stringify(toolBlock.input)
+            } else {
+              full = resp.content?.find((b: any) => b.type === 'text')?.text ?? ''
+            }
           } catch {
             onChunk('[error] Failed to parse non-streaming response\n')
           }

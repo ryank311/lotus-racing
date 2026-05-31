@@ -8,14 +8,31 @@ const VALID_ANNOTATION_TYPES = new Set<CoachAnnotationType>([
   'corner_tip', 'segment_tip', 'speed_annotation', 'line_deviation',
 ])
 
+function cleanJson(s: string): string {
+  // Strip explicit leading `+` from numeric values — LLMs sometimes write
+  // `+0.15` which is valid JS but invalid JSON.
+  return s.replace(/([,:\[{]\s*)\+(\d)/g, '$1$2')
+}
+
 export function parseCoachResponse(raw: string): CoachingResult | null {
-  // Find the last ```json ... ``` block in the response.
+  const trimmed = raw.trim()
+
+  // Tool use path: the harness returns the raw JSON object directly (no code fences).
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(cleanJson(trimmed))
+      return validate(obj)
+    } catch { /* fall through to code-fence path */ }
+  }
+
+  // Text path: find the last ```json ... ``` block in the response.
   const matches = [...raw.matchAll(/```json\s*([\s\S]*?)```/gm)]
   if (!matches.length) return null
   const last = matches[matches.length - 1]
-  let obj: unknown
-  try { obj = JSON.parse(last[1].trim()) } catch { return null }
-  return validate(obj)
+  try {
+    const obj = JSON.parse(cleanJson(last[1].trim()))
+    return validate(obj)
+  } catch { return null }
 }
 
 function validate(o: unknown): CoachingResult | null {
