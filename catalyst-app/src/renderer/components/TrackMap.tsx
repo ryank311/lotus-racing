@@ -47,6 +47,7 @@ interface Props {
   hoverDistanceM?: number | null
   edit?: TrackMapEditState
   coachAnnotations?: CoachAnnotation[]
+  focusCorner?: string  // turn ID to animate-zoom to (e.g. "T7", "S6")
 }
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -152,7 +153,7 @@ function HeatmapPath({ lap, values, vmin, vmax }: {
   return <g>{segments}</g>
 }
 
-export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations }: Props) {
+export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner }: Props) {
   const { trackGeometry: geom, racingLines } = data
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -431,6 +432,47 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         return items
       })
   }, [coachAnnotations, geom, data])
+
+  // Smooth zoom-to-corner when focusCorner changes.
+  const focusAnimRef = useRef<number>(0)
+  useEffect(() => {
+    if (!focusCorner || !geom) return
+    const dataCorners: Array<{ turn: string; apex_idx: number }> = (data as AnalysisData).corners ?? []
+    const corner = dataCorners.find(c => c.turn === focusCorner)
+    if (!corner || corner.apex_idx == null) return
+    const pt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(corner.apex_idx)))]
+    if (!pt) return
+
+    const ZOOM_R = Math.max(150, (geom.bbox.maxX - geom.bbox.minX) * 0.18)
+    const target: ViewBox = {
+      x: pt.x - ZOOM_R,
+      y: -pt.y - ZOOM_R,
+      w: ZOOM_R * 2,
+      h: ZOOM_R * 2,
+    }
+
+    cancelAnimationFrame(focusAnimRef.current)
+    const DURATION = 550 // ms
+    const startTime = performance.now()
+
+    setVb(prev => {
+      const from = prev ?? target
+      const step = (now: number) => {
+        const raw = Math.min(1, (now - startTime) / DURATION)
+        // ease-in-out cubic
+        const t = raw < 0.5 ? 4 * raw * raw * raw : 1 - Math.pow(-2 * raw + 2, 3) / 2
+        setVb({
+          x: from.x + (target.x - from.x) * t,
+          y: from.y + (target.y - from.y) * t,
+          w: from.w + (target.w - from.w) * t,
+          h: from.h + (target.h - from.h) * t,
+        })
+        if (raw < 1) focusAnimRef.current = requestAnimationFrame(step)
+      }
+      focusAnimRef.current = requestAnimationFrame(step)
+      return from
+    })
+  }, [focusCorner, geom])  // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!geom) {
     return (

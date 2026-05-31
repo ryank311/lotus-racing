@@ -43,6 +43,7 @@ export function App() {
       if (evt.type === 'progress' && evt.progress) setProgress(evt.progress)
       if (evt.type === 'done') {
         setBusy(null)
+        setLogsExpanded(false)
         const doneMsg = `${evt.kind} complete${evt.payload ? ` · ${evt.payload.slice(0, 40)}` : ''}`
         setLogLine(doneMsg)
         setLogLines(prev => [...prev.slice(-499), `✓ ${doneMsg}`])
@@ -52,6 +53,7 @@ export function App() {
       }
       if (evt.type === 'error') {
         setBusy(null)
+        setLogsExpanded(false)
         setProgress(null)
         const errMsg = `error: ${evt.payload}`
         setLogLine(errMsg)
@@ -151,10 +153,10 @@ export function App() {
           )}
         </ErrorBoundary>
 
-        {/* Status bar — click to expand full log panel */}
+        {/* Status bar — overlays content, slides up when busy */}
         <div
           className={`status-bar ${busy ? 'busy' : ''}`}
-          style={{ display: busy ? undefined : 'none', cursor: 'pointer', flexDirection: 'column', alignItems: 'stretch', gap: 0, padding: 0 }}
+          style={{ cursor: 'pointer', flexDirection: 'column', alignItems: 'stretch', gap: 0, padding: 0 }}
           onClick={() => setLogsExpanded(e => !e)}
         >
           {/* Collapsed row */}

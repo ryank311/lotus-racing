@@ -25,6 +25,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
   const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
+  const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
 
@@ -177,7 +178,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             )}
 
             {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} onFocusRef={setFocusedRef} />
             )}
           </div>
         </div>
@@ -188,7 +189,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
           {data && !loading && !err
-            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} />
+            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} focusCorner={focusedRef} />
             : <div className="analysis-map-placeholder" />
           }
         </div>
@@ -200,20 +201,22 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 // ============================================================================
 
 // TrackMapPanel — right pane content, full height, no extra chrome
-function TrackMapPanel({ data, hoverDistanceM, coachAnnotations }: {
+function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner }: {
   data: AnalysisData
   hoverDistanceM: number | null
   coachAnnotations?: CoachAnnotation[]
+  focusCorner?: string | null
 }) {
-  return <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} coachAnnotations={coachAnnotations} />
+  return <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} coachAnnotations={coachAnnotations} focusCorner={focusCorner ?? undefined} />
 }
 
-function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult }: {
+function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult, onFocusRef }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
   onHoverDistance: (d: number | null) => void
   coachResult?: CoachingResult | null
+  onFocusRef?: (ref: string) => void
 }) {
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
@@ -255,7 +258,12 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
       </div>
 
       {/* COACH NOTES */}
-      {coachResult && <CoachNotesPanel result={coachResult} />}
+      {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} />}
+
+      {/* RECOMMENDED PRACTICE */}
+      {coachResult && coachResult.drills.length > 0 && (
+        <RecommendedPracticePanel drills={coachResult.drills} />
+      )}
 
       {/* CHARTS */}
       <div className="analysis-charts">
@@ -322,33 +330,46 @@ function Stat({ label, value, sub, featured }: { label: string; value: string; s
   )
 }
 
-function CoachNotesPanel({ result }: { result: CoachingResult }) {
+function CoachNotesPanel({ result, onFocusRef }: {
+  result: CoachingResult
+  onFocusRef?: (ref: string) => void
+}) {
   const [open, setOpen] = useState(true)
+
+  // Extract the first ref from a tip's annotations or section label
+  const refForTip = (tip: CoachingResult['tips'][0]): string | null => {
+    if (tip.annotations.length > 0) return tip.annotations[0].ref
+    // Parse first token like "T7", "T7-T9", "S6" from section
+    const m = tip.section.match(/^([TS]\d+[a-z]?)/i)
+    return m ? m[1] : null
+  }
+
   return (
     <div className="chart-card" style={{ marginBottom: 18 }}>
       <div className="card-corner-marks"><i /></div>
-      <div
-        className="chart-card-header"
-        style={{ cursor: 'pointer' }}
-        onClick={() => setOpen(o => !o)}
-      >
+      <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <span className="channel-tag">COACH NOTES</span>
         <span className="meta">{open ? '▲ collapse' : '▼ expand'}</span>
       </div>
 
       {open && (
         <div style={{ padding: '28px 16px 16px' }}>
+          {/* Headline + gap chip on one row */}
           {result.headline && (
-            <div style={{
-              fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--signal)',
-              marginBottom: 14, lineHeight: 1.5,
-            }}>
-              {result.headline}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{
+                fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--signal)',
+                lineHeight: 1.5, marginBottom: 8,
+              }}>
+                {result.headline}
+              </div>
               {result.consistency_loss_ms > 0 && (
                 <span style={{
-                  marginLeft: 10, display: 'inline-block',
+                  display: 'inline-flex', alignItems: 'center',
                   background: 'var(--signal-soft)', border: '1px solid var(--signal)',
-                  borderRadius: 2, padding: '1px 7px', fontSize: 10,
+                  borderRadius: 2, padding: '2px 8px',
+                  fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--signal)',
+                  letterSpacing: '0.1em',
                 }}>
                   +{(result.consistency_loss_ms / 1000).toFixed(3)}s gap
                 </span>
@@ -356,45 +377,100 @@ function CoachNotesPanel({ result }: { result: CoachingResult }) {
             </div>
           )}
 
+          {/* Tip cards — clickable to zoom track map */}
           {result.tips.length > 0 && (
-            <div style={{ marginBottom: 14 }}>
-              <div className="card-label" style={{ marginBottom: 8, fontSize: 9 }}>TIPS</div>
-              {result.tips.map((tip, i) => (
-                <div key={i} style={{
-                  background: 'var(--bg-elev)', border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius)', padding: '10px 12px', marginBottom: 6,
-                }}>
-                  <div style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--signal)',
-                    letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 5,
-                  }}>
-                    {tip.section}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {result.tips.map((tip, i) => {
+                const ref = refForTip(tip)
+                const clickable = !!ref && !!onFocusRef
+                return (
+                  <div
+                    key={i}
+                    onClick={clickable ? () => onFocusRef!(ref!) : undefined}
+                    style={{
+                      background: 'var(--bg-elev)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius)',
+                      padding: '10px 12px',
+                      cursor: clickable ? 'pointer' : 'default',
+                      transition: 'border-color 0.12s, background 0.12s',
+                    }}
+                    onMouseEnter={e => {
+                      if (!clickable) return
+                      ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--signal)'
+                      ;(e.currentTarget as HTMLDivElement).style.background = 'var(--signal-soft)'
+                    }}
+                    onMouseLeave={e => {
+                      ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'
+                      ;(e.currentTarget as HTMLDivElement).style.background = 'var(--bg-elev)'
+                    }}
+                  >
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5,
+                    }}>
+                      <span style={{
+                        fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--signal)',
+                        letterSpacing: '0.14em', textTransform: 'uppercase',
+                      }}>
+                        {tip.section}
+                      </span>
+                      {clickable && (
+                        <span style={{
+                          fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-mute)',
+                          letterSpacing: '0.1em',
+                        }}>
+                          ↗ zoom to map
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-dim)' }}>
+                      {tip.body}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-dim)' }}>
-                    {tip.body}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
 
-          {result.drills.length > 0 && (
-            <div>
-              <div className="card-label" style={{ marginBottom: 8, fontSize: 9 }}>DRILLS</div>
-              <div style={{
-                background: 'var(--bg-elev)', border: '1px solid var(--border)',
-                borderRadius: 'var(--radius)', padding: '10px 12px',
+function RecommendedPracticePanel({ drills }: { drills: string[] }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className="chart-card" style={{ marginBottom: 18 }}>
+      <div className="card-corner-marks"><i /></div>
+      <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <span className="channel-tag">Recommended Practice</span>
+        <span className="meta">{open ? '▲ collapse' : '▼ expand'}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: '28px 16px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {drills.map((drill, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 14, alignItems: 'flex-start',
+              background: 'var(--bg-elev)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius)', padding: '12px 14px',
+            }}>
+              <span style={{
+                fontFamily: 'var(--font-display)', fontWeight: 800,
+                fontSize: 22, lineHeight: 1, color: 'var(--signal)',
+                opacity: 0.35, flexShrink: 0, width: 28, textAlign: 'right',
+                userSelect: 'none',
               }}>
-                <ol style={{ margin: 0, paddingLeft: 18 }}>
-                  {result.drills.map((d, i) => (
-                    <li key={i} style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-dim)', marginBottom: 3 }}>
-                      {d}
-                    </li>
-                  ))}
-                </ol>
+                {String(i + 1).padStart(2, '0')}
+              </span>
+              <div style={{
+                fontSize: 12.5, lineHeight: 1.6, color: 'var(--text-dim)',
+                paddingTop: 2,
+              }}>
+                {drill}
               </div>
             </div>
-          )}
+          ))}
         </div>
       )}
     </div>

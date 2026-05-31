@@ -625,16 +625,26 @@ input, textarea, select { font-family: inherit; color: inherit; }
  * ========================================================================= */
 
 .status-bar {
-  padding: 12px 36px;
+  /* Overlay: sits above content, slides up from the bottom edge of .main-pane */
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
   border-top: 1px solid var(--border);
-  background: linear-gradient(0deg, var(--bg-elev), transparent);
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  background: rgba(19, 19, 22, 0.96);
+  backdrop-filter: blur(8px);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
-  min-height: 40px;
+  /* Start off-screen below the fold */
+  transform: translateY(100%);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Don't interfere with pointer events when hidden */
+  pointer-events: none;
+}
+
+.status-bar.busy {
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 .status-bar .log {
