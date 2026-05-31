@@ -169,7 +169,7 @@ function runRemote(
 ): Promise<string> {
   const body = JSON.stringify({
     model,
-    max_tokens: 16000,
+    max_tokens: 32000,
     stream: true,
     messages: [{ role: 'user', content: prompt }],
   })
