@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisData, RacingLineLap, TrackGeometryPayload } from '../../garmin/analysisData'
+import type { CoachAnnotation } from '../../shared/types'
 import { LAP_PALETTE } from './PlotlyChart'
 
 // Structural subset of AnalysisData that this component actually needs. Both
@@ -43,15 +44,9 @@ export interface TrackMapEditState {
 interface Props {
   data: TrackMapInput | AnalysisData
   height?: number | string
-  // When set, a white crosshair is drawn on the best-lap racing line at this
-  // cumulative distance. Lets the parent sync mouse-hover from other charts
-  // (which use distance_m on x) onto the spatial track view.
   hoverDistanceM?: number | null
-  // When provided, the map enters editing mode: corner apex markers are drawn
-  // prominently, clicks on the track move the *selected* corner's apex, and
-  // clicks on a marker change which corner is selected. The racing-line speed
-  // heatmap is hidden in this mode to keep the visual focus on corners.
   edit?: TrackMapEditState
+  coachAnnotations?: CoachAnnotation[]
 }
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -157,7 +152,7 @@ function HeatmapPath({ lap, values, vmin, vmax }: {
   return <g>{segments}</g>
 }
 
-export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Props) {
+export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations }: Props) {
   const { trackGeometry: geom, racingLines } = data
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -185,6 +180,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
 
   // Hover state — index into bestLap arrays, plus container-relative position
   const [hoverIdx,    setHoverIdx]    = useState<number | null>(null)
+  const [activeAnnotation, setActiveAnnotation] = useState<CoachAnnotation | null>(null)
   const [tooltipPos,  setTooltipPos]  = useState<{ x: number; y: number } | null>(null)
 
   const bestLap = racingLines[0] ?? null
@@ -411,6 +407,31 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
     return Math.max(1.5, Math.ceil(max / 0.5) * 0.5)
   }, [bestLap])
 
+  // L8 — coach annotation markers: resolve corner refs to centerline positions.
+  const coachMarkers = useMemo(() => {
+    if (!coachAnnotations?.length || !geom) return []
+    const dataCorners: Array<{ turn: string; apex_idx: number; dist_idx_start?: number; dist_idx_end?: number }>
+      = (data as AnalysisData).corners ?? []
+    return coachAnnotations
+      .filter(a => a.type !== 'segment_tip')  // corners only for now
+      .flatMap(a => {
+        const corner = dataCorners.find(c => c.turn === a.ref)
+        if (!corner || corner.apex_idx == null) return []
+        const apexPt = geom.centerline[Math.max(0, Math.min(geom.centerline.length - 1, Math.round(corner.apex_idx)))]
+        if (!apexPt) return []
+        const items: Array<{ x: number; y: number; annotation: CoachAnnotation; kind: 'actual' | 'recommended'; distStart?: number; distEnd?: number }> = []
+        items.push({ x: apexPt.x, y: apexPt.y, annotation: a, kind: 'actual',
+          distStart: corner.dist_idx_start, distEnd: corner.dist_idx_end })
+        // Recommended apex (if provided and meaningfully different)
+        if (a.recommended_apex_dist_m != null) {
+          const recIdx = Math.max(0, Math.min(geom.centerline.length - 1, Math.round(a.recommended_apex_dist_m)))
+          const recPt = geom.centerline[recIdx]
+          if (recPt) items.push({ x: recPt.x, y: recPt.y, annotation: a, kind: 'recommended' })
+        }
+        return items
+      })
+  }, [coachAnnotations, geom, data])
+
   if (!geom) {
     return (
       <div className="track-map-empty" style={{ height }}>
@@ -606,6 +627,52 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
               stroke="#ffffff" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
           </g>
         )}
+
+        {/* L8 — coach annotation markers */}
+        {coachMarkers.map((m, i) => {
+          const a = m.annotation
+          const color = a.severity === 3 ? '#ff5e3a' : a.severity === 2 ? '#f5a623' : '#7dd3fc'
+          if (m.kind === 'recommended') {
+            return (
+              <g key={`rec-${i}`} pointerEvents="none">
+                <circle cx={m.x} cy={-m.y} r={10}
+                  fill="none" stroke="#ffffff" strokeWidth={1.5} strokeDasharray="3 2"
+                  strokeOpacity={0.7} vectorEffect="non-scaling-stroke" />
+              </g>
+            )
+          }
+          return (
+            <g key={`ann-${i}`}
+              style={{ cursor: 'pointer' }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setActiveAnnotation(prev => prev?.ref === a.ref ? null : a)
+              }}
+            >
+              {/* Corner zone highlight */}
+              {m.distStart != null && m.distEnd != null && (() => {
+                const lo = Math.max(0, Math.round(m.distStart))
+                const hi = Math.min(geom.centerline.length - 1, Math.round(m.distEnd))
+                const slice = geom.centerline.slice(lo, hi + 1)
+                if (slice.length < 2) return null
+                const d = slice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
+                return (
+                  <path d={d} fill="none" stroke={color} strokeOpacity={0.35}
+                    strokeWidth={Math.max(4, geom.widthM * 0.9)} strokeLinecap="round"
+                    pointerEvents="none" vectorEffect="non-scaling-stroke" />
+                )
+              })()}
+              {/* Apex halo */}
+              <circle cx={m.x} cy={-m.y} r={11} fill={color} fillOpacity={0.15}
+                stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+              {/* Turn label */}
+              <text x={m.x} y={-m.y + 3} textAnchor="middle" fontSize={7} fontWeight={700}
+                fill={color} fontFamily="'JetBrains Mono', monospace" pointerEvents="none">
+                {a.ref}
+              </text>
+            </g>
+          )
+        })}
       </svg>
 
       <div className="track-map-legend">
@@ -671,6 +738,38 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit }: Pr
 
       {showGMeter && bestLap && (
         <GMeter latG={gMeterValues?.lat_g ?? null} longG={gMeterValues?.long_g ?? null} gMax={gMax} />
+      )}
+
+      {/* Coach annotation tooltip — shown when user clicks an L8 marker */}
+      {activeAnnotation && (
+        <div
+          className="track-map-tooltip"
+          style={{ position: 'absolute', bottom: 80, left: 14, maxWidth: 280, zIndex: 60 }}
+          onClick={() => setActiveAnnotation(null)}
+        >
+          <div className="track-map-tooltip-dist" style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span>{activeAnnotation.ref}</span>
+            <span style={{ cursor: 'pointer', opacity: 0.6 }}>×</span>
+          </div>
+          <div style={{
+            fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)',
+            lineHeight: 1.55, marginTop: 4,
+          }}>
+            {activeAnnotation.body}
+          </div>
+          {activeAnnotation.actual_apex_mps != null && activeAnnotation.target_apex_mps != null && (
+            <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
+              <div className="track-map-tooltip-row">
+                <span style={{ color: 'var(--text-mute)' }}>actual</span>
+                <span>{(activeAnnotation.actual_apex_mps * 2.237).toFixed(1)} mph</span>
+              </div>
+              <div className="track-map-tooltip-row">
+                <span style={{ color: 'var(--signal)' }}>target</span>
+                <span>{(activeAnnotation.target_apex_mps * 2.237).toFixed(1)} mph</span>
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

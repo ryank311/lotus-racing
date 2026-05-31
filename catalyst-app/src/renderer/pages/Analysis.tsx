@@ -5,21 +5,67 @@ import { LineChart, GGChart, HeatmapGrid, CornerChart } from '../components/Char
 import { speedSeries, lateralSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import type { AnalysisData } from '../../garmin/analysisData'
+import type { CoachingSession, CoachingResult, CoachAnnotation } from '../../shared/types'
 
 interface Props {
   selected: Set<string>
   setSelected: (s: Set<string>) => void
   onBack: () => void
+  activeCoachSession?: CoachingSession | null
+  onClearCoachSession?: () => void
+  busy?: string | null
+  setBusy?: (b: 'sync' | 'load' | 'coach' | null) => void
 }
 
-export function Analysis({ selected, setSelected, onBack }: Props) {
+export function Analysis({ selected, setSelected, onBack, activeCoachSession, onClearCoachSession, busy, setBusy }: Props) {
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [splitPct, setSplitPct] = useState(62)
   const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
+  const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
+  const [coachRunning, setCoachRunning] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+
+  // When a coaching session is loaded from the AI Coach tab, apply its result.
+  useEffect(() => {
+    if (activeCoachSession) {
+      setCoachResult(activeCoachSession.parsed_result)
+    }
+  }, [activeCoachSession])
+
+  const askCoach = async () => {
+    if (!data || coachRunning || busy) return
+    setCoachRunning(true)
+    setBusy?.('coach')
+    const profile = await api.getActiveProfile() ?? 'Lotus'
+    const unsub = api.onWorker(evt => {
+      if (evt.kind !== 'coach') return
+      if (evt.type === 'done') {
+        unsub()
+        setCoachRunning(false)
+        setBusy?.(null)
+        if (evt.payload) {
+          void api.getCoachSession(evt.payload).then(s => {
+            if (s) setCoachResult(s.parsed_result)
+          })
+        }
+      }
+      if (evt.type === 'error') {
+        unsub()
+        setCoachRunning(false)
+        setBusy?.(null)
+      }
+    })
+    try {
+      await api.runCoach({ profile, scope: 'overview', sessionGuids: [...selected] })
+    } catch {
+      unsub()
+      setCoachRunning(false)
+      setBusy?.(null)
+    }
+  }
 
   const onDividerMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -92,6 +138,14 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
           {selected.size} sessions<br />
           <span className="muted">{data ? `${data.laps.length} driven laps` : 'loading…'}</span>
         </div>
+
+        <button
+          className={`btn ${coachResult ? 'ghost' : 'primary'} ask-coach-btn`}
+          disabled={!data || !!busy}
+          onClick={coachResult ? () => { setCoachResult(null); onClearCoachSession?.() } : askCoach}
+        >
+          {coachRunning ? 'Coaching…' : coachResult ? '✕ Clear Coach' : '✦ Ask Coach'}
+        </button>
       </header>
 
       <div
@@ -123,7 +177,7 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
             )}
 
             {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} />
             )}
           </div>
         </div>
@@ -134,7 +188,7 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
           {data && !loading && !err
-            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} />
+            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} />
             : <div className="analysis-map-placeholder" />
           }
         </div>
@@ -146,15 +200,20 @@ export function Analysis({ selected, setSelected, onBack }: Props) {
 // ============================================================================
 
 // TrackMapPanel — right pane content, full height, no extra chrome
-function TrackMapPanel({ data, hoverDistanceM }: { data: AnalysisData; hoverDistanceM: number | null }) {
-  return <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} />
+function TrackMapPanel({ data, hoverDistanceM, coachAnnotations }: {
+  data: AnalysisData
+  hoverDistanceM: number | null
+  coachAnnotations?: CoachAnnotation[]
+}) {
+  return <TrackMap data={data} height="100%" hoverDistanceM={hoverDistanceM} coachAnnotations={coachAnnotations} />
 }
 
-function AnalysisBody({ data, selected, setSelected, onHoverDistance }: {
+function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
   onHoverDistance: (d: number | null) => void
+  coachResult?: CoachingResult | null
 }) {
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
@@ -194,6 +253,9 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance }: {
         <Stat label="Sessions" value={String(data.sessions.length)} sub="selected" />
         <Stat label="Track" value={data.config} sub={`${data.totalDistM.toFixed(0)} m`} />
       </div>
+
+      {/* COACH NOTES */}
+      {coachResult && <CoachNotesPanel result={coachResult} />}
 
       {/* CHARTS */}
       <div className="analysis-charts">
@@ -256,6 +318,85 @@ function Stat({ label, value, sub, featured }: { label: string; value: string; s
       <div className="label">{label}</div>
       <div className="value">{value}</div>
       {sub && <div className="sub">{sub}</div>}
+    </div>
+  )
+}
+
+function CoachNotesPanel({ result }: { result: CoachingResult }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className="chart-card" style={{ marginBottom: 18 }}>
+      <div className="card-corner-marks"><i /></div>
+      <div
+        className="chart-card-header"
+        style={{ cursor: 'pointer' }}
+        onClick={() => setOpen(o => !o)}
+      >
+        <span className="channel-tag">COACH NOTES</span>
+        <span className="meta">{open ? '▲ collapse' : '▼ expand'}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: '28px 16px 16px' }}>
+          {result.headline && (
+            <div style={{
+              fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--signal)',
+              marginBottom: 14, lineHeight: 1.5,
+            }}>
+              {result.headline}
+              {result.consistency_loss_ms > 0 && (
+                <span style={{
+                  marginLeft: 10, display: 'inline-block',
+                  background: 'var(--signal-soft)', border: '1px solid var(--signal)',
+                  borderRadius: 2, padding: '1px 7px', fontSize: 10,
+                }}>
+                  +{(result.consistency_loss_ms / 1000).toFixed(3)}s gap
+                </span>
+              )}
+            </div>
+          )}
+
+          {result.tips.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div className="card-label" style={{ marginBottom: 8, fontSize: 9 }}>TIPS</div>
+              {result.tips.map((tip, i) => (
+                <div key={i} style={{
+                  background: 'var(--bg-elev)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius)', padding: '10px 12px', marginBottom: 6,
+                }}>
+                  <div style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--signal)',
+                    letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 5,
+                  }}>
+                    {tip.section}
+                  </div>
+                  <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-dim)' }}>
+                    {tip.body}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {result.drills.length > 0 && (
+            <div>
+              <div className="card-label" style={{ marginBottom: 8, fontSize: 9 }}>DRILLS</div>
+              <div style={{
+                background: 'var(--bg-elev)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)', padding: '10px 12px',
+              }}>
+                <ol style={{ margin: 0, paddingLeft: 18 }}>
+                  {result.drills.map((d, i) => (
+                    <li key={i} style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-dim)', marginBottom: 3 }}>
+                      {d}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -5,6 +5,8 @@ import type {
   CatalystBridge,
   BriefOptions,
   WorkerEvent,
+  CoachOptions,
+  AiSettings,
 } from '../shared/types.js'
 
 const bridge: CatalystBridge = {
@@ -59,6 +61,14 @@ const bridge: CatalystBridge = {
   },
 
   buildAnalysis: (sessionGuids: string[]) => ipcRenderer.invoke('analysis:build', sessionGuids),
+
+  // AI Coach
+  runCoach: (opts: CoachOptions) => ipcRenderer.invoke('coach:run', opts),
+  listCoachSessions: () => ipcRenderer.invoke('coach:list'),
+  getCoachSession: (id: string) => ipcRenderer.invoke('coach:get', id),
+  deleteCoachSession: (id: string) => ipcRenderer.invoke('coach:delete', id),
+  getAiSettings: () => ipcRenderer.invoke('ai:getSettings'),
+  saveAiSettings: (s: AiSettings) => ipcRenderer.invoke('ai:saveSettings', s),
 
   // Tracks editor
   listTracks: () => ipcRenderer.invoke('tracks:listAll'),

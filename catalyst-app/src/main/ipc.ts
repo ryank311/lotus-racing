@@ -12,7 +12,7 @@ import {
   DATA_DIR,
   REPO_ROOT,
 } from '../garmin/paths.js'
-import { loadConfig, setCredentials } from '../garmin/config.js'
+import { loadConfig, saveConfig, setCredentials } from '../garmin/config.js'
 import {
   CatalystAPI,
   fetchAllSessions,
@@ -27,11 +27,17 @@ import {
   loadSession,
   loadTrackConfigs,
   openDb,
+  insertCoachingSession,
+  listCoachingSessions,
+  getCoachingSession,
+  deleteCoachingSession,
 } from '../garmin/loadToDb.js'
 import { MEAN_LINES_DIR, TRACKS_DIR } from '../garmin/paths.js'
 import { buildTrackGeometry } from '../garmin/trackGeometry.js'
 import { loadTrackYaml, resolveTrackYamlPath, saveTrackYamlCorners, TrackCorner } from '../garmin/trackYaml.js'
-import { runBrief } from '../garmin/promptPack.js'
+import { runBrief, runCoach } from '../garmin/promptPack.js'
+import { parseCoachResponse } from '../garmin/coachParser.js'
+import { runAgent } from '../garmin/agentHarness.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import {
   discoverProfiles,
@@ -40,6 +46,7 @@ import {
   setActiveProfileName,
   setVehicleProfile,
 } from '../garmin/profiles.js'
+import { randomUUID } from 'node:crypto'
 import type {
   AuthState,
   CarProfile,
@@ -48,6 +55,9 @@ import type {
   DbSessionRow,
   SyncStats,
   WorkerEvent,
+  CoachOptions,
+  CoachingSession,
+  AiSettings,
 } from '../shared/types.js'
 import { loginViaBrowser } from './auth.js'
 import { signInWithCredentials, submitMfaCode, cancelMfa } from './garthLogin.js'
@@ -316,6 +326,117 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     }
     if (vehicleGuid) setVehicleProfile(vehicleGuid, name)
     return { name, dir, carMdPath: carMd } as import('../shared/types.js').CarProfile
+  })
+
+  // ── AI Settings ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('ai:getSettings', (): AiSettings => {
+    const cfg = loadConfig()
+    return {
+      harness: cfg.ai?.harness ?? 'local',
+      apiKey: cfg.ai?.api_key,
+      model: cfg.ai?.model ?? 'claude-opus-4-5',
+    }
+  })
+
+  ipcMain.handle('ai:saveSettings', (_e, s: AiSettings) => {
+    const cfg = loadConfig()
+    cfg.ai = { harness: s.harness, api_key: s.apiKey, model: s.model }
+    saveConfig(cfg)
+  })
+
+  // ── Coach sessions ──────────────────────────────────────────────────────────
+
+  ipcMain.handle('coach:list', async (): Promise<CoachingSession[]> => {
+    if (!fs.existsSync(DB_PATH)) return []
+    const { con } = await openDb(DB_PATH, true)
+    try { return await listCoachingSessions(con) } catch { return [] }
+  })
+
+  ipcMain.handle('coach:get', async (_e, id: string): Promise<CoachingSession | null> => {
+    if (!fs.existsSync(DB_PATH)) return null
+    const { con } = await openDb(DB_PATH, true)
+    return getCoachingSession(con, id)
+  })
+
+  ipcMain.handle('coach:delete', async (_e, id: string) => {
+    if (!fs.existsSync(DB_PATH)) return
+    const { con } = await openDb(DB_PATH)
+    await deleteCoachingSession(con, id)
+  })
+
+  // ── Run coach (streaming worker) ────────────────────────────────────────────
+
+  ipcMain.handle('coach:run', async (_e, opts: CoachOptions): Promise<{ sessionId: null }> => {
+    if (activeWorker) throw new Error('Another worker is already running')
+    activeWorker = { kind: 'coach' }
+    const win = getMainWindow()
+    const log = (msg: string) => broadcast(win, { kind: 'coach', type: 'log', payload: msg })
+
+    void (async () => {
+      try {
+        log('[coach] Building prompt from telemetry…')
+        broadcast(win, { kind: 'coach', type: 'progress',
+          progress: { current: 0, total: 3, label: 'Building prompt…' } })
+
+        const { prompt, profile: resolvedProfile } = await runCoach({
+          sessionGuids: opts.sessionGuids,
+          profile: opts.profile,
+          scope: opts.scope,
+          dbPath: DB_PATH,
+        })
+
+        log(`[coach] Prompt ready (${prompt.length.toLocaleString()} chars). Sending to LLM…`)
+        broadcast(win, { kind: 'coach', type: 'progress',
+          progress: { current: 1, total: 3, label: 'Sending to LLM…' } })
+
+        const cfg = loadConfig()
+        const harnessConfig: Parameters<typeof runAgent>[1] =
+          cfg.ai?.harness === 'remote' && cfg.ai?.api_key
+            ? { harness: 'remote', apiKey: cfg.ai.api_key, model: cfg.ai.model ?? 'claude-opus-4-5' }
+            : { harness: 'local' }
+
+        const rawResponse = await runAgent(prompt, harnessConfig, (text) => {
+          broadcast(win, { kind: 'coach', type: 'log', payload: text })
+        })
+
+        log('[coach] Response received. Parsing annotations…')
+        broadcast(win, { kind: 'coach', type: 'progress',
+          progress: { current: 2, total: 3, label: 'Parsing result…' } })
+
+        const parsed = parseCoachResponse(rawResponse)
+        const modelUsed = harnessConfig.harness === 'remote' ? harnessConfig.model : 'local-cli'
+        const title = parsed?.headline
+          ?? `Coach · ${resolvedProfile} · ${new Date().toISOString().slice(0, 10)}`
+
+        const sessionId = randomUUID()
+        const coachingSession: CoachingSession = {
+          id: sessionId,
+          created_at: new Date().toISOString(),
+          session_guids: opts.sessionGuids,
+          profile_name: resolvedProfile,
+          model_used: modelUsed,
+          title,
+          prompt,
+          raw_response: rawResponse,
+          parsed_result: parsed,
+        }
+
+        const { con } = await openDb(DB_PATH)
+        await insertCoachingSession(con, coachingSession)
+
+        broadcast(win, { kind: 'coach', type: 'progress',
+          progress: { current: 3, total: 3, label: 'Done' } })
+        broadcast(win, { kind: 'coach', type: 'done', payload: sessionId })
+        log(`[coach] Session saved (${sessionId.slice(0, 8)}…)`)
+      } catch (e: any) {
+        broadcast(win, { kind: 'coach', type: 'error', payload: String(e.message ?? e) })
+      } finally {
+        activeWorker = null
+      }
+    })()
+
+    return { sessionId: null }
   })
 
   // ── Tracks editor ─────────────────────────────────────────────────────────

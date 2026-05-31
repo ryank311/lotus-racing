@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type NavKey = 'home' | 'sessions' | 'briefs' | 'results' | 'garage' | 'tracks' | 'analysis'
+export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks'
 
 interface NavSpec {
   key: NavKey
@@ -21,10 +21,11 @@ const SessionsIcon = () => (
     <path d="M3 10H21" /><path d="M9 5V19" />
   </svg>
 )
-const BriefsIcon = () => (
+const CoachIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
-    <path d="M5 3H15L19 7V21H5V3Z" />
-    <path d="M15 3V7H19" /><path d="M8 12H16" /><path d="M8 16H13" />
+    <circle cx="12" cy="8" r="4" />
+    <path d="M6 20v-1a6 6 0 0112 0v1" />
+    <path d="M12 12v2" /><circle cx="12" cy="15" r="0.8" fill="currentColor" />
   </svg>
 )
 const GarageIcon = () => (
@@ -57,10 +58,9 @@ const NAV: NavSpec[] = [
   { key: 'home',     label: 'Overview',  k: '1', icon: <HomeIcon /> },
   { key: 'sessions', label: 'Sessions',  k: '2', icon: <SessionsIcon /> },
   { key: 'analysis', label: 'Analysis',  k: '3', icon: <AnalysisIcon /> },
-  { key: 'briefs',   label: 'Briefs',    k: '4', icon: <BriefsIcon /> },
-  { key: 'results',  label: 'Results',   k: '5', icon: <ResultsIcon /> },
-  { key: 'garage',   label: 'Garage',    k: '6', icon: <GarageIcon /> },
-  { key: 'tracks',   label: 'Tracks',    k: '7', icon: <TracksIcon /> },
+  { key: 'coach',    label: 'AI Coach',  k: '4', icon: <CoachIcon /> },
+  { key: 'garage',   label: 'Garage',    k: '5', icon: <GarageIcon /> },
+  { key: 'tracks',   label: 'Tracks',    k: '6', icon: <TracksIcon /> },
 ]
 
 export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
@@ -71,7 +71,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
 }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-7]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
         e.preventDefault()
         onChange(NAV[parseInt(e.key, 10) - 1].key)
       }

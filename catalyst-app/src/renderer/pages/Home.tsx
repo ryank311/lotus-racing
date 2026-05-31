@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import type { AuthState, SyncStats } from '../../shared/types'
-import { humaniseBytes } from '../api'
+import { useEffect, useState } from 'react'
+import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
+import { humaniseBytes, api } from '../api'
 import { BriefDialog } from '../components/BriefDialog'
 import { AccountWidget } from '../components/AccountWidget'
 import { AccountState, daysRemaining, getActiveAccount, tokenValid } from '../accounts'
@@ -8,7 +8,7 @@ import { AccountState, daysRemaining, getActiveAccount, tokenValid } from '../ac
 interface Props {
   auth: AuthState | null
   stats: SyncStats | null
-  busy: 'sync' | 'load' | null
+  busy: 'sync' | 'load' | 'coach' | null
   onSync: () => void
   onLoad: () => void
   accounts: AccountState
@@ -69,11 +69,7 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
         <section style={{ marginTop: 32 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
             <AccountWidget state={accounts} onChange={onAccountsChange} />
-            <InfoCard label="Pipeline" rows={[
-              ['data dir', '~/garmin/data/sessions'],
-              ['db file', '~/garmin/data/catalyst.duckdb'],
-              ['fetcher', 'autosport.api.gcs.garmin.com'],
-            ]} />
+            <AiSettingsCard />
           </div>
         </section>
       </div>
@@ -92,21 +88,92 @@ function Tile({ label, value, mono, valueClass }: { label: string; value: string
   )
 }
 
-function InfoCard({ label, rows }: { label: string; rows: Array<[string, string]> }) {
+function AiSettingsCard() {
+  const [settings, setSettings] = useState<AiSettings | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => { void api.getAiSettings().then(setSettings) }, [])
+
+  const save = async () => {
+    if (!settings) return
+    await api.saveAiSettings(settings)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  if (!settings) return null
+
   return (
     <div className="card" style={{ padding: '20px 22px 18px' }}>
-      <div className="card-label">{label}</div>
+      <div className="card-label">AI Coach</div>
       <div className="card-corner-marks"><i /></div>
-      <table className="tbl" style={{ background: 'transparent', border: 0 }}>
-        <tbody>
-          {rows.map(([k, v]) => (
-            <tr key={k}>
-              <td className="muted small" style={{ borderBottom: 0, paddingLeft: 0 }}>{k}</td>
-              <td className="num" style={{ borderBottom: 0, color: 'var(--text)' }}>{v}</td>
-            </tr>
+
+      <div style={{ marginTop: 14 }}>
+        <div className="muted small" style={{ marginBottom: 8, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Harness</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(['local', 'remote'] as const).map(h => (
+            <div
+              key={h}
+              className={`radio ${settings.harness === h ? 'selected' : ''}`}
+              style={{ flex: 1, padding: '7px 12px', textAlign: 'center', fontSize: 12 }}
+              onClick={() => setSettings(s => s ? { ...s, harness: h } : s)}
+            >
+              {h === 'local' ? 'Local (claude CLI)' : 'Remote (API)'}
+            </div>
           ))}
-        </tbody>
-      </table>
+        </div>
+      </div>
+
+      {settings.harness === 'remote' && (
+        <>
+          <div style={{ marginTop: 14 }}>
+            <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>API Key</div>
+            <input
+              type="password"
+              value={settings.apiKey ?? ''}
+              onChange={e => setSettings(s => s ? { ...s, apiKey: e.target.value } : s)}
+              placeholder="sk-ant-api…"
+              style={{
+                width: '100%', background: 'var(--bg-elev)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                padding: '8px 12px', color: 'var(--text)',
+                fontFamily: 'var(--font-mono)', fontSize: 11,
+              }}
+            />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
+            <select
+              value={settings.model ?? 'claude-opus-4-5'}
+              onChange={e => setSettings(s => s ? { ...s, model: e.target.value } : s)}
+              style={{
+                width: '100%', background: 'var(--bg-elev)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+                padding: '7px 10px', color: 'var(--text)',
+                fontFamily: 'var(--font-mono)', fontSize: 11,
+              }}
+            >
+              <option value="claude-opus-4-7">claude-opus-4-7 (latest)</option>
+              <option value="claude-opus-4-5">claude-opus-4-5</option>
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+            </select>
+          </div>
+        </>
+      )}
+
+      {settings.harness === 'local' && (
+        <div style={{ marginTop: 12, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-mute)', lineHeight: 1.5 }}>
+          Uses the <code style={{ color: 'var(--cyan)' }}>claude</code> CLI on your PATH.
+          Run <code style={{ color: 'var(--cyan)' }}>claude --version</code> to verify it's installed.
+        </div>
+      )}
+
+      <div className="btn-row" style={{ marginTop: 16 }}>
+        <button className="btn primary" onClick={save} style={{ padding: '6px 16px' }}>
+          {saved ? 'Saved ✓' : 'Save'}
+        </button>
+      </div>
     </div>
   )
 }

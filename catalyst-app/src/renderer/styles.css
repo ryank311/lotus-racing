@@ -267,9 +267,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 
 .page-header {
-  padding: 22px 36px 12px;
+  padding: 18px 36px 12px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 24px;
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
@@ -304,6 +304,35 @@ input, textarea, select { font-family: inherit; color: inherit; }
   text-transform: uppercase;
   text-align: right;
   -webkit-app-region: no-drag;
+}
+
+/* ── Ask Coach button in Analysis header ── */
+.ask-coach-btn {
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+  /* Fixed dimensions so no layout shift between idle / coaching / clear states */
+  min-width: 148px;
+  padding: 10px 22px;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: var(--radius);
+  white-space: nowrap;
+  text-align: center;
+}
+.ask-coach-btn:not(:disabled) {
+  box-shadow: 0 0 18px rgba(255,94,58,0.25);
+}
+/* Pulse the border while coaching to signal activity without changing size */
+.ask-coach-btn:disabled {
+  box-shadow: none;
+  animation: coach-pulse 1.4s ease-in-out infinite;
+}
+@keyframes coach-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%       { opacity: 0.85; }
 }
 
 .page-body {

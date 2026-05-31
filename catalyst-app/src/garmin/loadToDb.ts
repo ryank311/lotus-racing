@@ -6,6 +6,7 @@ import path from 'node:path'
 import { DuckDBInstance, DuckDBConnection } from '@duckdb/node-api'
 import { DATA_DIR, SESSIONS_DIR, DB_PATH } from './paths.js'
 import { decodePerformance } from './decodePerformance.js'
+import type { CoachingSession } from '../shared/types.js'
 
 export function isoDurationToMs(s: string | undefined | null): number | null {
   if (!s || typeof s !== 'string' || !s.startsWith('PT')) return null
@@ -111,6 +112,18 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_samples_session_lap
       ON samples(session_guid, lap_index);
+
+    CREATE TABLE IF NOT EXISTS coaching_sessions (
+      id VARCHAR PRIMARY KEY,
+      created_at TIMESTAMP NOT NULL,
+      session_guids JSON NOT NULL,
+      profile_name VARCHAR NOT NULL,
+      model_used VARCHAR NOT NULL,
+      title VARCHAR NOT NULL,
+      prompt TEXT NOT NULL,
+      raw_response TEXT NOT NULL,
+      parsed_result JSON
+    );
   `)
 }
 
@@ -333,4 +346,71 @@ export async function loadAll(
     }
   }
   return { sessions: targets.length, samples: totalSamples }
+}
+
+// ─── Coaching session persistence ─────────────────────────────────────────────
+
+export async function insertCoachingSession(
+  con: DuckDBConnection,
+  s: CoachingSession,
+): Promise<void> {
+  await con.run(`
+    INSERT OR REPLACE INTO coaching_sessions
+      (id, created_at, session_guids, profile_name, model_used, title, prompt, raw_response, parsed_result)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, [
+    s.id,
+    s.created_at,
+    JSON.stringify(s.session_guids),
+    s.profile_name,
+    s.model_used,
+    s.title,
+    s.prompt,
+    s.raw_response,
+    s.parsed_result !== null ? JSON.stringify(s.parsed_result) : null,
+  ] as any)
+}
+
+export async function listCoachingSessions(con: DuckDBConnection): Promise<CoachingSession[]> {
+  const reader = await con.runAndReadAll(`
+    SELECT id, CAST(created_at AS VARCHAR) AS created_at, session_guids,
+           profile_name, model_used, title, prompt, raw_response, parsed_result
+    FROM coaching_sessions
+    ORDER BY created_at DESC
+  `)
+  return (reader.getRowObjectsJson() as any[]).map(rowToSession)
+}
+
+export async function getCoachingSession(
+  con: DuckDBConnection,
+  id: string,
+): Promise<CoachingSession | null> {
+  const reader = await con.runAndReadAll(`
+    SELECT id, CAST(created_at AS VARCHAR) AS created_at, session_guids,
+           profile_name, model_used, title, prompt, raw_response, parsed_result
+    FROM coaching_sessions WHERE id = ?
+  `, [id] as any)
+  const rows = reader.getRowObjectsJson() as any[]
+  return rows.length ? rowToSession(rows[0]) : null
+}
+
+export async function deleteCoachingSession(
+  con: DuckDBConnection,
+  id: string,
+): Promise<void> {
+  await con.run(`DELETE FROM coaching_sessions WHERE id = ?`, [id] as any)
+}
+
+function rowToSession(r: Record<string, unknown>): CoachingSession {
+  return {
+    id: String(r.id),
+    created_at: String(r.created_at),
+    session_guids: JSON.parse(String(r.session_guids)),
+    profile_name: String(r.profile_name),
+    model_used: String(r.model_used),
+    title: String(r.title),
+    prompt: String(r.prompt),
+    raw_response: String(r.raw_response),
+    parsed_result: r.parsed_result ? JSON.parse(String(r.parsed_result)) : null,
+  }
 }

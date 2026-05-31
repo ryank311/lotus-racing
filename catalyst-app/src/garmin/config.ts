@@ -19,6 +19,11 @@ export interface AppConfig {
   api?: {
     page_size?: number
   }
+  ai?: {
+    harness?: 'local' | 'remote'
+    api_key?: string
+    model?: string
+  }
 }
 
 export function loadConfig(): AppConfig {
