@@ -78,7 +78,10 @@ async function readSyncStats(): Promise<SyncStats> {
     sessionCount: 0, lapCount: 0, sampleCount: 0, trackCount: 0,
     totalSizeBytes: 0, lastSyncEpoch: null, lastSyncAgoHuman: 'never',
   }
-  if (!fs.existsSync(DB_PATH)) return empty
+  if (!fs.existsSync(DB_PATH)) {
+    console.warn('[readSyncStats] DB file not found at', DB_PATH)
+    return empty
+  }
 
   let sessionCount = 0, lapCount = 0, sampleCount = 0, trackCount = 0
   try {
@@ -97,8 +100,8 @@ async function readSyncStats(): Promise<SyncStats> {
       sampleCount = Number(row[2] ?? 0)
       trackCount = Number(row[3] ?? 0)
     }, DB_PATH, true)
-  } catch {
-    // schema not initialised yet — treat as empty
+  } catch (e: any) {
+    console.error('[readSyncStats] query failed:', e?.message ?? e, '— DB path:', DB_PATH)
     return empty
   }
 
@@ -804,6 +807,10 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
         log(`[sync] done — ${loaded} loaded, ${failed} failed, ${skipped} skipped (already in DB)`)
         await syncDb.close()
+        const dbExists = fs.existsSync(DB_PATH)
+        const dbSize = dbExists ? fs.statSync(DB_PATH).size : 0
+        log(`[sync] DB path: ${DB_PATH}`)
+        log(`[sync] DB exists: ${dbExists}, size: ${(dbSize / 1024 / 1024).toFixed(1)} MB`)
         broadcast(win, { kind: 'sync', type: 'done' })
       } catch (e: any) {
         broadcast(win, { kind: 'sync', type: 'error', payload: `${e.message ?? e}` })
