@@ -490,13 +490,20 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
               {result.tips.map((tip, i) => {
                 const ref = refForTip(tip)
                 const clickable = !!ref && !!onFocusRef
-                const firstAnnotation = tip.annotations[0] ?? null
+                // For a segment section (S6), highlight the whole segment — not a
+                // corner-level callout inside it. Synthesize a segment annotation
+                // so the focused ref matches the section. Otherwise pin the tip's
+                // first (corner) annotation, which carries richer speed data.
+                const isSegmentRef = !!ref && /^S\d+$/i.test(ref)
+                const focusAnn: CoachAnnotation | null = isSegmentRef
+                  ? { type: 'segment_tip', ref: ref!, body: tip.body, severity: tip.annotations[0]?.severity }
+                  : tip.annotations[0] ?? null
                 return (
                   <div
                     key={i}
                     onClick={clickable ? () => {
                       onFocusRef!(ref!)
-                      onFocusAnnotation?.(firstAnnotation)
+                      onFocusAnnotation?.(focusAnn)
                     } : undefined}
                     style={{
                       background: 'var(--bg-elev)',

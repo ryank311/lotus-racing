@@ -800,6 +800,30 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           </g>
         )}
 
+        {/* L7b — active-segment zone: full-segment highlight driven by the focused/
+            active ref. Sourced from track segments directly so the whole segment
+            lights up even when its coach callouts are corner-level and there's no
+            per-segment marker. */}
+        {(() => {
+          const ref = activeAnnotation?.ref ?? hoverRef ?? focusCorner ?? null
+          if (!ref || !/^S\d+$/i.test(ref)) return null
+          const dataSegments: Array<{ id: number; start_dist_m: number; end_dist_m: number }> =
+            (data as AnalysisData).segments ?? []
+          const seg = dataSegments.find(s => s.id === parseInt(ref.slice(1), 10))
+          if (!seg) return null
+          // Skip if a per-segment marker already draws this zone (avoids doubling opacity).
+          if (coachMarkers.some(m => m.kind === 'segment' && m.annotation.ref === ref)) return null
+          const lo = Math.max(0, Math.round(seg.start_dist_m))
+          const hi = Math.min(geom.centerline.length - 1, Math.round(seg.end_dist_m))
+          const slice = geom.centerline.slice(lo, hi + 1)
+          if (slice.length < 2) return null
+          const d = slice.map((p, si) => `${si === 0 ? 'M' : 'L'}${p.x.toFixed(2)} ${(-p.y).toFixed(2)}`).join(' ')
+          return (
+            <path d={d} fill="none" stroke="#22d3ee" strokeOpacity={0.22}
+              strokeWidth={geom.widthM} strokeLinecap="round" pointerEvents="none" />
+          )
+        })()}
+
         {/* L8 — coach annotation markers */}
         {(() => {
           const activeRef = activeAnnotation?.ref ?? hoverRef ?? focusCorner ?? null
