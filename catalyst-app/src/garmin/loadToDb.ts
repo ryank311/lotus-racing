@@ -311,18 +311,20 @@ export function releaseSharedInstance(): void {
   _sharedPath = null
 }
 
-export async function openDb(dbPath = DB_PATH, readOnly = false): Promise<{
+// The `readOnly` parameter is accepted for call-site readability but is
+// intentionally ignored: every open reuses the single shared read-write
+// instance. DuckDB will NOT let a READ_ONLY instance coexist with a READ_WRITE
+// instance on the same file (the write lock blocks it), so a separate
+// read-only instance fails with "File is already open" once anything has opened
+// the DB for writing in this process. Reads work fine over a connection from
+// the read-write instance, so we centralize on the singleton.
+export async function openDb(dbPath = DB_PATH, _readOnly = false): Promise<{
   instance: DuckDBInstance
   con: DuckDBConnection
   close: () => Promise<void>
 }> {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
-  // Read-only opens get their own instance (read-only can coexist with the
-  // write instance on the same path in DuckDB). Write opens share the singleton
-  // so we never hold two write locks on the same file.
-  const instance = readOnly
-    ? await DuckDBInstance.create(dbPath, { access_mode: 'READ_ONLY' })
-    : await getSharedInstance(dbPath)
+  const instance = await getSharedInstance(dbPath)
   const con = await instance.connect()
   const close = async () => {
     try { con.close() } catch { /* ignore */ }

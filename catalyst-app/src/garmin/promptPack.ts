@@ -660,60 +660,65 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
   if (!fs.existsSync(dbPath)) {
     throw new Error(`no database at ${dbPath}. Run load first.`)
   }
-  const { con } = await openDb(dbPath, true)
-  const scope = opts.scope ?? 'overview'
+  const db = await openDb(dbPath)
+  const con = db.con
+  try {
+    const scope = opts.scope ?? 'overview'
 
-  let sessions: SessionRow[]
-  if (opts.mode === 'selected' && opts.sessionGuids?.length) {
-    sessions = await fetchSessions(con, opts.sessionGuids, null)
-  } else if (opts.mode === 'all') {
-    sessions = await fetchSessions(con, null, 10_000)
-  } else {
-    sessions = await fetchSessions(con, null, opts.lastN ?? 5)
+    let sessions: SessionRow[]
+    if (opts.mode === 'selected' && opts.sessionGuids?.length) {
+      sessions = await fetchSessions(con, opts.sessionGuids, null)
+    } else if (opts.mode === 'all') {
+      sessions = await fetchSessions(con, null, 10_000)
+    } else {
+      sessions = await fetchSessions(con, null, opts.lastN ?? 5)
+    }
+    if (!sessions.length) throw new Error('no sessions matched.')
+
+    const counts = new Map<string, number>()
+    for (const s of sessions) {
+      const c = s.track_configuration_name ?? ''
+      counts.set(c, (counts.get(c) ?? 0) + 1)
+    }
+    const topConfig = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+    // Mean-line GUID is the primary key the Tracks editor stamps on save; we
+    // resolve by that first so brief generation picks up corner edits even if
+    // the YAML lives under a non-canonical filename.
+    const mlgCounts = new Map<string, number>()
+    for (const s of sessions) {
+      if (s.mean_line_guid) mlgCounts.set(s.mean_line_guid, (mlgCounts.get(s.mean_line_guid) ?? 0) + 1)
+    }
+    const topMeanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+    const topTrackName = sessions.find(s => s.track_name)?.track_name ?? ''
+    const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
+    const trackYaml = loadTrackYaml(trackPath)
+
+    const profile = resolveProfileDir(opts.profile)
+    fs.mkdirSync(COACHING_DIR, { recursive: true })
+
+    const outPath = opts.outPath ?? path.join(
+      COACHING_DIR,
+      `${new Date().toISOString().slice(0, 10)}-${profile.name.toLowerCase()}-${scope}-brief.md`,
+    )
+
+    let dataRelPath: string | null = null
+    if (opts.csv) {
+      const dataDir = path.join(path.dirname(outPath), path.basename(outPath, '.md').replace('-brief', '') + '-data')
+      dataRelPath = path.basename(dataDir)
+      await writeCsvPack(dataDir, sessions, trackYaml, con)
+    }
+
+    const brief = await buildBrief({
+      sessions, trackYaml, scope, con,
+      profileDir: profile.dir, profileName: profile.name,
+      includeGuides: opts.includeGuides,
+      dataDirRelpath: dataRelPath,
+    })
+    fs.writeFileSync(outPath, brief)
+    return { outPath, sessions: sessions.length }
+  } finally {
+    await db.close()
   }
-  if (!sessions.length) throw new Error('no sessions matched.')
-
-  const counts = new Map<string, number>()
-  for (const s of sessions) {
-    const c = s.track_configuration_name ?? ''
-    counts.set(c, (counts.get(c) ?? 0) + 1)
-  }
-  const topConfig = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
-  // Mean-line GUID is the primary key the Tracks editor stamps on save; we
-  // resolve by that first so brief generation picks up corner edits even if
-  // the YAML lives under a non-canonical filename.
-  const mlgCounts = new Map<string, number>()
-  for (const s of sessions) {
-    if (s.mean_line_guid) mlgCounts.set(s.mean_line_guid, (mlgCounts.get(s.mean_line_guid) ?? 0) + 1)
-  }
-  const topMeanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-  const topTrackName = sessions.find(s => s.track_name)?.track_name ?? ''
-  const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
-  const trackYaml = loadTrackYaml(trackPath)
-
-  const profile = resolveProfileDir(opts.profile)
-  fs.mkdirSync(COACHING_DIR, { recursive: true })
-
-  const outPath = opts.outPath ?? path.join(
-    COACHING_DIR,
-    `${new Date().toISOString().slice(0, 10)}-${profile.name.toLowerCase()}-${scope}-brief.md`,
-  )
-
-  let dataRelPath: string | null = null
-  if (opts.csv) {
-    const dataDir = path.join(path.dirname(outPath), path.basename(outPath, '.md').replace('-brief', '') + '-data')
-    dataRelPath = path.basename(dataDir)
-    await writeCsvPack(dataDir, sessions, trackYaml, con)
-  }
-
-  const brief = await buildBrief({
-    sessions, trackYaml, scope, con,
-    profileDir: profile.dir, profileName: profile.name,
-    includeGuides: opts.includeGuides,
-    dataDirRelpath: dataRelPath,
-  })
-  fs.writeFileSync(outPath, brief)
-  return { outPath, sessions: sessions.length }
 }
 
 // ─── AI Coach: structured-output prompt ──────────────────────────────────────
@@ -802,33 +807,37 @@ export interface CoachRunOpts {
 export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; profile: string }> {
   const dbPath = opts.dbPath ?? DB_PATH
   if (!fs.existsSync(dbPath)) throw new Error(`no database at ${dbPath}. Run load first.`)
-  const { con } = await openDb(dbPath, true)
+  const db = await openDb(dbPath)
+  const con = db.con
+  try {
+    const sessions = await fetchSessions(con, opts.sessionGuids, null)
+    if (!sessions.length) throw new Error('no sessions matched the provided GUIDs.')
 
-  const sessions = await fetchSessions(con, opts.sessionGuids, null)
-  if (!sessions.length) throw new Error('no sessions matched the provided GUIDs.')
+    const counts = new Map<string, number>()
+    for (const s of sessions) {
+      const c = s.track_configuration_name ?? ''
+      counts.set(c, (counts.get(c) ?? 0) + 1)
+    }
+    const topConfig = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+    const mlgCounts = new Map<string, number>()
+    for (const s of sessions) {
+      if (s.mean_line_guid) mlgCounts.set(s.mean_line_guid, (mlgCounts.get(s.mean_line_guid) ?? 0) + 1)
+    }
+    const topMeanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+    const topTrackName = sessions.find(s => s.track_name)?.track_name ?? ''
+    const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
+    const trackYaml = loadTrackYaml(trackPath)
 
-  const counts = new Map<string, number>()
-  for (const s of sessions) {
-    const c = s.track_configuration_name ?? ''
-    counts.set(c, (counts.get(c) ?? 0) + 1)
+    const profile = resolveProfileDir(opts.profile)
+
+    const prompt = await buildCoachPrompt({
+      sessions, trackYaml, scope: opts.scope, con,
+      profileDir: profile.dir, profileName: profile.name,
+      includeGuides: true,
+    })
+
+    return { prompt, profile: profile.name }
+  } finally {
+    await db.close()
   }
-  const topConfig = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
-  const mlgCounts = new Map<string, number>()
-  for (const s of sessions) {
-    if (s.mean_line_guid) mlgCounts.set(s.mean_line_guid, (mlgCounts.get(s.mean_line_guid) ?? 0) + 1)
-  }
-  const topMeanLineGuid = [...mlgCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-  const topTrackName = sessions.find(s => s.track_name)?.track_name ?? ''
-  const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
-  const trackYaml = loadTrackYaml(trackPath)
-
-  const profile = resolveProfileDir(opts.profile)
-
-  const prompt = await buildCoachPrompt({
-    sessions, trackYaml, scope: opts.scope, con,
-    profileDir: profile.dir, profileName: profile.name,
-    includeGuides: true,
-  })
-
-  return { prompt, profile: profile.name }
 }
