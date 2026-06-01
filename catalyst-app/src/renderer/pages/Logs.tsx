@@ -30,7 +30,13 @@ function fmtTime(ts: number): string {
   return `${hh}:${mm}:${ss}.${ms}`
 }
 
-export function Logs({ entries }: { entries: LogEntry[] }) {
+interface LogsProps {
+  entries: LogEntry[]
+  onLoad?: () => void
+  busy?: 'sync' | 'load' | 'coach' | null
+}
+
+export function Logs({ entries, onLoad, busy }: LogsProps) {
   const [filter, setFilter] = useState('')
   const [levelFilter, setLevelFilter] = useState<Set<string>>(new Set(['log', 'warn', 'error', 'info']))
   const [autoScroll, setAutoScroll] = useState(true)
@@ -113,18 +119,35 @@ export function Logs({ entries }: { entries: LogEntry[] }) {
         </div>
       </div>
 
-      <div className="logs-list" ref={listRef} onScroll={onScroll}>
-        {visible.length === 0 && (
-          <div className="logs-empty">No log entries yet.</div>
-        )}
-        {visible.map(e => (
-          <div key={e.id} className="log-row" data-level={e.level}>
-            <span className="log-ts">{fmtTime(e.ts)}</span>
-            <span className="log-level" style={{ color: levelColor(e.level) }}>{levelTag(e.level)}</span>
-            <span className="log-source">{e.source === 'main' ? 'MAIN ' : 'WORK '}</span>
-            <span className="log-msg">{e.message}</span>
+      <div className="logs-body">
+        <div className="logs-list" ref={listRef} onScroll={onScroll}>
+          {visible.length === 0 && (
+            <div className="logs-empty">No log entries yet.</div>
+          )}
+          {visible.map(e => (
+            <div key={e.id} className="log-row" data-level={e.level}>
+              <span className="log-ts">{fmtTime(e.ts)}</span>
+              <span className="log-level" style={{ color: levelColor(e.level) }}>{levelTag(e.level)}</span>
+              <span className="log-source">{e.source === 'main' ? 'MAIN ' : 'WORK '}</span>
+              <span className="log-msg">{e.message}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="logs-debug">
+          <div className="logs-debug-heading">// debug</div>
+          <div className="logs-debug-section">
+            <div className="logs-debug-label">Database</div>
+            <button
+              className="logs-debug-btn"
+              disabled={!!busy}
+              onClick={onLoad}
+              title="Delete and rebuild the DuckDB from raw session files"
+            >
+              {busy === 'load' ? 'Rebuilding…' : 'Rebuild DB'}
+            </button>
           </div>
-        ))}
+        </div>
       </div>
     </div>
   )

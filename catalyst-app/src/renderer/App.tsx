@@ -188,7 +188,7 @@ export function App() {
           {page === 'home' && (
             <Home
               auth={auth} stats={stats} busy={busy}
-              onSync={startSync} onLoad={startLoad}
+              onSync={startSync}
               accounts={accounts} onAccountsChange={onAccountsChange}
             />
           )}
@@ -228,7 +228,7 @@ export function App() {
         {/* Logs page — full-height, outside page-body so its own toolbar stays fixed */}
         {page === 'logs' && (
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <Logs entries={logEntries} />
+            <Logs entries={logEntries} onLoad={startLoad} busy={busy} />
           </div>
         )}
 

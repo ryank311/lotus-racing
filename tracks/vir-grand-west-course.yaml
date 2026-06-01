@@ -109,227 +109,320 @@ segments:
 # Named corners, in driving order. apex/start/end are dist_idx values that
 # match the per-sample dist_idx in performance.pb (each unit ≈ 1 m at VIR Full).
 corners:
-  - turn: C1
-    name: "Corner 1"
-    apex_idx: 0
-    dist_idx_start: 0
-    dist_idx_end: 25
-    apex_lat: 36.5688273
-    apex_lon: -79.2066440
+  - turn: T1
+    name: "Horseshoe"
+    direction: right
+    apex_idx: 403
+    dist_idx_start: 318
+    dist_idx_end: 488
+    apex_lat: 36.5685293
+    apex_lon: -79.2022277
     apex_radius_m: 41.8
-  - turn: C2
-    name: "Corner 2"
-    apex_idx: 361
-    dist_idx_start: 341
-    dist_idx_end: 549
-    apex_lat: 36.5687327
-    apex_lon: -79.2026105
+  - turn: T2
+    name: "Turn 2"
+    direction: left
+    apex_idx: 725
+    dist_idx_start: 680
+    dist_idx_end: 770
+    apex_lat: 36.5682648
+    apex_lon: -79.2051708
     apex_radius_m: 76.5
-  - turn: C3
-    name: "Corner 3"
-    apex_idx: 411
-    dist_idx_start: 371
-    dist_idx_end: 451
-    apex_lat: 36.5684625
-    apex_lon: -79.2021947
+  - turn: T3
+    name: "NASCAR"
+    direction: left
+    apex_idx: 852
+    dist_idx_start: 782
+    dist_idx_end: 922
+    apex_lat: 36.5677330
+    apex_lon: -79.2063589
     apex_radius_m: 33.9
-  - turn: C4
-    name: "Corner 4"
-    apex_idx: 469
-    dist_idx_start: 342
-    dist_idx_end: 544
-    apex_lat: 36.5680045
-    apex_lon: -79.2024340
-    apex_radius_m: 67.3
-  - turn: C5
-    name: "Corner 5"
-    apex_idx: 737
-    dist_idx_start: 720
-    dist_idx_end: 763
-    apex_lat: 36.5682627
-    apex_lon: -79.2053050
-    apex_radius_m: 81.6
-  - turn: C6
-    name: "Corner 6"
-    apex_idx: 856
-    dist_idx_start: 810
-    dist_idx_end: 881
-    apex_lat: 36.5676995
-    apex_lon: -79.2063755
-    apex_radius_m: 54.0
-  - turn: C7
-    name: "Corner 7"
-    apex_idx: 1054
+  - turn: T4a
+    name: "Turn 4a"
+    direction: left
+    apex_idx: 1053
     dist_idx_start: 1023
-    dist_idx_end: 1079
-    apex_lat: 36.5660716
-    apex_lon: -79.2056990
-    apex_radius_m: 35.6
-  - turn: C8
-    name: "Corner 8"
-    apex_idx: 1124
-    dist_idx_start: 1100
-    dist_idx_end: 1148
-    apex_lat: 36.5661488
-    apex_lon: -79.2049364
-    apex_radius_m: 42.7
-  - turn: C9
-    name: "Corner 9"
-    apex_idx: 1234
-    dist_idx_start: 1200
-    dist_idx_end: 1277
-    apex_lat: 36.5654009
-    apex_lon: -79.2041923
+    dist_idx_end: 1083
+    apex_lat: 36.5660747
+    apex_lon: -79.2057095
+    apex_radius_m: 67.3
+  - turn: T4b
+    name: "Turn 4b"
+    direction: right
+    apex_idx: 1121
+    dist_idx_start: 1081
+    dist_idx_end: 1161
+    apex_lat: 36.5661546
+    apex_lon: -79.2049692
+    apex_radius_m: 81.6
+  - turn: T5a
+    name: "Lower Snake Entry"
+    direction: left
+    apex_idx: 1251
+    dist_idx_start: 1226
+    dist_idx_end: 1276
+    apex_lat: 36.5652493
+    apex_lon: -79.2041800
     apex_radius_m: 65.6
-  - turn: C10
-    name: "Corner 10"
-    apex_idx: 2734
-    dist_idx_start: 2709
-    dist_idx_end: 2839
-    apex_lat: 36.5522589
-    apex_lon: -79.2043948
+  - turn: T5b
+    name: "Lower Snake"
+    direction: right
+    apex_idx: 1324
+    dist_idx_start: 1288
+    dist_idx_end: 1360
+    apex_lat: 36.5646360
+    apex_lon: -79.2044580
+    apex_radius_m: 54
+  - turn: T6a
+    name: "Lower Snake"
+    direction: right
+    apex_idx: 1384
+    dist_idx_start: 1364
+    dist_idx_end: 1404
+    apex_lat: 36.5640982
+    apex_lon: -79.2045039
+    apex_radius_m: 35.6
+  - turn: T6b
+    name: "Lower Snake Exit"
+    direction: left
+    apex_idx: 1439
+    dist_idx_start: 1414
+    dist_idx_end: 1464
+    apex_lat: 36.5636197
+    apex_lon: -79.2046561
+    apex_radius_m: 42.7
+  - turn: T7
+    name: "Upper Esses Entry"
+    direction: left
+    apex_idx: 1883
+    dist_idx_start: 1818
+    dist_idx_end: 1948
+    apex_lat: 36.5596370
+    apex_lon: -79.2048511
     apex_radius_m: 45.9
-  - turn: C11
-    name: "Corner 11"
-    apex_idx: 2806
-    dist_idx_start: 2785
-    dist_idx_end: 2833
-    apex_lat: 36.5519206
-    apex_lon: -79.2050341
+  - turn: T8a
+    name: "Upper Esses"
+    direction: right
+    apex_idx: 2004
+    dist_idx_start: 1969
+    dist_idx_end: 2039
+    apex_lat: 36.5585673
+    apex_lon: -79.2046226
     apex_radius_m: 28.5
-  - turn: C12
-    name: "Corner 12"
-    apex_idx: 3740
-    dist_idx_start: 3725
-    dist_idx_end: 3852
-    apex_lat: 36.5593030
-    apex_lon: -79.2099054
+  - turn: T8b
+    name: "Upper Esses"
+    direction: left
+    apex_idx: 2088
+    dist_idx_start: 2058
+    dist_idx_end: 2118
+    apex_lat: 36.5578203
+    apex_lon: -79.2047482
     apex_radius_m: 45.2
-  - turn: C13
-    name: "Corner 13"
-    apex_idx: 3797
-    dist_idx_start: 3730
-    dist_idx_end: 3845
-    apex_lat: 36.5596795
-    apex_lon: -79.2095528
+  - turn: T9
+    name: "Upper Esses Exit"
+    direction: right
+    apex_idx: 2200
+    dist_idx_start: 2142
+    dist_idx_end: 2258
+    apex_lat: 36.5568226
+    apex_lon: -79.2046250
     apex_radius_m: 33.1
-  - turn: C14
-    name: "Corner 14"
-    apex_idx: 4207
-    dist_idx_start: 4191
-    dist_idx_end: 4252
-    apex_lat: 36.5565098
-    apex_lon: -79.2075706
+  - turn: T10
+    name: "Southbend"
+    direction: left
+    apex_idx: 2411
+    dist_idx_start: 2331
+    dist_idx_end: 2491
+    apex_lat: 36.5550246
+    apex_lon: -79.2053479
     apex_radius_m: 62.6
-  - turn: C15
-    name: "Corner 15"
-    apex_idx: 4287
-    dist_idx_start: 4271
-    dist_idx_end: 4313
-    apex_lat: 36.5563163
-    apex_lon: -79.2067311
+  - turn: T11
+    name: "Oaktree Entry"
+    direction: right
+    apex_idx: 2729
+    dist_idx_start: 2684
+    dist_idx_end: 2774
+    apex_lat: 36.5523007
+    apex_lon: -79.2043742
     apex_radius_m: 36.9
-  - turn: C16
-    name: "Corner 16"
-    apex_idx: 4339
-    dist_idx_start: 4322
-    dist_idx_end: 4405
-    apex_lat: 36.5559734
-    apex_lon: -79.2063464
+  - turn: T12
+    name: "Oaktree"
+    direction: right
+    apex_idx: 2804
+    dist_idx_start: 2769
+    dist_idx_end: 2839
+    apex_lat: 36.5519189
+    apex_lon: -79.2050118
     apex_radius_m: 33.8
-  - turn: C17
+  - turn: T13
     name: "Corner 17"
-    apex_idx: 4390
-    dist_idx_start: 4320
-    dist_idx_end: 4408
-    apex_lat: 36.5560919
-    apex_lon: -79.2058384
+    direction: right
+    apex_idx: 3804
+    dist_idx_start: 3734
+    dist_idx_end: 3874
+    apex_lat: 36.5596876
+    apex_lon: -79.2094752
     apex_radius_m: 39.5
-  - turn: C18
+  - turn: T14
     name: "Corner 18"
-    apex_idx: 4694
-    dist_idx_start: 4674
-    dist_idx_end: 4715
-    apex_lat: 36.5587856
-    apex_lon: -79.2054104
+    direction: left
+    apex_idx: 4037
+    dist_idx_start: 3977
+    dist_idx_end: 4097
+    apex_lat: 36.5578582
+    apex_lon: -79.2084541
     apex_radius_m: 51.5
-  - turn: C19
+  - turn: T15a
     name: "Corner 19"
-    apex_idx: 4746
-    dist_idx_start: 4728
-    dist_idx_end: 4824
-    apex_lat: 36.5592290
-    apex_lon: -79.2055857
+    direction: left
+    apex_idx: 4222
+    dist_idx_start: 4202
+    dist_idx_end: 4242
+    apex_lat: 36.5564268
+    apex_lon: -79.2074390
     apex_radius_m: 48.5
-  - turn: C20
+  - turn: T15b
     name: "Corner 20"
-    apex_idx: 4800
-    dist_idx_start: 4636
-    dist_idx_end: 4942
-    apex_lat: 36.5597076
-    apex_lon: -79.2055223
+    direction: right
+    apex_idx: 4289
+    dist_idx_start: 4269
+    dist_idx_end: 4309
+    apex_lat: 36.5563082
+    apex_lon: -79.2067112
     apex_radius_m: 77.7
-  - turn: C21
+  - turn: T16
     name: "Corner 21"
-    apex_idx: 4899
-    dist_idx_start: 4635
-    dist_idx_end: 4943
-    apex_lat: 36.5604135
-    apex_lon: -79.2061287
+    direction: left
+    apex_idx: 4375
+    dist_idx_start: 4320
+    dist_idx_end: 4430
+    apex_lat: 36.5560045
+    apex_lon: -79.2059639
     apex_radius_m: 80.9
-  - turn: C22
+  - turn: T17a
     name: "Corner 22"
-    apex_idx: 5116
-    dist_idx_start: 5063
-    dist_idx_end: 5158
-    apex_lat: 36.5610579
-    apex_lon: -79.2083762
+    direction: right
+    apex_idx: 4655
+    dist_idx_start: 4640
+    dist_idx_end: 4670
+    apex_lat: 36.5584507
+    apex_lon: -79.2055351
     apex_radius_m: 82.9
-  - turn: C23
+  - turn: T17b
     name: "Corner 23"
-    apex_idx: 5216
-    dist_idx_start: 5191
-    dist_idx_end: 5256
-    apex_lat: 36.5608491
-    apex_lon: -79.2094546
+    direction: left
+    apex_idx: 4688
+    dist_idx_start: 4673
+    dist_idx_end: 4703
+    apex_lat: 36.5587322
+    apex_lon: -79.2054195
     apex_radius_m: 79.4
-  - turn: C24
+  - turn: T17c
     name: "Corner 24"
-    apex_idx: 5304
-    dist_idx_start: 5281
-    dist_idx_end: 5367
-    apex_lat: 36.5611238
-    apex_lon: -79.2103626
+    direction: right
+    apex_idx: 4748
+    dist_idx_start: 4733
+    dist_idx_end: 4763
+    apex_lat: 36.5592467
+    apex_lon: -79.2055896
     apex_radius_m: 78.4
-  - turn: C25
-    name: "Corner 25"
-    apex_idx: 5515
-    dist_idx_start: 5482
-    dist_idx_end: 5544
-    apex_lat: 36.5624576
-    apex_lon: -79.2119680
-    apex_radius_m: 37.4
-  - turn: C26
+  - turn: T17d
     name: "Corner 26"
-    apex_idx: 5594
-    dist_idx_start: 5567
-    dist_idx_end: 5641
-    apex_lat: 36.5630264
-    apex_lon: -79.2114697
+    direction: left
+    apex_idx: 4897
+    dist_idx_start: 4837
+    dist_idx_end: 4957
+    apex_lat: 36.5604055
+    apex_lon: -79.2061086
     apex_radius_m: 71.8
-  - turn: C27
+  - turn: T8
+    apex_idx: 4961
+    dist_idx_start: 4911
+    dist_idx_end: 5011
+    apex_lat: 36.5605291
+    apex_lon: -79.2068026
+    apex_radius_m: 568.4
+  - turn: T6
+    apex_idx: 4968
+    dist_idx_start: 4918
+    dist_idx_end: 5018
+    apex_lat: 36.5605381
+    apex_lon: -79.2068802
+    apex_radius_m: 735.3
+  - turn: T18a
+    name: "Corner 25"
+    direction: right
+    apex_idx: 5000
+    dist_idx_start: 4969
+    dist_idx_end: 5031
+    apex_lat: 36.5605941
+    apex_lon: -79.2072311
+    apex_radius_m: 37.4
+  - turn: T18b
     name: "Corner 27"
-    apex_idx: 5885
-    dist_idx_start: 5866
-    dist_idx_end: 5924
-    apex_lat: 36.5652700
-    apex_lon: -79.2126959
+    direction: left
+    apex_idx: 5114
+    dist_idx_start: 5074
+    dist_idx_end: 5154
+    apex_lat: 36.5610563
+    apex_lon: -79.2083539
     apex_radius_m: 57.8
-  - turn: C28
+  - turn: T19a
     name: "Corner 28"
-    apex_idx: 6599
-    dist_idx_start: 6576
-    dist_idx_end: 6617
-    apex_lat: 36.5687808
-    apex_lon: -79.2068358
+    direction: right
+    apex_idx: 5215
+    dist_idx_start: 5180
+    dist_idx_end: 5250
+    apex_lat: 36.5608498
+    apex_lon: -79.2094434
     apex_radius_m: 74.5
+  - turn: T19b
+    direction: left
+    apex_idx: 5357
+    dist_idx_start: 5307
+    dist_idx_end: 5407
+    apex_lat: 36.5614708
+    apex_lon: -79.2107660
+    apex_radius_m: 126.4
+  - turn: T20
+    direction: right
+    apex_idx: 5511
+    dist_idx_start: 5461
+    dist_idx_end: 5561
+    apex_lat: 36.5624216
+    apex_lon: -79.2119678
+    apex_radius_m: 38.8
+  - turn: T21
+    apex_idx: 5608
+    dist_idx_start: 5558
+    dist_idx_end: 5658
+    apex_lat: 36.5631433
+    apex_lon: -79.2114121
+    apex_radius_m: 73.6
+  - turn: T22a
+    apex_idx: 5812
+    dist_idx_start: 5787
+    dist_idx_end: 5837
+    apex_lat: 36.5648507
+    apex_lon: -79.2120710
+    apex_radius_m: 109.6
+  - turn: T22b
+    apex_idx: 5888
+    dist_idx_start: 5858
+    dist_idx_end: 5918
+    apex_lat: 36.5652925
+    apex_lon: -79.2127144
+    apex_radius_m: 49.8
+  - turn: T23
+    apex_idx: 6010
+    dist_idx_start: 5960
+    dist_idx_end: 6060
+    apex_lat: 36.5663520
+    apex_lon: -79.2125980
+    apex_radius_m: 91.4
+  - turn: T24
+    apex_idx: 6538
+    dist_idx_start: 6488
+    dist_idx_end: 6588
+    apex_lat: 36.5686838
+    apex_lon: -79.2075077
+    apex_radius_m: 284.1

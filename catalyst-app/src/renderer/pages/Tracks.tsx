@@ -9,6 +9,7 @@ import { TrackMap } from '../components/TrackMap'
 import type { TrackListEntry } from '../../shared/types'
 
 interface EditableCorner {
+  _key: number  // stable React key — never changes after creation
   turn: string
   name?: string
   direction?: string
@@ -18,6 +19,28 @@ interface EditableCorner {
   dist_idx_start?: number
   dist_idx_end?: number
   apex_radius_m?: number
+}
+
+let _cornerKey = 0
+
+// Separate component so we can hold local input state while the user types,
+// only committing (and collision-checking) on blur or Enter. Without this,
+// typing "T12" through the intermediate "T1" silently rejects the keystroke
+// because T1 already exists.
+function TurnInput({ value, onCommit, onFocus }: { value: string; onCommit: (v: string) => void; onFocus?: () => void }) {
+  const [local, setLocal] = useState(value)
+  useEffect(() => { setLocal(value) }, [value])
+  return (
+    <input
+      className="tracks-corner-turn"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={() => onCommit(local)}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      onFocus={onFocus}
+      onClick={e => e.stopPropagation()}
+    />
+  )
 }
 
 // What we render under "zone ±" — uses the current bounds if set, else the
@@ -68,7 +91,7 @@ export function Tracks() {
       try {
         const detail = await api.getTrack(selectedGuid) as LoadedTrack | null
         setLoaded(detail)
-        setCorners(((detail?.corners ?? []) as EditableCorner[]).map(c => ({ ...c })))
+        setCorners(((detail?.corners ?? []) as EditableCorner[]).map(c => ({ ...c, _key: _cornerKey++ })))
         setSelectedTurn((detail?.corners?.[0] as EditableCorner | undefined)?.turn ?? null)
         setDirty(false)
         setSavingMsg(null)
@@ -122,7 +145,7 @@ export function Tracks() {
     let n = 1
     while (existing.has(`T${n}`)) n++
     const newTurn = `T${n}`
-    const next: EditableCorner = { turn: newTurn, name: '' }
+    const next: EditableCorner = { _key: _cornerKey++, turn: newTurn, name: '' }
     setCorners([...corners, next])
     setSelectedTurn(newTurn)
     setDirty(true)
@@ -165,7 +188,7 @@ export function Tracks() {
     if (!selectedGuid) return
     const detail = await api.getTrack(selectedGuid) as LoadedTrack | null
     setLoaded(detail)
-    setCorners(((detail?.corners ?? []) as EditableCorner[]).map(c => ({ ...c })))
+    setCorners(((detail?.corners ?? []) as EditableCorner[]).map(c => ({ ...c, _key: _cornerKey++ })))
     setDirty(false)
     setSavingMsg(null)
   }
@@ -249,27 +272,28 @@ export function Tracks() {
                   const active = selectedTurn === c.turn
                   return (
                     <div
-                      key={c.turn}
+                      key={c._key}
                       className={`tracks-corner-row ${active ? 'active' : ''}`}
                       onClick={() => setSelectedTurn(c.turn)}
                     >
-                      <input
-                        className="tracks-corner-turn"
+                      <TurnInput
                         value={c.turn}
-                        onChange={e => renameCorner(c.turn, e.target.value)}
-                        onClick={e => e.stopPropagation()}
+                        onCommit={newTurn => renameCorner(c.turn, newTurn)}
+                        onFocus={() => setSelectedTurn(c.turn)}
                       />
                       <input
                         className="tracks-corner-name"
                         placeholder="name (e.g. Horse Shoe)"
                         value={c.name ?? ''}
                         onChange={e => updateCorner(c.turn, { name: e.target.value })}
+                        onFocus={() => setSelectedTurn(c.turn)}
                         onClick={e => e.stopPropagation()}
                       />
                       <select
                         className="tracks-corner-dir"
                         value={c.direction ?? ''}
                         onChange={e => updateCorner(c.turn, { direction: e.target.value || undefined })}
+                        onFocus={() => setSelectedTurn(c.turn)}
                         onClick={e => e.stopPropagation()}
                       >
                         <option value="">—</option>
@@ -293,6 +317,7 @@ export function Tracks() {
                             dist_idx_end: c.apex_idx + half,
                           })
                         }}
+                        onFocus={() => setSelectedTurn(c.turn)}
                         onClick={e => e.stopPropagation()}
                       />
                       <button

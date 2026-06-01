@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
 import { humaniseBytes, api } from '../api'
-import { BriefDialog } from '../components/BriefDialog'
 import { AccountWidget } from '../components/AccountWidget'
 import { AccountState, daysRemaining, getActiveAccount, tokenValid } from '../accounts'
 
@@ -10,14 +9,11 @@ interface Props {
   stats: SyncStats | null
   busy: 'sync' | 'load' | 'coach' | null
   onSync: () => void
-  onLoad: () => void
   accounts: AccountState
   onAccountsChange: (next: AccountState) => void
 }
 
-export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsChange }: Props) {
-  const [briefOpen, setBriefOpen] = useState(false)
-
+export function Home({ auth, stats, busy, onSync, accounts, onAccountsChange }: Props) {
   const active = getActiveAccount(accounts)
   const email = active?.label ?? null
 
@@ -50,12 +46,6 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
             <button className="btn primary" disabled={busy === 'sync'} onClick={onSync}>
               {busy === 'sync' ? 'Syncing…' : 'Sync now'}
             </button>
-            <button className="btn ghost" disabled={!!busy} onClick={onLoad}>
-              Rebuild DB
-            </button>
-            <button className="btn ghost" disabled={!!busy} onClick={() => setBriefOpen(true)}>
-              New brief
-            </button>
           </div>
         </div>
 
@@ -74,7 +64,6 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
         </section>
       </div>
 
-      {briefOpen && <BriefDialog onClose={() => setBriefOpen(false)} />}
     </>
   )
 }

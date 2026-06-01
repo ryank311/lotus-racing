@@ -79,115 +79,183 @@ segments:
 # Named corners, in driving order. apex/start/end are dist_idx values that
 # match the per-sample dist_idx in performance.pb (each unit ≈ 1 m at VIR Full).
 corners:
-  - turn: C1
-    name: "Corner 1"
-    apex_idx: 9
-    dist_idx_start: 8
-    dist_idx_end: 42
-    apex_lat: 36.5688228
-    apex_lon: -79.2065419
+  - turn: T1
+    name: "Horseshoe"
+    direction: right
+    apex_idx: 424
+    dist_idx_start: 369
+    dist_idx_end: 479
+    apex_lat: 36.5683768
+    apex_lon: -79.2021763
     apex_radius_m: 68.9
-  - turn: C2
-    name: "Corner 2"
-    apex_idx: 383
-    dist_idx_start: 360
-    dist_idx_end: 504
-    apex_lat: 36.5686922
-    apex_lon: -79.2023799
+  - turn: T2
+    name: "Turn 2"
+    direction: left
+    apex_idx: 723
+    dist_idx_start: 651
+    dist_idx_end: 795
+    apex_lat: 36.5682593
+    apex_lon: -79.2051346
     apex_radius_m: 41.9
-  - turn: C3
-    name: "Corner 3"
-    apex_idx: 470
-    dist_idx_start: 354
-    dist_idx_end: 519
-    apex_lat: 36.5680247
-    apex_lon: -79.2024193
+  - turn: T3
+    name: "NASCAR"
+    direction: left
+    apex_idx: 852
+    dist_idx_start: 769
+    dist_idx_end: 935
+    apex_lat: 36.5677439
+    apex_lon: -79.2063678
     apex_radius_m: 70.7
-  - turn: C4
-    name: "Corner 4"
-    apex_idx: 853
-    dist_idx_start: 826
-    dist_idx_end: 875
-    apex_lat: 36.5677356
-    apex_lon: -79.2063720
+  - turn: T4a
+    name: "Left Hook"
+    direction: left
+    apex_idx: 1040
+    dist_idx_start: 1015
+    dist_idx_end: 1065
+    apex_lat: 36.5661477
+    apex_lon: -79.2058159
     apex_radius_m: 44.1
-  - turn: C5
-    name: "Corner 5"
-    apex_idx: 1056
-    dist_idx_start: 1026
-    dist_idx_end: 1075
-    apex_lat: 36.5660800
-    apex_lon: -79.2056608
+  - turn: T4b
+    direction: right
+    apex_idx: 1117
+    dist_idx_start: 1092
+    dist_idx_end: 1142
+    apex_lat: 36.5661773
+    apex_lon: -79.2049971
     apex_radius_m: 31.8
-  - turn: C6
-    name: "Corner 6"
-    apex_idx: 1115
-    dist_idx_start: 1012
-    dist_idx_end: 1168
-    apex_lat: 36.5661797
-    apex_lon: -79.2050193
-    apex_radius_m: 49.3
-  - turn: C7
-    name: "Corner 7"
-    apex_idx: 1240
-    dist_idx_start: 1212
-    dist_idx_end: 1271
-    apex_lat: 36.5653560
-    apex_lon: -79.2041805
+  - turn: T5a
+    name: "Lower Snake Entry"
+    direction: right
+    apex_idx: 1243
+    dist_idx_start: 1213
+    dist_idx_end: 1273
+    apex_lat: 36.5653291
+    apex_lon: -79.2041784
     apex_radius_m: 60.3
-  - turn: C8
-    name: "Corner 8"
-    apex_idx: 1787
-    dist_idx_start: 1765
-    dist_idx_end: 1889
-    apex_lat: 36.5605076
-    apex_lon: -79.2047839
+  - turn: T5b
+    name: "Lower Snake"
+    direction: left
+    apex_idx: 1314
+    dist_idx_start: 1284
+    dist_idx_end: 1344
+    apex_lat: 36.5647319
+    apex_lon: -79.2044374
+    apex_radius_m: 49.3
+  - turn: T6a
+    name: "Lower Snake"
+    direction: right
+    apex_idx: 1383
+    dist_idx_start: 1358
+    dist_idx_end: 1408
+    apex_lat: 36.5641157
+    apex_lon: -79.2045093
     apex_radius_m: 69.8
-  - turn: C9
-    name: "Corner 9"
-    apex_idx: 1844
-    dist_idx_start: 1767
-    dist_idx_end: 1880
-    apex_lat: 36.5601939
-    apex_lon: -79.2052356
+  - turn: T6b
+    name: "Lower Snake Exit"
+    direction: left
+    apex_idx: 1432
+    dist_idx_start: 1412
+    dist_idx_end: 1452
+    apex_lat: 36.5636884
+    apex_lon: -79.2046384
     apex_radius_m: 60.2
-  - turn: C10
-    name: "Corner 10"
-    apex_idx: 2148
-    dist_idx_start: 2100
-    dist_idx_end: 2186
-    apex_lat: 36.5610661
-    apex_lon: -79.2083987
-    apex_radius_m: 80.0
-  - turn: C11
-    name: "Corner 11"
-    apex_idx: 2533
-    dist_idx_start: 2506
-    dist_idx_end: 2575
-    apex_lat: 36.5623614
-    apex_lon: -79.2119616
+  - turn: T7
+    apex_idx: 1825
+    dist_idx_start: 1775
+    dist_idx_end: 1875
+    apex_lat: 36.5602408
+    apex_lon: -79.2050325
+    apex_radius_m: 41.2
+  - turn: T8a
+    direction: left
+    apex_idx: 1950
+    dist_idx_start: 1915
+    dist_idx_end: 1985
+    apex_lat: 36.5604866
+    apex_lon: -79.2063476
     apex_radius_m: 37.3
-  - turn: C12
-    name: "Corner 12"
+  - turn: T8b
+    direction: right
+    apex_idx: 2015
+    dist_idx_start: 1985
+    dist_idx_end: 2045
+    apex_lat: 36.5605585
+    apex_lon: -79.2070681
+    apex_radius_m: 102.6
+  - turn: T9a
+    name: "Stevie Wonder"
+    direction: left
+    apex_idx: 2144
+    dist_idx_start: 2099
+    dist_idx_end: 2189
+    apex_lat: 36.5610631
+    apex_lon: -79.2083540
+    apex_radius_m: 58
+  - turn: C13
+    name: "Stevie Wonder"
+    direction: right
+    apex_idx: 2257
+    dist_idx_start: 2217
+    dist_idx_end: 2297
+    apex_lat: 36.5608801
+    apex_lon: -79.2095822
+    apex_radius_m: 62.9
+  - turn: T9c
+    name: "Stevie Wonder"
+    direction: left
+    apex_idx: 2386
+    dist_idx_start: 2346
+    dist_idx_end: 2426
+    apex_lat: 36.5614744
+    apex_lon: -79.2107674
+    apex_radius_m: 69.8
+  - turn: T10
+    name: "Roller Coaster Entry"
+    direction: right
+    apex_idx: 2541
+    dist_idx_start: 2491
+    dist_idx_end: 2591
+    apex_lat: 36.5624325
+    apex_lon: -79.2119747
+    apex_radius_m: 41.1
+  - turn: T11
+    name: "Roller Coaster Exit"
+    direction: left
     apex_idx: 2632
-    dist_idx_start: 2590
-    dist_idx_end: 2660
+    dist_idx_start: 2597
+    dist_idx_end: 2667
     apex_lat: 36.5630977
     apex_lon: -79.2114340
-    apex_radius_m: 58.0
-  - turn: C13
-    name: "Corner 13"
-    apex_idx: 2918
-    dist_idx_start: 2890
-    dist_idx_end: 2963
-    apex_lat: 36.5653011
-    apex_lon: -79.2127171
-    apex_radius_m: 62.9
-  - turn: C14
-    name: "Corner 14"
-    apex_idx: 3641
-    dist_idx_start: 3615
-    dist_idx_end: 3648
-    apex_lat: 36.5688093
-    apex_lon: -79.2067198
-    apex_radius_m: 69.8
+    apex_radius_m: 57
+  - turn: T12a
+    name: "Hogpen Entry"
+    apex_idx: 2854
+    dist_idx_start: 2804
+    dist_idx_end: 2904
+    apex_lat: 36.5649362
+    apex_lon: -79.2121713
+    apex_radius_m: 102.1
+  - turn: T12b
+    name: "Hogpen"
+    apex_idx: 2923
+    dist_idx_start: 2873
+    dist_idx_end: 2973
+    apex_lat: 36.5653403
+    apex_lon: -79.2127444
+    apex_radius_m: 62.4
+  - turn: T13
+    name: "Hogpen Exit"
+    apex_idx: 3047
+    dist_idx_start: 2997
+    dist_idx_end: 3097
+    apex_lat: 36.5664061
+    apex_lon: -79.2125693
+    apex_radius_m: 123.2
+  - turn: T14
+    name: "The Kink"
+    apex_idx: 3569
+    dist_idx_start: 3519
+    dist_idx_end: 3619
+    apex_lat: 36.5686828
+    apex_lon: -79.2075100
+    apex_radius_m: 443

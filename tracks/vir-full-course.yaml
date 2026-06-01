@@ -69,8 +69,8 @@ corners:
     direction: right
     character: "long slow right off the front straight; heavy braking from high speed"
     apex_idx: 425
-    dist_idx_start: 380
-    dist_idx_end: 470
+    dist_idx_start: 370
+    dist_idx_end: 480
     apex_lat: 36.5683579
     apex_lon: -79.2021953
     apex_radius_m: 35.7
@@ -276,3 +276,12 @@ corners:
     apex_lat: 36.5662954
     apex_lon: -79.2126560
     apex_radius_m: 103.6
+  - turn: T18
+    name: "The Kink"
+    direction: right
+    apex_idx: 5187
+    dist_idx_start: 5092
+    dist_idx_end: 5282
+    apex_lat: 36.5687147
+    apex_lon: -79.2073921
+    apex_radius_m: 434
