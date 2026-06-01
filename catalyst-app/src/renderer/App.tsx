@@ -212,7 +212,6 @@ export function App() {
           )}
           {page === 'garage' && <Garage />}
           {page === 'tracks' && <Tracks />}
-          {page === 'logs' && <Logs entries={logEntries} />}
           {page === 'analysis' && (
             <Analysis
               selected={selected}
@@ -225,6 +224,13 @@ export function App() {
             />
           )}
         </ErrorBoundary>
+
+        {/* Logs page — full-height, outside page-body so its own toolbar stays fixed */}
+        {page === 'logs' && (
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <Logs entries={logEntries} />
+          </div>
+        )}
 
         {/* Coach analysis ready toast */}
         {coachToast && (
