@@ -287,23 +287,50 @@ export async function existingSessionGuids(con: DuckDBConnection): Promise<Set<s
   }
 }
 
+// ─── DuckDB instance singleton ────────────────────────────────────────────────
+// DuckDB holds an exclusive write lock at the instance level on Windows.
+// Creating multiple DuckDBInstance objects for the same file causes "File is
+// already open" errors. We keep one shared instance per path so all openDb /
+// withDb calls in this process reuse the same lock and just create lightweight
+// connections from it.
+let _sharedInstance: DuckDBInstance | null = null
+let _sharedPath: string | null = null
+
+async function getSharedInstance(dbPath: string): Promise<DuckDBInstance> {
+  if (_sharedInstance && _sharedPath === dbPath) return _sharedInstance
+  _sharedInstance = await DuckDBInstance.create(dbPath, {})
+  _sharedPath = dbPath
+  return _sharedInstance
+}
+
+// Release the shared instance so the next openDb call creates a fresh one.
+// Must be called before deleting the DB files (e.g. full rebuild), after
+// ensuring no connections are active.
+export function releaseSharedInstance(): void {
+  _sharedInstance = null
+  _sharedPath = null
+}
+
 export async function openDb(dbPath = DB_PATH, readOnly = false): Promise<{
   instance: DuckDBInstance
   con: DuckDBConnection
   close: () => Promise<void>
 }> {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
-  const instance = await DuckDBInstance.create(dbPath, readOnly ? { access_mode: 'READ_ONLY' } : {})
+  // Read-only opens get their own instance (read-only can coexist with the
+  // write instance on the same path in DuckDB). Write opens share the singleton
+  // so we never hold two write locks on the same file.
+  const instance = readOnly
+    ? await DuckDBInstance.create(dbPath, { access_mode: 'READ_ONLY' })
+    : await getSharedInstance(dbPath)
   const con = await instance.connect()
   const close = async () => {
     try { con.close() } catch { /* ignore */ }
-    // DuckDBInstance has no close() in node-api; closing the connection releases the file lock.
   }
   return { instance, con, close }
 }
 
 // Run a callback with a database connection, closing it when done.
-// Guarantees the file lock is released on all platforms (critical on Windows).
 export async function withDb<T>(
   fn: (con: DuckDBConnection) => Promise<T>,
   dbPath = DB_PATH,
@@ -333,6 +360,12 @@ export async function loadAll(
   // ART-index corruption that's accumulated from prior crashes or
   // cross-version writes (e.g. Python writing the same file with a different
   // libduckdb). Re-ingest is ~10s per 50 sessions thanks to the Appender.
+
+  // Release the shared instance before deleting the files so Windows can
+  // delete them (the old instance's handle will be GC'd; no connections are
+  // active since sync/load operations are mutually exclusive).
+  releaseSharedInstance()
+
   for (const ext of ['', '.wal', '.tmp']) {
     const p = dbPath + ext
     if (fs.existsSync(p)) {

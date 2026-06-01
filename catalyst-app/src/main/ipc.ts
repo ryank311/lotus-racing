@@ -247,25 +247,30 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       return rows
     }
     const whereClause = accountLabel ? 'WHERE s.account = ? OR s.account IS NULL' : ''
-    return withDb(async con => {
-      const reader = await con.runAndReadAll(`
-        SELECT s.session_guid,
-          CAST(s.session_start AS VARCHAR) AS session_start,
-          COALESCE(tc.track_name, 'Unknown') AS track_name,
-          COALESCE(tc.track_configuration_name, '') AS track_configuration_name,
-          s.best_lap_ms,
-          (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
-          (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
-          COALESCE(s.weather_description, '') AS weather_description,
-          s.account,
-          s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type
-        FROM sessions s
-        LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
-        ${whereClause}
-        ORDER BY s.session_start DESC NULLS LAST
-      `, accountLabel ? [accountLabel] as any : undefined)
-      return reader.getRowObjectsJson() as unknown as DbSessionRow[]
-    }, DB_PATH)
+    try {
+      return await withDb(async con => {
+        const reader = await con.runAndReadAll(`
+          SELECT s.session_guid,
+            CAST(s.session_start AS VARCHAR) AS session_start,
+            COALESCE(tc.track_name, 'Unknown') AS track_name,
+            COALESCE(tc.track_configuration_name, '') AS track_configuration_name,
+            s.best_lap_ms,
+            (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
+            (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
+            COALESCE(s.weather_description, '') AS weather_description,
+            s.account,
+            s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type
+          FROM sessions s
+          LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
+          ${whereClause}
+          ORDER BY s.session_start DESC NULLS LAST
+        `, accountLabel ? [accountLabel] as any : undefined)
+        return reader.getRowObjectsJson() as unknown as DbSessionRow[]
+      }, DB_PATH)
+    } catch (e: any) {
+      console.error('[db:listSessions] query failed:', e?.message ?? e)
+      return []
+    }
   })
 
   ipcMain.handle('db:listVehicles', async (): Promise<import('../shared/types.js').VehicleSummary[]> => {
@@ -710,6 +715,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     // fetch + load only the new ones, and update the DB incrementally.
     // No full rebuild — that's what the Rebuild DB button is for.
     void (async () => {
+      let syncDb: Awaited<ReturnType<typeof openDb>> | null = null
       try {
         let token = opts?.token || loadCatalystToken()
         if (!token) {
@@ -724,8 +730,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         api.pageSize = loadConfig().api?.page_size ?? 50
 
         // Open / initialise the DB before doing any network work so we can
-        // diff against it. Explicitly closed after sync to release Windows file lock.
-        const syncDb = await openDb()
+        // diff against it. Closed in finally to guarantee the Windows file lock is released.
+        syncDb = await openDb()
         const con = syncDb.con
         await initSchema(con)
         const knownGuids = await existingSessionGuids(con)
@@ -739,76 +745,73 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         const skipped = summaries.length - newSessions.length
         log(`[sync] Garmin has ${summaries.length} session(s) — ${newSessions.length} new, ${skipped} already loaded`)
 
-        if (newSessions.length === 0) {
-          log('[sync] Up to date — nothing to download.')
-          await syncDb.close()
-          broadcast(win, { kind: 'sync', type: 'done' })
-          return
-        }
-
-        // Refresh track facilities + configurations once so new sessions' track
-        // names resolve in the DB. These are small JSON blobs.
-        try {
-          log('[sync] Refreshing track facilities + configurations...')
-          const facilities = await api.getTrackFacilities()
-          fs.writeFileSync(path.join(DATA_DIR, 'track_facilities.json'), JSON.stringify(facilities, null, 2))
-          const configsByTrack: Record<string, any[]> = {}
-          for (const fac of facilities) {
-            const cid = (fac as any).trackCartographyId
-            if (!cid) continue
-            try {
-              configsByTrack[String(cid)] = await api.getTrackConfigurations(cid)
-            } catch (e: any) {
-              log(`  [WARN] configs ${cid}: ${e.message ?? e}`)
-            }
-          }
-          fs.writeFileSync(path.join(DATA_DIR, 'track_configurations.json'), JSON.stringify(configsByTrack, null, 2))
-          const n = await loadTrackConfigs(con)
-          log(`  loaded ${n} track config rows`)
-        } catch (e: any) {
-          log(`[sync] track config refresh failed (continuing): ${e.message ?? e}`)
-        }
-
-        fs.mkdirSync(MEAN_LINES_DIR, { recursive: true })
-
-        // Fetch + load each new session in order. Fetch is the slow part
-        // (network); DB insert is fast via the Appender.
-        let loaded = 0
-        let failed = 0
-        prog.total = newSessions.length
-        sendProgress()
-        for (let i = 0; i < newSessions.length; i++) {
-          const s = newSessions[i]
-          const sg = s.sessionGuid!
-          prog.current = i + 1
-          prog.label = `${s.trackName ?? sg.slice(0, 8)} · ${(s.sessionStart ?? '').slice(0, 10)}`
-          prog.fileName = undefined
-          sendProgress()
-          log(`[${i + 1}/${newSessions.length}] ${sg.slice(0, 8)}… ${s.trackName ?? ''} ${s.bestLap ?? ''}`)
+        if (newSessions.length > 0) {
+          // Refresh track facilities + configurations once so new sessions' track
+          // names resolve in the DB. These are small JSON blobs.
           try {
-            await fetchAndSaveSession(api, s, SESSIONS_DIR, MEAN_LINES_DIR,
-              e => {
-                log(`  ${e.message}`)
-                if (e.kind === 'file' && e.fileName) {
-                  prog.fileName = e.fileName
-                  sendProgress()
-                }
-              },
-              accountLabel,
-            )
-            const samples = await loadSession(con, path.join(SESSIONS_DIR, sg))
-            log(`  ✓ loaded ${samples.toLocaleString()} samples into DB`)
-            loaded++
+            log('[sync] Refreshing track facilities + configurations...')
+            const facilities = await api.getTrackFacilities()
+            fs.writeFileSync(path.join(DATA_DIR, 'track_facilities.json'), JSON.stringify(facilities, null, 2))
+            const configsByTrack: Record<string, any[]> = {}
+            for (const fac of facilities) {
+              const cid = (fac as any).trackCartographyId
+              if (!cid) continue
+              try {
+                configsByTrack[String(cid)] = await api.getTrackConfigurations(cid)
+              } catch (e: any) {
+                log(`  [WARN] configs ${cid}: ${e.message ?? e}`)
+              }
+            }
+            fs.writeFileSync(path.join(DATA_DIR, 'track_configurations.json'), JSON.stringify(configsByTrack, null, 2))
+            const n = await loadTrackConfigs(con)
+            log(`  loaded ${n} track config rows`)
           } catch (e: any) {
-            failed++
-            log(`  ✗ FAILED: ${e.message ?? e}`)
+            log(`[sync] track config refresh failed (continuing): ${e.message ?? e}`)
           }
-          // Brief courtesy pause between sessions to avoid hammering the API.
-          await new Promise(r => setTimeout(r, 300))
+
+          fs.mkdirSync(MEAN_LINES_DIR, { recursive: true })
+
+          // Fetch + load each new session in order. Fetch is the slow part
+          // (network); DB insert is fast via the Appender.
+          let loaded = 0
+          let failed = 0
+          prog.total = newSessions.length
+          sendProgress()
+          for (let i = 0; i < newSessions.length; i++) {
+            const s = newSessions[i]
+            const sg = s.sessionGuid!
+            prog.current = i + 1
+            prog.label = `${s.trackName ?? sg.slice(0, 8)} · ${(s.sessionStart ?? '').slice(0, 10)}`
+            prog.fileName = undefined
+            sendProgress()
+            log(`[${i + 1}/${newSessions.length}] ${sg.slice(0, 8)}… ${s.trackName ?? ''} ${s.bestLap ?? ''}`)
+            try {
+              await fetchAndSaveSession(api, s, SESSIONS_DIR, MEAN_LINES_DIR,
+                e => {
+                  log(`  ${e.message}`)
+                  if (e.kind === 'file' && e.fileName) {
+                    prog.fileName = e.fileName
+                    sendProgress()
+                  }
+                },
+                accountLabel,
+              )
+              const samples = await loadSession(con, path.join(SESSIONS_DIR, sg))
+              log(`  ✓ loaded ${samples.toLocaleString()} samples into DB`)
+              loaded++
+            } catch (e: any) {
+              failed++
+              log(`  ✗ FAILED: ${e.message ?? e}`)
+            }
+            // Brief courtesy pause between sessions to avoid hammering the API.
+            await new Promise(r => setTimeout(r, 300))
+          }
+
+          log(`[sync] done — ${loaded} loaded, ${failed} failed, ${skipped} skipped (already in DB)`)
+        } else {
+          log('[sync] Up to date — nothing to download.')
         }
 
-        log(`[sync] done — ${loaded} loaded, ${failed} failed, ${skipped} skipped (already in DB)`)
-        await syncDb.close()
         const dbExists = fs.existsSync(DB_PATH)
         const dbSize = dbExists ? fs.statSync(DB_PATH).size : 0
         log(`[sync] DB path: ${DB_PATH}`)
@@ -817,6 +820,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       } catch (e: any) {
         broadcast(win, { kind: 'sync', type: 'error', payload: `${e.message ?? e}` })
       } finally {
+        await syncDb?.close()
         activeWorker = null
       }
     })()

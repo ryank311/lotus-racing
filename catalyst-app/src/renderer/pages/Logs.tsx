@@ -34,11 +34,12 @@ export function Logs({ entries }: { entries: LogEntry[] }) {
   const [filter, setFilter] = useState('')
   const [levelFilter, setLevelFilter] = useState<Set<string>>(new Set(['log', 'warn', 'error', 'info']))
   const [autoScroll, setAutoScroll] = useState(true)
-  const bottomRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+    if (autoScroll && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight
+    }
   }, [entries.length, autoScroll])
 
   const q = filter.trim().toLowerCase()
@@ -124,7 +125,6 @@ export function Logs({ entries }: { entries: LogEntry[] }) {
             <span className="log-msg">{e.message}</span>
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

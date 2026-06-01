@@ -406,7 +406,8 @@ input, textarea, select { font-family: inherit; color: inherit; }
 /* ── main pane ──────────────────────────────────────────────────────── */
 
 .main-pane {
-  overflow: clip;
+  overflow: hidden;
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
   position: relative;

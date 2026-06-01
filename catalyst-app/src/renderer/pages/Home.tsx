@@ -61,9 +61,9 @@ export function Home({ auth, stats, busy, onSync, onLoad, accounts, onAccountsCh
 
         <div className="stat-grid">
           <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />
-          <Tile label="Driven laps" value={(stats?.lapCount ?? 0).toLocaleString()} mono />
+          <Tile label="Driven laps" value={(stats?.lapCount ?? 0).toLocaleString()} />
           <Tile label="Tracks" value={String(stats?.trackCount ?? 0)} />
-          <Tile label="Last sync" value={stats?.lastSyncAgoHuman ?? 'never'} mono />
+          <Tile label="Last sync" value={stats?.lastSyncAgoHuman ?? 'never'} />
         </div>
 
         <section style={{ marginTop: 32 }}>
