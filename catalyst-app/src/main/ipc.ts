@@ -99,7 +99,7 @@ async function readSyncStats(): Promise<SyncStats> {
       lapCount = Number(row[1] ?? 0)
       sampleCount = Number(row[2] ?? 0)
       trackCount = Number(row[3] ?? 0)
-    }, DB_PATH, true)
+    }, DB_PATH)
   } catch (e: any) {
     console.error('[readSyncStats] query failed:', e?.message ?? e, '— DB path:', DB_PATH)
     return empty
@@ -264,7 +264,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         ORDER BY s.session_start DESC NULLS LAST
       `, accountLabel ? [accountLabel] as any : undefined)
       return reader.getRowObjectsJson() as unknown as DbSessionRow[]
-    }, DB_PATH, true)
+    }, DB_PATH)
   })
 
   ipcMain.handle('db:listVehicles', async (): Promise<import('../shared/types.js').VehicleSummary[]> => {
@@ -282,7 +282,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           ORDER BY session_count DESC
         `)
         rows = reader.getRowObjectsJson()
-      }, DB_PATH, true)
+      }, DB_PATH)
     } catch {
       return []
     }
@@ -365,12 +365,12 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('coach:list', async (): Promise<CoachingSession[]> => {
     if (!fs.existsSync(DB_PATH)) return []
-    return withDb(con => listCoachingSessions(con), DB_PATH, true).catch(() => [])
+    return withDb(con => listCoachingSessions(con), DB_PATH).catch(() => [])
   })
 
   ipcMain.handle('coach:get', async (_e, id: string): Promise<CoachingSession | null> => {
     if (!fs.existsSync(DB_PATH)) return null
-    return withDb(con => getCoachingSession(con, id), DB_PATH, true).catch(() => null)
+    return withDb(con => getCoachingSession(con, id), DB_PATH).catch(() => null)
   })
 
   ipcMain.handle('coach:delete', async (_e, id: string) => {
@@ -528,7 +528,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         ORDER BY session_count DESC
       `)
       return reader.getRowsJson()
-    }, DB_PATH, true)
+    }, DB_PATH)
     const out = rows.map((r: any) => {
       const trackName = String(r[0] ?? 'Unknown')
       const configName = String(r[1] ?? '')
