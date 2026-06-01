@@ -59,6 +59,11 @@ const bridge: CatalystBridge = {
     ipcRenderer.on('worker:event', handler)
     return () => ipcRenderer.off('worker:event', handler)
   },
+  onLog: cb => {
+    const handler = (_e: unknown, msg: { level: string; message: string; ts: number }) => cb(msg)
+    ipcRenderer.on('app:log', handler)
+    return () => ipcRenderer.off('app:log', handler)
+  },
 
   buildAnalysis: (sessionGuids: string[]) => ipcRenderer.invoke('analysis:build', sessionGuids),
 

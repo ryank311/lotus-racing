@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks'
+export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs'
 
 interface NavSpec {
   key: NavKey
@@ -62,6 +62,17 @@ const NAV: NavSpec[] = [
   { key: 'garage',   label: 'Garage',    k: '5', icon: <GarageIcon /> },
   { key: 'tracks',   label: 'Tracks',    k: '6', icon: <TracksIcon /> },
 ]
+
+const BugIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15">
+    <path d="M12 14a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" />
+    <path d="M12 14v6" />
+    <path d="M8 10H4m0 0-1-3m1 3v2" />
+    <path d="M16 10h4m0 0 1-3m-1 3v2" />
+    <path d="M9 7l-1-3" /><path d="M15 7l1-3" />
+    <path d="M8 20H5m11 0h3" />
+  </svg>
+)
 
 export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
   active: NavKey
@@ -132,7 +143,16 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
           <span className={`led ${connected ? '' : 'dim'}`} />
           <span>{connected ? 'LINK' : 'OFFLINE'}</span>
         </div>
-        <span>{time.toTimeString().slice(0, 5)}</span>
+        <div className="row-center" style={{ gap: 8 }}>
+          <span>{time.toTimeString().slice(0, 5)}</span>
+          <button
+            className={`sidebar-log-btn ${active === 'logs' ? 'active' : ''}`}
+            onClick={() => onChange('logs')}
+            title="Debug logs"
+          >
+            <BugIcon />
+          </button>
+        </div>
       </div>
     </aside>
   )

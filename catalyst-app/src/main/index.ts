@@ -53,6 +53,58 @@ function createWindow(): void {
   })
 }
 
+// Forward main-process console output to the renderer log panel.
+// Queues messages that arrive before the renderer is ready, then flushes them.
+function hookConsoleToRenderer(getWin: () => BrowserWindow | null) {
+  const origLog   = console.log.bind(console)
+  const origWarn  = console.warn.bind(console)
+  const origError = console.error.bind(console)
+
+  let rendererReady = false
+  const queue: Array<{ level: string; message: string; ts: number }> = []
+
+  const flush = () => {
+    const win = getWin()
+    if (!win || win.isDestroyed()) return
+    for (const msg of queue) win.webContents.send('app:log', msg)
+    queue.length = 0
+  }
+
+  const send = (level: string, args: unknown[]) => {
+    const message = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+    const entry = { level, message, ts: Date.now() }
+    if (rendererReady) {
+      const win = getWin()
+      if (win && !win.isDestroyed()) win.webContents.send('app:log', entry)
+    } else {
+      queue.push(entry)
+    }
+  }
+
+  // Mark ready and flush the queue once the renderer's DOM is loaded.
+  const onReady = () => {
+    rendererReady = true
+    flush()
+    // Brief startup breadcrumb so the log panel is never completely empty.
+    send('info', [`[catalyst] main process ready · platform=${process.platform} · pid=${process.pid}`])
+    send('info', [`[catalyst] DB_PATH=${DB_PATH}`])
+    send('info', [`[catalyst] DB exists: ${fs.existsSync(DB_PATH)}`])
+  }
+
+  // Attach the did-finish-load listener whenever the window is (re)created.
+  const watchWindow = () => {
+    const win = getWin()
+    if (!win) return
+    win.webContents.once('did-finish-load', onReady)
+  }
+  // Poll briefly in case the window is created after this call.
+  const t = setInterval(() => { if (getWin()) { watchWindow(); clearInterval(t) } }, 50)
+
+  console.log   = (...a) => { origLog(...a);   send('log',   a) }
+  console.warn  = (...a) => { origWarn(...a);  send('warn',  a) }
+  console.error = (...a) => { origError(...a); send('error', a) }
+}
+
 app.whenReady().then(async () => {
   seedUserData()
 
@@ -61,8 +113,9 @@ app.whenReady().then(async () => {
   // safe to run repeatedly — it's a no-op when the schema is current.
   if (fs.existsSync(DB_PATH)) {
     try {
-      const { con } = await openDb(DB_PATH)
-      await initSchema(con)
+      const db = await openDb(DB_PATH)
+      await initSchema(db.con)
+      await db.close()
     } catch (e) {
       console.error('[startup] schema migration failed:', e)
     }
@@ -73,6 +126,7 @@ app.whenReady().then(async () => {
   }
   registerIpc(() => mainWindow)
   createWindow()
+  hookConsoleToRenderer(() => mainWindow)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

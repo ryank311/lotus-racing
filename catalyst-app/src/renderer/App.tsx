@@ -6,6 +6,7 @@ import { AICoach } from './pages/AICoach'
 import { Garage } from './pages/Garage'
 import { Tracks } from './pages/Tracks'
 import { Analysis } from './pages/Analysis'
+import { Logs, type LogEntry } from './pages/Logs'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { api } from './api'
 import { AccountState, getActiveAccount, loadAccounts, tokenValid } from './accounts'
@@ -43,6 +44,15 @@ export function App() {
   const [activeCoachSession, setActiveCoachSession] = useState<CoachingSession | null>(null)
   const [logLines, setLogLines] = useState<string[]>([])
   const [logsExpanded, setLogsExpanded] = useState(false)
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([])
+  const logIdRef = useRef(0)
+
+  const addLogEntry = useCallback((level: LogEntry['level'], source: LogEntry['source'], message: string) => {
+    setLogEntries(prev => {
+      const entry: LogEntry = { id: logIdRef.current++, ts: Date.now(), level, source, message }
+      return prev.length > 5000 ? [...prev.slice(-4000), entry] : [...prev, entry]
+    })
+  }, [])
   const [coachToast, setCoachToast] = useState<{ sessionId: string } | null>(null)
 
   // Selected session guids — accumulated on the Sessions tab, consumed by Analysis.
@@ -54,12 +64,40 @@ export function App() {
     setStats(s)
   }, [])
 
+  // Intercept renderer console → log entries
+  useEffect(() => {
+    const methods = ['log', 'warn', 'error', 'info'] as const
+    const originals = methods.map(m => console[m].bind(console))
+    methods.forEach((m, i) => {
+      console[m] = (...args: unknown[]) => {
+        originals[i](...args)
+        const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+        addLogEntry(m, 'main', msg)
+      }
+    })
+    return () => { methods.forEach((m, i) => { console[m] = originals[i] }) }
+  }, [addLogEntry])
+
+  // Receive main-process console logs forwarded over IPC
+  useEffect(() => {
+    const unsub = api.onLog(({ level, message }) => {
+      addLogEntry(level as LogEntry['level'], 'main', message)
+    })
+    return () => unsub()
+  }, [addLogEntry])
+
   useEffect(() => {
     refresh()
     const unsub = api.onWorker((evt: WorkerEvent) => {
       if (evt.type === 'log' && evt.payload) {
         setLogLine(evt.payload)
         setLogLines(prev => [...prev.slice(-499), evt.payload!])
+        addLogEntry(
+          evt.payload.startsWith('[error]') || evt.payload.startsWith('✗') ? 'error'
+            : evt.payload.startsWith('[diag]') || evt.payload.startsWith('[harness]') ? 'info'
+            : 'log',
+          'worker', evt.payload,
+        )
       }
       if (evt.type === 'progress' && evt.progress) setProgress(evt.progress)
       if (evt.type === 'done') {
@@ -174,6 +212,7 @@ export function App() {
           )}
           {page === 'garage' && <Garage />}
           {page === 'tracks' && <Tracks />}
+          {page === 'logs' && <Logs entries={logEntries} />}
           {page === 'analysis' && (
             <Analysis
               selected={selected}

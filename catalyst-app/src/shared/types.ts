@@ -264,6 +264,7 @@ export interface CatalystBridge {
   startSync(opts?: { token?: string; accountLabel?: string }): Promise<void>
   startLoad(): Promise<void>
   onWorker(cb: (evt: WorkerEvent) => void): () => void
+  onLog(cb: (msg: { level: string; message: string; ts: number }) => void): () => void
 
   // AI Coach
   runCoach(opts: CoachOptions): Promise<{ sessionId: null }>

@@ -107,6 +107,7 @@ async function readSyncStats(): Promise<SyncStats> {
 
   const st = fs.statSync(DB_PATH)
   const lastSync = st.mtimeMs / 1000
+  console.log(`[db] stats: ${sessionCount} sessions, ${lapCount} laps, ${sampleCount} samples, ${trackCount} tracks — ${(st.size/1024/1024).toFixed(1)} MB`)
   return {
     sessionCount, lapCount, sampleCount, trackCount,
     totalSizeBytes: st.size,
@@ -836,8 +837,11 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
             progress: { current: p.current, total: p.total, label: p.label },
           }),
         )
+        const dbSize = fs.existsSync(DB_PATH) ? (fs.statSync(DB_PATH).size/1024/1024).toFixed(1) : '0'
+        console.log(`[load] complete — DB ${dbSize} MB at ${DB_PATH}`)
         broadcast(win, { kind: 'load', type: 'done' })
       } catch (e: any) {
+        console.error('[load] failed:', e.message ?? e)
         broadcast(win, { kind: 'load', type: 'error', payload: `${e.message ?? e}` })
       } finally {
         activeWorker = null

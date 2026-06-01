@@ -526,7 +526,9 @@ async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: 
 
 export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisData> {
   if (!fs.existsSync(DB_PATH)) throw new Error(`no database at ${DB_PATH} — run "Rebuild DB" first`)
-  const { con } = await openDb(DB_PATH, true)
+  console.log(`[analysis] building for ${sessionGuids.length} session(s)`)
+  const analysisDb = await openDb(DB_PATH)
+  const con = analysisDb.con
 
   const placeholders = sessionGuids.map(() => '?').join(',')
   const sessRows = await rows(con, `
@@ -568,7 +570,9 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
   const corners = trackYaml.corners ?? []
 
   const laps = await fetchLapMeta(con, sessionGuids)
+  console.log(`[analysis] ${sessions.length} sessions, ${laps.length} laps, config="${config}"`)
   if (!laps.length) {
+    await analysisDb.close()
     return {
       config, totalDistM: trackYaml.total_dist_m ?? 0,
       segments, corners, sessions, laps: [], bestLap: null,
@@ -658,6 +662,8 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length)
     : null
 
+  await analysisDb.close()
+  console.log(`[analysis] complete — ${racingLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs/1000).toFixed(3)+'s' : 'n/a'}`)
   return {
     config,
     totalDistM: trackYaml.total_dist_m ?? 0,
