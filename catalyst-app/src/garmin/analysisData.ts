@@ -113,7 +113,13 @@ export interface AnalysisData {
   totalDistM: number
   segments: TrackSegment[]
   corners: TrackCorner[]
-  sessions: Array<{ sg: string; start: string | null; bestLapMs: number | null; trackConfig: string | null }>
+  sessions: Array<{
+    sg: string; start: string | null; bestLapMs: number | null; trackConfig: string | null
+    // Per-session weather snapshot (captured at session start). Used by the
+    // Analysis CONDITIONS panel to correlate pace with conditions.
+    weather: string | null; tempC: number | null; humidityPct: number | null
+    windMps: number | null; windDeg: number | null
+  }>
   laps: LapMeta[]
   bestLap: LapMeta | null
   speedTraces: SpeedTrace[]
@@ -533,7 +539,9 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
   const placeholders = sessionGuids.map(() => '?').join(',')
   const sessRows = await rows(con, `
     SELECT s.session_guid, CAST(s.session_start AS VARCHAR), s.best_lap_ms,
-      tc.track_configuration_name, tc.track_configuration_id, s.mean_line_guid
+      tc.track_configuration_name, tc.track_configuration_id, s.mean_line_guid,
+      s.weather_description, s.temperature_c, s.humidity_pct,
+      s.wind_speed_mps, s.wind_direction_deg
     FROM sessions s
     LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
     WHERE s.session_guid IN (${placeholders})
@@ -545,6 +553,11 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     start: r[1] ? String(r[1]) : null,
     bestLapMs: r[2] != null ? Number(r[2]) : null,
     trackConfig: r[3] ? String(r[3]) : null,
+    weather: r[6] != null ? String(r[6]) : null,
+    tempC: r[7] != null ? Number(r[7]) : null,
+    humidityPct: r[8] != null ? Number(r[8]) : null,
+    windMps: r[9] != null ? Number(r[9]) : null,
+    windDeg: r[10] != null ? Number(r[10]) : null,
   }))
 
   // Pick the mean_line_guid that the majority of selected sessions share.

@@ -1015,10 +1015,13 @@ function CoachIntelPanel({
   onDismiss: () => void
 }) {
   const color = annotation.severity === 3 ? 'var(--signal)' : annotation.severity === 2 ? '#f5a623' : 'var(--cyan)'
-  const hasSpeed = annotation.actual_apex_mps != null && annotation.target_apex_mps != null
-  const actualMph = hasSpeed ? (annotation.actual_apex_mps! * 2.237).toFixed(1) : null
-  const targetMph = hasSpeed ? (annotation.target_apex_mps! * 2.237).toFixed(1) : null
-  const deltaMph  = hasSpeed ? ((annotation.target_apex_mps! - annotation.actual_apex_mps!) * 2.237) : null
+  // Speeds arrive in mph. Legacy sessions stored m/s in *_mps — back-convert those.
+  const actualMphVal = annotation.actual_apex_mph ?? (annotation.actual_apex_mps != null ? annotation.actual_apex_mps * 2.237 : undefined)
+  const targetMphVal = annotation.target_apex_mph ?? (annotation.target_apex_mps != null ? annotation.target_apex_mps * 2.237 : undefined)
+  const hasSpeed = actualMphVal != null && targetMphVal != null
+  const actualMph = hasSpeed ? actualMphVal!.toFixed(1) : null
+  const targetMph = hasSpeed ? targetMphVal!.toFixed(1) : null
+  const deltaMph  = hasSpeed ? (targetMphVal! - actualMphVal!) : null
 
   return (
     <div className="coach-intel-panel" style={{ '--intel-color': color } as React.CSSProperties}>

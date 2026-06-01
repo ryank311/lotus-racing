@@ -4,8 +4,9 @@ import { ChartCard } from '../components/ChartCard'
 import { LineChart, GGChart, HeatmapGrid, CornerChart } from '../components/Charts'
 import { speedSeries, lateralSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
+import { ConditionsPanel } from '../components/ConditionsPanel'
 import type { AnalysisData } from '../../garmin/analysisData'
-import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint } from '../../shared/types'
+import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
 
 interface Props {
@@ -361,6 +362,9 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
         <RecommendedPracticePanel drills={coachResult.drills} />
       )}
 
+      {/* CAR SETUP */}
+      {coachResult && <CarSetupPanel setup={coachResult.setup} />}
+
       {/* CHARTS */}
       <div className="analysis-charts">
         <ChartCard channel="SPEED" meta={`${data.speedTraces.length} laps · mph`}>
@@ -412,6 +416,10 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
           </ChartCard>
         )}
       </div>
+
+      {/* CONDITIONS — weather summary, correlated to pace. Sits at the very
+          bottom: a fastest-vs-slowest readout with an expander for the rest. */}
+      <ConditionsPanel sessions={data.sessions} />
     </>
   )
 }
@@ -579,6 +587,71 @@ function RecommendedPracticePanel({ drills }: { drills: string[] }) {
         </div>
       )}
     </div>
+  )
+}
+
+// CAR SETUP — mechanical/configuration recommendations the telemetry supports.
+// Deliberately allows an empty state: if the coach found no setup signature,
+// we say so rather than inventing advice.
+function CarSetupPanel({ setup }: { setup?: CoachSetupRec[] }) {
+  const [open, setOpen] = useState(true)
+  const recs = setup ?? []
+  const CONF_LABEL = ['', 'speculative', 'likely', 'strong evidence']
+
+  return (
+    <div className="chart-card coach-card car-setup-card" style={{ marginBottom: 18 }}>
+      <div className="card-corner-marks"><i /></div>
+      <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
+        <span className="channel-tag">Car Setup</span>
+        <span className="meta">{recs.length ? `${recs.length} rec${recs.length > 1 ? 's' : ''} · ` : ''}{open ? '▲ collapse' : '▼ expand'}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: '28px 16px 16px' }}>
+          {recs.length === 0 ? (
+            <div className="car-setup-empty">
+              No setup changes indicated — the telemetry doesn't show a clear mechanical
+              signature, so the current configuration looks well matched to this data. Focus
+              on the driving tips and drills above.
+            </div>
+          ) : (
+            <div className="car-setup-list">
+              {recs.map((r, i) => {
+                const conf = r.confidence ?? 0
+                return (
+                  <div key={i} className="car-setup-rec">
+                    <div className="car-setup-rec-head">
+                      <span className="car-setup-area">
+                        <WrenchIcon /> {r.area}
+                      </span>
+                      {conf > 0 && (
+                        <span className="car-setup-conf" title={`confidence: ${CONF_LABEL[conf]}`}>
+                          {[1, 2, 3].map(n => (
+                            <span key={n} className={`car-setup-pip ${n <= conf ? 'on' : ''}`} />
+                          ))}
+                          <span className="car-setup-conf-label">{CONF_LABEL[conf]}</span>
+                        </span>
+                      )}
+                    </div>
+                    <div className="car-setup-change">{r.change}</div>
+                    <div className="car-setup-rationale">{r.rationale}</div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function WrenchIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      <path d="M14.7 6.3a4 4 0 0 0-5.4 5.3l-6 6a1.5 1.5 0 0 0 2.1 2.1l6-6a4 4 0 0 0 5.3-5.4l-2.4 2.4-2.1-2.1 2.5-2.3z" />
+    </svg>
   )
 }
 

@@ -114,6 +114,13 @@ export interface CoachAnnotation {
   body: string
   actual_apex_dist_m?: number       // corner_tip: where driver apexed (m along track)
   recommended_apex_dist_m?: number  // corner_tip: where AI says apex should be
+  // Speeds in mph — the coach reads mph and answers in mph (no conversion).
+  actual_entry_mph?: number
+  actual_apex_mph?: number
+  actual_exit_mph?: number
+  target_apex_mph?: number
+  // Legacy m/s fields from coaching sessions generated before the mph migration.
+  // Kept optional so old stored results still typecheck and can be back-converted.
   actual_entry_mps?: number
   actual_apex_mps?: number
   actual_exit_mps?: number
@@ -128,6 +135,15 @@ export interface CoachLineWaypoint {
   note?: string
 }
 
+// A single car-setup / configuration recommendation derived from the telemetry.
+// The list may legitimately be empty — only data-grounded suggestions belong here.
+export interface CoachSetupRec {
+  area: string        // e.g. 'Tire pressure', 'Alignment', 'Suspension', 'Ride height', 'Brakes', 'Aero', 'Differential'
+  change: string      // the concrete adjustment, written to the driver
+  rationale: string   // why — cites the corners/segments/laps that motivate it
+  confidence?: 1 | 2 | 3  // 1 = speculative · 2 = likely · 3 = strong evidence
+}
+
 export interface CoachingResult {
   headline: string
   consistency_loss_ms: number
@@ -135,6 +151,7 @@ export interface CoachingResult {
   drills: string[]
   annotations: CoachAnnotation[]   // flat list of all annotations across all tips
   coach_line?: CoachLineWaypoint[] // optional sparse AI-recommended line waypoints
+  setup?: CoachSetupRec[]          // optional car-setup recommendations (may be empty)
 }
 
 export interface CoachingSession {

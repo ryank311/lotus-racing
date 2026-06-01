@@ -2,7 +2,7 @@
 // Extracts the last ```json ... ``` block and validates it permissively —
 // malformed entries are skipped rather than failing the whole parse.
 
-import type { CoachingResult, CoachAnnotation, CoachAnnotationType, CoachLineWaypoint } from '../shared/types.js'
+import type { CoachingResult, CoachAnnotation, CoachAnnotationType, CoachLineWaypoint, CoachSetupRec } from '../shared/types.js'
 
 const VALID_ANNOTATION_TYPES = new Set<CoachAnnotationType>([
   'corner_tip', 'segment_tip', 'speed_annotation', 'line_deviation',
@@ -68,7 +68,22 @@ function validate(o: unknown): CoachingResult | null {
         return [{ dist_m: wp.dist_m, delta, note: typeof wp.note === 'string' ? wp.note : undefined }]
       })
     : undefined
-  return { headline: r.headline, consistency_loss_ms, tips, drills, annotations, coach_line }
+  const setup = Array.isArray(r.setup)
+    ? (r.setup as unknown[]).flatMap((s): CoachSetupRec[] => {
+        if (typeof s !== 'object' || s === null) return []
+        const x = s as Record<string, unknown>
+        if (typeof x.area !== 'string' || typeof x.change !== 'string' || typeof x.rationale !== 'string') return []
+        return [{
+          area: x.area,
+          change: x.change,
+          rationale: x.rationale,
+          confidence: ([1, 2, 3] as const).includes(x.confidence as 1 | 2 | 3)
+            ? (x.confidence as 1 | 2 | 3)
+            : undefined,
+        }]
+      })
+    : undefined
+  return { headline: r.headline, consistency_loss_ms, tips, drills, annotations, coach_line, setup }
 }
 
 function coerceAnnotation(a: unknown): CoachAnnotation | null {
@@ -82,10 +97,11 @@ function coerceAnnotation(a: unknown): CoachAnnotation | null {
     body: x.body,
     actual_apex_dist_m:       num(x.actual_apex_dist_m),
     recommended_apex_dist_m:  num(x.recommended_apex_dist_m),
-    actual_entry_mps:         num(x.actual_entry_mps),
-    actual_apex_mps:          num(x.actual_apex_mps),
-    actual_exit_mps:          num(x.actual_exit_mps),
-    target_apex_mps:          num(x.target_apex_mps),
+    // Prefer mph fields; fall back to legacy m/s if a model still emits them.
+    actual_entry_mph:         num(x.actual_entry_mph) ?? mphFromMps(x.actual_entry_mps),
+    actual_apex_mph:          num(x.actual_apex_mph)  ?? mphFromMps(x.actual_apex_mps),
+    actual_exit_mph:          num(x.actual_exit_mph)  ?? mphFromMps(x.actual_exit_mps),
+    target_apex_mph:          num(x.target_apex_mph)  ?? mphFromMps(x.target_apex_mps),
     deviation_desc: typeof x.deviation_desc === 'string' ? x.deviation_desc : undefined,
     severity: ([1, 2, 3] as const).includes(x.severity as 1 | 2 | 3)
       ? (x.severity as 1 | 2 | 3)
@@ -95,4 +111,10 @@ function coerceAnnotation(a: unknown): CoachAnnotation | null {
 
 function num(v: unknown): number | undefined {
   return typeof v === 'number' && !isNaN(v) ? v : undefined
+}
+
+// Legacy fallback: convert an m/s value to mph if present.
+function mphFromMps(v: unknown): number | undefined {
+  const n = num(v)
+  return n == null ? undefined : n * 2.23694
 }

@@ -19,10 +19,10 @@ const annotationSchema = {
       description: '1–2 sentences written to the driver. All speeds in mph.',
     },
     severity: { type: 'integer', enum: [1, 2, 3] },
-    actual_apex_mps:  { type: 'number' },
-    target_apex_mps:  { type: 'number' },
-    actual_entry_mps: { type: 'number' },
-    actual_exit_mps:  { type: 'number' },
+    actual_apex_mph:  { type: 'number', description: 'Driver apex speed in mph (read directly from the per-corner / best-lap tables — already mph).' },
+    target_apex_mph:  { type: 'number', description: 'Recommended apex speed in mph.' },
+    actual_entry_mph: { type: 'number', description: 'Driver corner-entry speed in mph.' },
+    actual_exit_mph:  { type: 'number', description: 'Driver corner-exit speed in mph.' },
     deviation_desc:   { type: 'string' },
   },
   required: ['type', 'ref', 'body'],
@@ -65,6 +65,38 @@ export const COACHING_TOOL = {
         type: 'array',
         description: '3–5 concrete practice exercises for the next track day.',
         items: { type: 'string' },
+      },
+      setup: {
+        type: 'array',
+        description:
+          'Car setup / configuration recommendations grounded in the telemetry (tyre pressure, ' +
+          'alignment, suspension, ride height, brakes, aero, differential, etc.). ONLY include a ' +
+          'recommendation when the data supports it — understeer/oversteer signatures in lateral G ' +
+          'and line, locking under braking, inconsistent grip across sessions/temperatures, etc. ' +
+          'Return an empty array if the data does not justify any setup change. Do not pad.',
+        items: {
+          type: 'object',
+          properties: {
+            area: {
+              type: 'string',
+              description: 'Setup area, e.g. "Tire pressure", "Alignment", "Suspension", "Ride height", "Brakes", "Aero", "Differential".',
+            },
+            change: {
+              type: 'string',
+              description: 'The concrete adjustment, written to the driver. 1–2 sentences. Include direction and rough magnitude where possible (e.g. "drop front cold pressures ~2 psi").',
+            },
+            rationale: {
+              type: 'string',
+              description: 'Why this follows from the data — cite the corners, segments, laps, or conditions that motivate it. All speeds in mph.',
+            },
+            confidence: {
+              type: 'integer',
+              enum: [1, 2, 3],
+              description: '1 = speculative (weak signal), 2 = likely, 3 = strong evidence in the data.',
+            },
+          },
+          required: ['area', 'change', 'rationale'],
+        },
       },
       annotations: {
         type: 'array',
