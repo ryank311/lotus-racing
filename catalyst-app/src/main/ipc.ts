@@ -740,6 +740,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
         if (newSessions.length === 0) {
           log('[sync] Up to date — nothing to download.')
+          await syncDb.close()
           broadcast(win, { kind: 'sync', type: 'done' })
           return
         }
