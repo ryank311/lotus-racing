@@ -13,7 +13,7 @@ function levelColor(level: LogEntry['level']): string {
     case 'error': return 'var(--red)'
     case 'warn':  return 'var(--amber, #f5a623)'
     case 'info':  return 'var(--cyan)'
-    default:      return 'var(--text-mute)'
+    default:      return 'var(--text)'
   }
 }
 

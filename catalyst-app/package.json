@@ -8,7 +8,7 @@
     "dev:inspect": "concurrently -k -n vite,electron -c blue,magenta \"npm:dev:vite\" \"npm:dev:electron:inspect\"",
     "dev:vite": "vite",
     "dev:electron": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron .",
-    "dev:electron:inspect": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron . --remote-debugging-port=9222",
+    "dev:electron:inspect": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron . --remote-debugging-port=9224",
     "build": "tsc -p tsconfig.main.json && vite build",
     "package": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
