@@ -27,6 +27,7 @@ import {
   loadSession,
   loadTrackConfigs,
   openDb,
+  withDb,
   insertCoachingSession,
   listCoachingSessions,
   getCoachingSession,
@@ -81,20 +82,21 @@ async function readSyncStats(): Promise<SyncStats> {
 
   let sessionCount = 0, lapCount = 0, sampleCount = 0, trackCount = 0
   try {
-    const { con } = await openDb(DB_PATH, true)
-    const reader = await con.runAndReadAll(`
-      SELECT
-        (SELECT COUNT(*) FROM sessions),
-        (SELECT COUNT(*) FROM laps),
-        (SELECT COUNT(*) FROM samples),
-        (SELECT COUNT(DISTINCT track_configuration_id) FROM sessions
-            WHERE track_configuration_id IS NOT NULL)
-    `)
-    const row = reader.getRowsJson()[0] ?? []
-    sessionCount = Number(row[0] ?? 0)
-    lapCount = Number(row[1] ?? 0)
-    sampleCount = Number(row[2] ?? 0)
-    trackCount = Number(row[3] ?? 0)
+    await withDb(async con => {
+      const reader = await con.runAndReadAll(`
+        SELECT
+          (SELECT COUNT(*) FROM sessions),
+          (SELECT COUNT(*) FROM laps),
+          (SELECT COUNT(*) FROM samples),
+          (SELECT COUNT(DISTINCT track_configuration_id) FROM sessions
+              WHERE track_configuration_id IS NOT NULL)
+      `)
+      const row = reader.getRowsJson()[0] ?? []
+      sessionCount = Number(row[0] ?? 0)
+      lapCount = Number(row[1] ?? 0)
+      sampleCount = Number(row[2] ?? 0)
+      trackCount = Number(row[3] ?? 0)
+    }, DB_PATH, true)
   } catch {
     // schema not initialised yet — treat as empty
     return empty
@@ -240,42 +242,44 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       }
       return rows
     }
-    const { con } = await openDb(DB_PATH, true)
     const whereClause = accountLabel ? 'WHERE s.account = ? OR s.account IS NULL' : ''
-    const reader = await con.runAndReadAll(`
-      SELECT s.session_guid,
-        CAST(s.session_start AS VARCHAR) AS session_start,
-        COALESCE(tc.track_name, 'Unknown') AS track_name,
-        COALESCE(tc.track_configuration_name, '') AS track_configuration_name,
-        s.best_lap_ms,
-        (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
-        (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
-        COALESCE(s.weather_description, '') AS weather_description,
-        s.account,
-        s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type
-      FROM sessions s
-      LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
-      ${whereClause}
-      ORDER BY s.session_start DESC NULLS LAST
-    `, accountLabel ? [accountLabel] as any : undefined)
-    return reader.getRowObjectsJson() as unknown as DbSessionRow[]
+    return withDb(async con => {
+      const reader = await con.runAndReadAll(`
+        SELECT s.session_guid,
+          CAST(s.session_start AS VARCHAR) AS session_start,
+          COALESCE(tc.track_name, 'Unknown') AS track_name,
+          COALESCE(tc.track_configuration_name, '') AS track_configuration_name,
+          s.best_lap_ms,
+          (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
+          (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
+          COALESCE(s.weather_description, '') AS weather_description,
+          s.account,
+          s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type
+        FROM sessions s
+        LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
+        ${whereClause}
+        ORDER BY s.session_start DESC NULLS LAST
+      `, accountLabel ? [accountLabel] as any : undefined)
+      return reader.getRowObjectsJson() as unknown as DbSessionRow[]
+    }, DB_PATH, true)
   })
 
   ipcMain.handle('db:listVehicles', async (): Promise<import('../shared/types.js').VehicleSummary[]> => {
     if (!fs.existsSync(DB_PATH)) return []
-    const { con } = await openDb(DB_PATH, true)
     let rows: any[] = []
     try {
-      const reader = await con.runAndReadAll(`
-        SELECT vehicle_guid, ANY_VALUE(vehicle_make) AS make,
-               ANY_VALUE(vehicle_model) AS model, ANY_VALUE(vehicle_year) AS year,
-               COUNT(*) AS session_count
-        FROM sessions
-        WHERE vehicle_guid IS NOT NULL
-        GROUP BY vehicle_guid
-        ORDER BY session_count DESC
-      `)
-      rows = reader.getRowObjectsJson()
+      await withDb(async con => {
+        const reader = await con.runAndReadAll(`
+          SELECT vehicle_guid, ANY_VALUE(vehicle_make) AS make,
+                 ANY_VALUE(vehicle_model) AS model, ANY_VALUE(vehicle_year) AS year,
+                 COUNT(*) AS session_count
+          FROM sessions
+          WHERE vehicle_guid IS NOT NULL
+          GROUP BY vehicle_guid
+          ORDER BY session_count DESC
+        `)
+        rows = reader.getRowObjectsJson()
+      }, DB_PATH, true)
     } catch {
       return []
     }
@@ -358,20 +362,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('coach:list', async (): Promise<CoachingSession[]> => {
     if (!fs.existsSync(DB_PATH)) return []
-    const { con } = await openDb(DB_PATH, true)
-    try { return await listCoachingSessions(con) } catch { return [] }
+    return withDb(con => listCoachingSessions(con), DB_PATH, true).catch(() => [])
   })
 
   ipcMain.handle('coach:get', async (_e, id: string): Promise<CoachingSession | null> => {
     if (!fs.existsSync(DB_PATH)) return null
-    const { con } = await openDb(DB_PATH, true)
-    return getCoachingSession(con, id)
+    return withDb(con => getCoachingSession(con, id), DB_PATH, true).catch(() => null)
   })
 
   ipcMain.handle('coach:delete', async (_e, id: string) => {
     if (!fs.existsSync(DB_PATH)) return
-    const { con } = await openDb(DB_PATH)
-    await deleteCoachingSession(con, id)
+    await withDb(con => deleteCoachingSession(con, id))
   })
 
   // ── Run coach (streaming worker) ────────────────────────────────────────────
@@ -454,9 +455,10 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           parsed_result: parsed,
         }
 
-        const { con } = await openDb(DB_PATH)
-        await initSchema(con)
-        await insertCoachingSession(con, coachingSession)
+        await withDb(async con => {
+          await initSchema(con)
+          await insertCoachingSession(con, coachingSession)
+        })
 
         broadcast(win, { kind: 'coach', type: 'progress',
           progress: { current: 3, total: 3, label: 'Done' } })
@@ -470,20 +472,21 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         // Always save a failed session — create the DB/schema if needed.
         const errorId = randomUUID()
         try {
-          const { con } = await openDb(DB_PATH)
-          await initSchema(con)
-          const errorSession: CoachingSession = {
-            id: errorId,
-            created_at: new Date().toISOString(),
-            session_guids: opts.sessionGuids,
-            profile_name: resolvedProfileName,
-            model_used: 'error',
-            title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
-            prompt: builtPrompt,
-            raw_response: collectedLogs.join('') + '\n\nERROR: ' + errMsg,
-            parsed_result: null,
-          }
-          await insertCoachingSession(con, errorSession)
+          await withDb(async con => {
+            await initSchema(con)
+            const errorSession: CoachingSession = {
+              id: errorId,
+              created_at: new Date().toISOString(),
+              session_guids: opts.sessionGuids,
+              profile_name: resolvedProfileName,
+              model_used: 'error',
+              title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
+              prompt: builtPrompt,
+              raw_response: collectedLogs.join('') + '\n\nERROR: ' + errMsg,
+              parsed_result: null,
+            }
+            await insertCoachingSession(con, errorSession)
+          })
         } catch (saveErr: any) {
           log(`[coach] (could not save error session: ${saveErr.message})`)
         }
@@ -511,17 +514,19 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('tracks:listAll', async () => {
     if (!fs.existsSync(DB_PATH)) return []
-    const { con } = await openDb(DB_PATH, true)
-    const reader = await con.runAndReadAll(`
-      SELECT tc.track_name, tc.track_configuration_name, s.mean_line_guid,
-             COUNT(*) AS session_count
-      FROM sessions s
-      LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
-      WHERE s.mean_line_guid IS NOT NULL
-      GROUP BY 1, 2, 3
-      ORDER BY session_count DESC
-    `)
-    const out = reader.getRowsJson().map((r: any) => {
+    const rows = await withDb(async con => {
+      const reader = await con.runAndReadAll(`
+        SELECT tc.track_name, tc.track_configuration_name, s.mean_line_guid,
+               COUNT(*) AS session_count
+        FROM sessions s
+        LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
+        WHERE s.mean_line_guid IS NOT NULL
+        GROUP BY 1, 2, 3
+        ORDER BY session_count DESC
+      `)
+      return reader.getRowsJson()
+    }, DB_PATH, true)
+    const out = rows.map((r: any) => {
       const trackName = String(r[0] ?? 'Unknown')
       const configName = String(r[1] ?? '')
       const meanLineGuid = r[2] != null ? String(r[2]) : null
@@ -715,8 +720,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         api.pageSize = loadConfig().api?.page_size ?? 50
 
         // Open / initialise the DB before doing any network work so we can
-        // diff against it.
-        const { con } = await openDb()
+        // diff against it. Explicitly closed after sync to release Windows file lock.
+        const syncDb = await openDb()
+        const con = syncDb.con
         await initSchema(con)
         const knownGuids = await existingSessionGuids(con)
         log(`[sync] DB already contains ${knownGuids.size} session(s)`)
@@ -797,6 +803,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         }
 
         log(`[sync] done — ${loaded} loaded, ${failed} failed, ${skipped} skipped (already in DB)`)
+        await syncDb.close()
         broadcast(win, { kind: 'sync', type: 'done' })
       } catch (e: any) {
         broadcast(win, { kind: 'sync', type: 'error', payload: `${e.message ?? e}` })

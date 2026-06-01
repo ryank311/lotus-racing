@@ -287,11 +287,34 @@ export async function existingSessionGuids(con: DuckDBConnection): Promise<Set<s
   }
 }
 
-export async function openDb(dbPath = DB_PATH, readOnly = false): Promise<{ instance: DuckDBInstance; con: DuckDBConnection }> {
+export async function openDb(dbPath = DB_PATH, readOnly = false): Promise<{
+  instance: DuckDBInstance
+  con: DuckDBConnection
+  close: () => Promise<void>
+}> {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   const instance = await DuckDBInstance.create(dbPath, readOnly ? { access_mode: 'READ_ONLY' } : {})
   const con = await instance.connect()
-  return { instance, con }
+  const close = async () => {
+    try { con.close() } catch { /* ignore */ }
+    // DuckDBInstance has no close() in node-api; closing the connection releases the file lock.
+  }
+  return { instance, con, close }
+}
+
+// Run a callback with a database connection, closing it when done.
+// Guarantees the file lock is released on all platforms (critical on Windows).
+export async function withDb<T>(
+  fn: (con: DuckDBConnection) => Promise<T>,
+  dbPath = DB_PATH,
+  readOnly = false,
+): Promise<T> {
+  const db = await openDb(dbPath, readOnly)
+  try {
+    return await fn(db.con)
+  } finally {
+    await db.close()
+  }
 }
 
 export interface LoadProgress {
@@ -318,34 +341,38 @@ export async function loadAll(
     }
   }
 
-  const { con } = await openDb(dbPath)
-  await initSchema(con)
-  const tcCount = await loadTrackConfigs(con)
-  log(`[track_configs] ${tcCount} rows`)
-
-  if (!fs.existsSync(SESSIONS_DIR)) {
-    log(`[ERROR] no sessions directory at ${SESSIONS_DIR}`)
-    return { sessions: 0, samples: 0 }
-  }
-  const targets = fs.readdirSync(SESSIONS_DIR)
-    .map(n => path.join(SESSIONS_DIR, n))
-    .filter(p => fs.statSync(p).isDirectory())
-    .sort()
-
+  const db = await openDb(dbPath)
   let totalSamples = 0
-  for (let i = 0; i < targets.length; i++) {
-    const d = targets[i]
-    const guid = path.basename(d)
-    onProgress?.({ current: i + 1, total: targets.length, label: `${guid.slice(0, 8)}…` })
-    try {
-      const n = await loadSession(con, d)
-      totalSamples += n
-      log(`[${i + 1}/${targets.length}] ${guid}: ${n.toLocaleString()} samples`)
-    } catch (e: any) {
-      log(`[${i + 1}/${targets.length}] ${guid}: FAILED ${e.message ?? e}`)
+  try {
+    await initSchema(db.con)
+    const tcCount = await loadTrackConfigs(db.con)
+    log(`[track_configs] ${tcCount} rows`)
+
+    if (!fs.existsSync(SESSIONS_DIR)) {
+      log(`[ERROR] no sessions directory at ${SESSIONS_DIR}`)
+      return { sessions: 0, samples: 0 }
     }
+    const targets = fs.readdirSync(SESSIONS_DIR)
+      .map(n => path.join(SESSIONS_DIR, n))
+      .filter(p => fs.statSync(p).isDirectory())
+      .sort()
+
+    for (let i = 0; i < targets.length; i++) {
+      const d = targets[i]
+      const guid = path.basename(d)
+      onProgress?.({ current: i + 1, total: targets.length, label: `${guid.slice(0, 8)}…` })
+      try {
+        const n = await loadSession(db.con, d)
+        totalSamples += n
+        log(`[${i + 1}/${targets.length}] ${guid}: ${n.toLocaleString()} samples`)
+      } catch (e: any) {
+        log(`[${i + 1}/${targets.length}] ${guid}: FAILED ${e.message ?? e}`)
+      }
+    }
+  } finally {
+    await db.close()
   }
-  return { sessions: targets.length, samples: totalSamples }
+  return { sessions: fs.existsSync(SESSIONS_DIR) ? fs.readdirSync(SESSIONS_DIR).filter(n => fs.statSync(path.join(SESSIONS_DIR, n)).isDirectory()).length : 0, samples: totalSamples }
 }
 
 // ─── Coaching session persistence ─────────────────────────────────────────────
