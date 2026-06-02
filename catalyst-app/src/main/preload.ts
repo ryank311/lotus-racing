@@ -8,6 +8,7 @@ import type {
   CoachOptions,
   AiSettings,
 } from '../shared/types.js'
+import type { UnitSystem } from '../shared/units.js'
 
 const bridge: CatalystBridge = {
   getAuthState: () => ipcRenderer.invoke('auth:state'),
@@ -65,7 +66,7 @@ const bridge: CatalystBridge = {
     return () => ipcRenderer.off('app:log', handler)
   },
 
-  buildAnalysis: (sessionGuids: string[]) => ipcRenderer.invoke('analysis:build', sessionGuids),
+  buildAnalysis: (sessionGuids: string[], units?: UnitSystem) => ipcRenderer.invoke('analysis:build', sessionGuids, units),
 
   // AI Coach
   runCoach: (opts: CoachOptions) => ipcRenderer.invoke('coach:run', opts),
@@ -74,6 +75,13 @@ const bridge: CatalystBridge = {
   deleteCoachSession: (id: string) => ipcRenderer.invoke('coach:delete', id),
   getAiSettings: () => ipcRenderer.invoke('ai:getSettings'),
   saveAiSettings: (s: AiSettings) => ipcRenderer.invoke('ai:saveSettings', s),
+
+  // Units (Metric vs Imperial)
+  getUnits: () => ipcRenderer.invoke('units:get'),
+  setUnits: (system: UnitSystem) => ipcRenderer.invoke('units:set', system),
+
+  // Account / driver totals
+  getAccountStats: () => ipcRenderer.invoke('account:stats'),
 
   // Tracks editor
   listTracks: () => ipcRenderer.invoke('tracks:listAll'),

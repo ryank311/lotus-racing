@@ -8,17 +8,17 @@ import { COACHING_DIR, DB_PATH, TRACKS_DIR } from './paths.js'
 import { loadTrackYaml, resolveTrackYamlPath, TrackCorner, TrackSegment, TrackYaml } from './trackYaml.js'
 import { resolveProfileDir } from './profiles.js'
 import { openDb } from './loadToDb.js'
-
-// Speed is stored in m/s but the brief presents everything in mph so the AI
-// reads and reasons in the same unit it answers in — no conversion required.
-const MPS_TO_MPH = 2.23694
+import {
+  DEFAULT_UNIT_SYSTEM, speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem,
+} from '../shared/units.js'
 
 // Each entry: [sqlColumn, [units, interpretation], opts?]. `opts.display` is the
 // name shown in the brief (when it differs from the SQL column); `opts.scale`
-// multiplies the observed min/max/avg before display — used to present the raw
-// m/s speed channel as mph so the AI never has to convert.
-export const CONFIRMED_FIELD_LABELS: Array<[string, [string, string], { display?: string; scale?: number }?]> = [
-  ['gnss_speed_mps', ['mph', 'GPS speed in miles per hour. Use this for all speed-dependent analysis. Typical range: 0–135 mph at VIR.'], { display: 'gnss_speed_mph', scale: MPS_TO_MPH }],
+// multiplies the observed min/max/avg before display. `opts.speed` marks the
+// raw m/s speed channel, which is converted to the active display unit (mph or
+// km/h) at render time so the AI reads the same unit the app shows.
+export const CONFIRMED_FIELD_LABELS: Array<[string, [string, string], { display?: string; scale?: number; speed?: boolean }?]> = [
+  ['gnss_speed_mps', ['speed', 'GPS speed. Use this for all speed-dependent analysis.'], { speed: true }],
   ['gnss_heading_deg', ['°', 'Compass heading 0–360°. Increases clockwise (N=0, E=90). Rate of change indicates yaw; near-constant = straight.']],
   ['gnss_heading_deriv_dps', ['°/s', 'Heading rate of change (yaw rate from GPS). Near zero on straights, peaks in corners. Positive = turning right.']],
   ['gnss_accuracy_m', ['m', 'GPS fix accuracy estimate. Smaller = better. Typical: 0.4–1.5 m. Not a driver input channel.']],
@@ -31,8 +31,6 @@ export const CONFIRMED_FIELD_LABELS: Array<[string, [string, string], { display?
   ['gyro_yaw_dps', ['°/s', 'Yaw angular rate from IMU (rotation about vertical axis). Complements gnss_heading_deriv_dps. Used internally for stability estimation.']],
   ['lateral_position', ['0–1', 'Normalised position across the track width relative to the GPS meanline. Interpretation: 0 = one edge, 1 = other edge, 0.5 = centerline. Use to track apexing behaviour and line width.']],
 ]
-
-const mph = (mps: number | null | undefined): number => (mps ?? 0) * MPS_TO_MPH
 
 function msToLap(ms: number | null | undefined): string {
   if (ms == null || ms <= 0) return '—'
@@ -49,13 +47,13 @@ function compass(deg: number | null | undefined): string {
   return COMPASS_16[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16]
 }
 
-// Wind as "25.2 mph from NE (30°)"; empty string when no data. Presented in mph
-// to match every other speed in the brief.
-function fmtWind(speedMps: number | null | undefined, dirDeg: number | null | undefined): string {
+// Wind as "25.2 mph from NE (30°)"; empty string when no data. Presented in the
+// active speed unit to match every other speed in the brief.
+function fmtWind(speedMps: number | null | undefined, dirDeg: number | null | undefined, system: UnitSystem): string {
   if (speedMps == null || Number.isNaN(speedMps)) return ''
   const dir = compass(dirDeg)
   const from = dir ? ` from ${dir} (${Math.round(dirDeg!)}°)` : ''
-  return `${mph(speedMps).toFixed(1)} mph${from}`
+  return `${speedFromMps(speedMps, system).toFixed(1)} ${speedUnitLabel(system)}${from}`
 }
 
 function inlineMd(p: string, headingDemote = 1): string {
@@ -278,10 +276,18 @@ export interface BuildBriefOpts {
   profileName: string
   includeGuides?: boolean
   dataDirRelpath?: string | null
+  system?: UnitSystem
 }
 
 export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   const { sessions, trackYaml, scope, con, profileDir, profileName, includeGuides, dataDirRelpath } = opts
+  // Active unit system — every speed/temperature in the brief uses these so the
+  // AI reads and answers in the same units the app displays.
+  const system = opts.system ?? DEFAULT_UNIT_SYSTEM
+  const spd = (mps: number | null | undefined): number => speedFromMps(mps ?? 0, system)
+  const spdU = speedUnitLabel(system)
+  const tmp = (c: number): number => tempFromC(c, system)
+  const tmpU = tempUnitLabel(system)
   const today = new Date().toISOString().slice(0, 10)
   const configName = trackYaml.track_configuration_name ?? 'Unknown'
   const segments = trackYaml.segments ?? []
@@ -338,14 +344,14 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   parts.push('')
   parts.push('Weather is captured per session at session start. Conditions (temperature, humidity, wind) materially affect grip, braking, and achievable pace — weigh them when comparing sessions and laps.')
   parts.push('')
-  parts.push('| Date | Config | Weather | Temp °C | Humidity % | Wind | Best Lap | Laps |')
+  parts.push(`| Date | Config | Weather | Temp ${tmpU} | Humidity % | Wind | Best Lap | Laps |`)
   parts.push('|------|--------|---------|--------:|-----------:|------|---------:|-----:|')
   for (const s of sessions) {
     const lapsRow = await rowsToDicts(con, 'SELECT COUNT(*) AS n FROM laps WHERE session_guid = ?', [s.session_guid])
     const nlaps = lapsRow[0]?.n ?? 0
-    const temp = s.temperature_c != null ? s.temperature_c.toFixed(1) : ''
+    const temp = s.temperature_c != null ? tmp(s.temperature_c).toFixed(1) : ''
     const humidity = s.humidity_pct != null ? Math.round(s.humidity_pct) : ''
-    parts.push(`| ${s.session_start ?? '?'} | ${s.track_configuration_name ?? '?'} | ${s.weather_description ?? ''} | ${temp} | ${humidity} | ${fmtWind(s.wind_speed_mps, s.wind_direction_deg)} | ${msToLap(s.best_lap_ms)} | ${nlaps} |`)
+    parts.push(`| ${s.session_start ?? '?'} | ${s.track_configuration_name ?? '?'} | ${s.weather_description ?? ''} | ${temp} | ${humidity} | ${fmtWind(s.wind_speed_mps, s.wind_direction_deg, system)} | ${msToLap(s.best_lap_ms)} | ${nlaps} |`)
   }
   parts.push('')
 
@@ -360,14 +366,14 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     bySession.get(L.session_guid)!.push(L)
   }
 
-  parts.push('| Session | Lap | Type | Duration | Δ best | Max speed (mph) | Max |lat_g| (m/s²) | Max long_accel (m/s²) | Min long_accel (m/s²) |')
+  parts.push(`| Session | Lap | Type | Duration | Δ best | Max speed (${spdU}) | Max |lat_g| (m/s²) | Max long_accel (m/s²) | Min long_accel (m/s²) |`)
   parts.push('|---------|----:|------|----------:|-------:|----------------:|------------------:|----------------------:|----------------------:|')
   for (const [sg, laps] of bySession) {
     const durs = laps.map(L => L.duration_ms).filter(Boolean)
     const bestMs = durs.length ? Math.min(...durs) : 0
     for (const L of laps) {
       const delta = bestMs && L.duration_ms ? (L.duration_ms - bestMs) / 1000 : 0
-      parts.push(`| ${sg.slice(0, 8)}… | ${L.lap_index + 1} | ${L.lap_type ?? ''} | ${msToLap(L.duration_ms)} | ${delta >= 0 ? '+' : ''}${delta.toFixed(3)}s | ${mph(L.max_speed).toFixed(1)} | ${(L.max_lat_g ?? 0).toFixed(3)} | ${(L.max_long_accel ?? 0) >= 0 ? '+' : ''}${(L.max_long_accel ?? 0).toFixed(3)} | ${(L.min_long_accel ?? 0) >= 0 ? '+' : ''}${(L.min_long_accel ?? 0).toFixed(3)} |`)
+      parts.push(`| ${sg.slice(0, 8)}… | ${L.lap_index + 1} | ${L.lap_type ?? ''} | ${msToLap(L.duration_ms)} | ${delta >= 0 ? '+' : ''}${delta.toFixed(3)}s | ${spd(L.max_speed).toFixed(1)} | ${(L.max_lat_g ?? 0).toFixed(3)} | ${(L.max_long_accel ?? 0) >= 0 ? '+' : ''}${(L.max_long_accel ?? 0).toFixed(3)} | ${(L.min_long_accel ?? 0) >= 0 ? '+' : ''}${(L.min_long_accel ?? 0).toFixed(3)} |`)
     }
   }
   parts.push('')
@@ -410,7 +416,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   // Per-corner stats
   if (corners.length) {
     parts.push('## Per-corner stats — every lap')
-    parts.push('**entry**=avg speed first 5 samples of zone, **apex**=min speed in zone, **exit**=avg speed last 5 samples, **drop**=entry-apex. All speeds in mph. max_lat_g = max(|accel_y_mps2|) in m/s² (÷9.81 for g). min_accel_g = min(accel_x_mps2) m/s² — most negative = hardest braking.')
+    parts.push(`**entry**=avg speed first 5 samples of zone, **apex**=min speed in zone, **exit**=avg speed last 5 samples, **drop**=entry-apex. All speeds in ${spdU}. max_lat_g = max(|accel_y_mps2|) in m/s² (÷9.81 for g). min_accel_g = min(accel_x_mps2) m/s² — most negative = hardest braking.`)
     parts.push('')
 
     const allCornerRows: Array<{ sg: string; lap: number; turn: string } & CornerStat> = []
@@ -463,24 +469,24 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     }
 
     parts.push('### One row per (lap, corner)')
-    parts.push('Speed columns in mph. lat_g = |accel_y_mps2| m/s². min_accel_g = min(accel_x_mps2) m/s² (negative = braking). ÷9.81 for g-force.')
+    parts.push(`Speed columns in ${spdU}. lat_g = |accel_y_mps2| m/s². min_accel_g = min(accel_x_mps2) m/s² (negative = braking). ÷9.81 for g-force.`)
     parts.push('lateral_pos: 0=driver-left edge, 1=driver-right edge, 0.5=centerline. entry/apex/exit lateral_pos shows line choice through the corner.')
-    parts.push('| Sess | Lap | Turn | Name | Entry (mph) | Apex (mph) | Exit (mph) | Drop (mph) | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |')
+    parts.push(`| Sess | Lap | Turn | Name | Entry (${spdU}) | Apex (${spdU}) | Exit (${spdU}) | Drop (${spdU}) | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |`)
     parts.push('|------|----:|------|------|------------:|-----------:|-----------:|-----------:|------------:|---------------:|-----------:|----------:|----------:|')
     for (const r of allCornerRows) {
       const lat = lateralRows.get(`${r.sg}:${r.lap - 1}:${r.turn}`)
       const fmtL = (v: number | null | undefined) => v == null ? '—' : v.toFixed(2)
-      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${mph(r.entry_speed).toFixed(1)} | ${mph(r.apex_speed).toFixed(1)} | ${mph(r.exit_speed).toFixed(1)} | ${mph(r.speed_drop).toFixed(1)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
+      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${spd(r.entry_speed).toFixed(1)} | ${spd(r.apex_speed).toFixed(1)} | ${spd(r.exit_speed).toFixed(1)} | ${spd(r.speed_drop).toFixed(1)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
     }
     parts.push('')
 
     parts.push('### Personal-best per corner')
-    parts.push('| Turn | Name | Best apex (mph) | Best exit (mph) | Hardest braking min(accel_x) m/s² | Max LatG |accel_y| m/s² |')
+    parts.push(`| Turn | Name | Best apex (${spdU}) | Best exit (${spdU}) | Hardest braking min(accel_x) m/s² | Max LatG |accel_y| m/s² |`)
     parts.push('|------|------|----------------:|----------------:|----------------------------------:|---------------------:|')
     for (const c of corners) {
       const pb = pbCorner.get(c.turn)
       if (!pb) continue
-      parts.push(`| ${c.turn} | ${c.name ?? '?'} | ${mph(pb.best_apex_speed).toFixed(1)} | ${mph(pb.best_exit_speed).toFixed(1)} | ${pb.best_min_accel >= 0 ? '+' : ''}${pb.best_min_accel.toFixed(2)} | ${pb.best_max_lat_g.toFixed(2)} |`)
+      parts.push(`| ${c.turn} | ${c.name ?? '?'} | ${spd(pb.best_apex_speed).toFixed(1)} | ${spd(pb.best_exit_speed).toFixed(1)} | ${pb.best_min_accel >= 0 ? '+' : ''}${pb.best_min_accel.toFixed(2)} | ${pb.best_max_lat_g.toFixed(2)} |`)
     }
     parts.push('')
   }
@@ -495,12 +501,12 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
       parts.push(`_${bestSession.session_guid.slice(0, 8)}… lap ${bestLap.lap_index + 1} (${msToLap(bestLap.duration_ms)})_`)
       parts.push('')
       const trace = await fetchBestLapTrace(con, bestSession.session_guid, bestLap.lap_index, 50)
-      parts.push('speed in mph (converted from gnss_speed_mps), long_accel=accel_x_mps2 (m/s², neg=braking), lat_g=accel_y_mps2 (m/s², |val|/9.81=g), altitude=gnss_altitude_m (m MSL), lateral_pos=lateral_position (0–1), heading=gnss_heading_deg (°)')
+      parts.push(`speed in ${spdU} (converted from gnss_speed_mps), long_accel=accel_x_mps2 (m/s², neg=braking), lat_g=accel_y_mps2 (m/s², |val|/9.81=g), altitude=gnss_altitude_m (m MSL), lateral_pos=lateral_position (0–1), heading=gnss_heading_deg (°)`)
       parts.push('')
-      parts.push('| dist_m | speed (mph) | long_accel (m/s²) | lat_g (m/s²) | altitude (m) | lateral_pos | heading (°) |')
+      parts.push(`| dist_m | speed (${spdU}) | long_accel (m/s²) | lat_g (m/s²) | altitude (m) | lateral_pos | heading (°) |`)
       parts.push('|-------:|------------:|------------------:|-------------:|-------------:|------------:|------------:|')
       for (const p of trace) {
-        parts.push(`| ${p.distance_m} | ${mph(p.gnss_speed_mps).toFixed(1)} | ${(p.accel_x_mps2 ?? 0) >= 0 ? '+' : ''}${(p.accel_x_mps2 ?? 0).toFixed(3)} | ${(p.accel_y_mps2 ?? 0) >= 0 ? '+' : ''}${(p.accel_y_mps2 ?? 0).toFixed(3)} | ${(p.gnss_altitude_m ?? 0).toFixed(1)} | ${(p.lateral_position ?? 0).toFixed(3)} | ${(p.gnss_heading_deg ?? 0).toFixed(1)} |`)
+        parts.push(`| ${p.distance_m} | ${spd(p.gnss_speed_mps).toFixed(1)} | ${(p.accel_x_mps2 ?? 0) >= 0 ? '+' : ''}${(p.accel_x_mps2 ?? 0).toFixed(3)} | ${(p.accel_y_mps2 ?? 0) >= 0 ? '+' : ''}${(p.accel_y_mps2 ?? 0).toFixed(3)} | ${(p.gnss_altitude_m ?? 0).toFixed(1)} | ${(p.lateral_position ?? 0).toFixed(3)} | ${(p.gnss_heading_deg ?? 0).toFixed(1)} |`)
       }
       parts.push('')
     }
@@ -540,13 +546,15 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   parts.push('| Column | Units | Interpretation | min | max | avg |')
   parts.push('|--------|-------|----------------|----:|----:|----:|')
   CONFIRMED_FIELD_LABELS.forEach(([col, [units, note], opts], i) => {
-    const scale = opts?.scale ?? 1
-    const display = opts?.display ?? col
+    // The speed channel is converted to the active display unit; others pass through.
+    const scale = opts?.speed ? speedFromMps(1, system) : (opts?.scale ?? 1)
+    const unitLabel = opts?.speed ? spdU : units
+    const display = opts?.speed ? `gnss_speed_${system === 'imperial' ? 'mph' : 'kmh'}` : (opts?.display ?? col)
     const mn = (statsArr[i * 3] ?? 0) * scale
     const mx = (statsArr[i * 3 + 1] ?? 0) * scale
     const av = (statsArr[i * 3 + 2] ?? 0) * scale
     const fmt = (Math.abs(mx) < 10 && Math.abs(mn) < 10) ? 3 : 2
-    parts.push(`| \`${display}\` | ${units} | ${note} | ${mn.toFixed(fmt)} | ${mx.toFixed(fmt)} | ${av.toFixed(fmt)} |`)
+    parts.push(`| \`${display}\` | ${unitLabel} | ${note} | ${mn.toFixed(fmt)} | ${mx.toFixed(fmt)} | ${av.toFixed(fmt)} |`)
   })
   parts.push('')
 
@@ -593,6 +601,7 @@ export interface BriefRunOpts {
   csv?: boolean
   outPath?: string
   dbPath?: string
+  system?: UnitSystem
 }
 
 function slugify(s: string): string {
@@ -746,6 +755,7 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
       profileDir: profile.dir, profileName: profile.name,
       includeGuides: opts.includeGuides,
       dataDirRelpath: dataRelPath,
+      system: opts.system,
     })
     fs.writeFileSync(outPath, brief)
     return { outPath, sessions: sessions.length }
@@ -756,7 +766,9 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
 
 // ─── AI Coach: structured-output prompt ──────────────────────────────────────
 
-const STRUCTURED_OUTPUT_INSTRUCTIONS = `
+function structuredOutputInstructions(system: UnitSystem): string {
+  const spdU = speedUnitLabel(system)
+  return `
 
 ---
 
@@ -765,7 +777,7 @@ const STRUCTURED_OUTPUT_INSTRUCTIONS = `
 You are a professional HPDE coach analysing the telemetry data above. Write like you're talking directly to the driver — specific, clear, and grounded in the numbers. Produce:
 
 1. **Headline** — one sentence naming the single biggest opportunity. Quantify the gap and name the area (e.g. "2.8s gap to theoretical best — Esses commitment and Oak Tree exit are the primary limiters").
-2. **Tips** — 3–6 coaching tips, each focused on a specific corner (T4, T7-T9) or segment (S3). Describe what the driver is doing, why it costs time, and what to change. Express all speeds in mph.
+2. **Tips** — 3–6 coaching tips, each focused on a specific corner (T4, T7-T9) or segment (S3). Describe what the driver is doing, why it costs time, and what to change. Express all speeds in ${spdU}.
 3. **Drills** — 3–5 concrete practice exercises for the next track day that directly target the problems identified.
 4. **Car setup** — setup/configuration changes the telemetry supports (tyre pressure, alignment, suspension, ride height, brakes, aero, differential, etc.). This is OPTIONAL and frequently empty: only suggest a change when the data shows a clear mechanical signature, not a driver-input one. Examples of evidence: a corner where the driver carries good entry speed but the car won't rotate (mid-corner understeer in lateral G + a wide apex line) → soften front bar / add front camber / lower front pressures; snap or scrub on exit (oversteer signature) → soften rear / raise rear pressures; lock-ups or long braking zones → brake bias; grip that falls off as air/track temperature rises across sessions → pressure or compound note. If nothing in the data justifies a change, return an empty \`setup\` array — do not invent advice.
 
@@ -809,11 +821,11 @@ After your written analysis, append a SINGLE JSON block in exactly this format (
 }
 \`\`\`
 
-All speed values in the data above are already in **mph** — read them straight through, no conversion needed.
+All speed values in the data above are already in **${spdU}** — read them straight through, no conversion needed. (The JSON example above shows mph; quote ${spdU} in your output to match the tables.)
 
 Rules for tip and annotation body text:
 - Write in plain sentences — no bullet points, no raw data dumps
-- Quote speeds in mph exactly as they appear in the tables
+- Quote speeds in ${spdU} exactly as they appear in the tables
 - tip \`body\`: 2–4 sentences. Describe the pattern you see, the time cost, and the specific fix
 - annotation \`body\`: 1–2 sentences shown as a callout on the track map — direct and actionable, written to the driver
 
@@ -821,12 +833,12 @@ Rules for annotations:
 - \`type\`: corner_tip | segment_tip | speed_annotation | line_deviation
 - \`ref\` must be a single label exactly matching a corner (T4) or segment (S3) from the data — no ranges in ref, one annotation per corner
 - \`severity\`: 1 = minor, 2 = meaningful gain available, 3 = critical issue affecting safety or significant time
-- \`actual_apex_mph\` / \`target_apex_mph\`: include in mph for corner_tip when the data supports it (copy the values straight from the per-corner tables)
+- \`actual_apex_mph\` / \`target_apex_mph\`: the driver's and target apex speed, always in **mph** regardless of the table unit (these two numeric fields are canonical; the app converts to ${spdU} for display). Optional — include for corner_tip when the data supports it.
 - The flat \`annotations\` array must list every annotation from every tip — this duplication is required
 - Use empty arrays rather than omitting array fields; omit optional speed fields rather than guessing
 
 Rules for setup:
-- Each item: \`area\` (e.g. "Tire pressure", "Alignment", "Suspension", "Ride height", "Brakes", "Aero", "Differential"), \`change\` (the concrete adjustment, with direction and rough magnitude where the data allows), \`rationale\` (the data that motivates it — cite corners/segments/laps/conditions, speeds in mph), and \`confidence\` (1 speculative · 2 likely · 3 strong evidence).
+- Each item: \`area\` (e.g. "Tire pressure", "Alignment", "Suspension", "Ride height", "Brakes", "Aero", "Differential"), \`change\` (the concrete adjustment, with direction and rough magnitude where the data allows), \`rationale\` (the data that motivates it — cite corners/segments/laps/conditions, speeds in ${spdU}), and \`confidence\` (1 speculative · 2 likely · 3 strong evidence).
 - Distinguish car problems from driver problems. A wide line because the driver turned in early is a driving tip, not a setup change. Only recommend setup when the signature is mechanical (consistent across laps, present even on the driver's best laps, visible in lateral/longitudinal G or braking traces).
 - Prefer one to three high-quality recommendations over a long speculative list. An empty \`setup: []\` is a valid and good answer when the data doesn't justify changes — say nothing rather than guessing.
 
@@ -840,10 +852,11 @@ Rules for coach_line:
 
 Consistency loss: theoretical_best_ms − actual_best_ms from the lap table.
 `
+}
 
 export async function buildCoachPrompt(opts: BuildBriefOpts): Promise<string> {
   const brief = await buildBrief(opts)
-  return brief + STRUCTURED_OUTPUT_INSTRUCTIONS
+  return brief + structuredOutputInstructions(opts.system ?? DEFAULT_UNIT_SYSTEM)
 }
 
 export interface CoachRunOpts {
@@ -851,6 +864,7 @@ export interface CoachRunOpts {
   profile: string
   scope: 'overview' | 'corner' | 'compare'
   dbPath?: string
+  system?: UnitSystem
 }
 
 export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; profile: string }> {
@@ -883,6 +897,7 @@ export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; pr
       sessions, trackYaml, scope: opts.scope, con,
       profileDir: profile.dir, profileName: profile.name,
       includeGuides: true,
+      system: opts.system,
     })
 
     return { prompt, profile: profile.name }

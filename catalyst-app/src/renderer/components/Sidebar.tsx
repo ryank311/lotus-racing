@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs'
+export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
 
 interface NavSpec {
   key: NavKey
@@ -74,11 +74,21 @@ const BugIcon = () => (
   </svg>
 )
 
-export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
+const UserIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
+    <circle cx="12" cy="8" r="4" />
+    <path d="M5 21v-1a7 7 0 0 1 14 0v1" />
+  </svg>
+)
+
+export function Sidebar({ active, onChange, connected, selectionCount = 0, signedIn, email, onSignIn }: {
   active: NavKey
   onChange: (k: NavKey) => void
   connected: boolean
   selectionCount?: number
+  signedIn: boolean
+  email: string | null
+  onSignIn: () => void
 }) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -137,6 +147,15 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0 }: {
           </div>
         ))}
       </nav>
+
+      <button
+        className={`sidebar-account ${active === 'account' ? 'active' : ''}`}
+        onClick={() => (signedIn ? onChange('account') : onSignIn())}
+        title={signedIn ? (email ?? 'Account') : 'Sign in'}
+      >
+        <UserIcon />
+        <span className="sidebar-account-label">{signedIn ? email : 'Sign in'}</span>
+      </button>
 
       <div className="sidebar-footer">
         <div className="row-center">

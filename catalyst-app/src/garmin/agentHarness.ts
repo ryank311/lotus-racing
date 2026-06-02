@@ -1,27 +1,22 @@
-// Agent harness — sends a prompt to an LLM and streams the response back.
-// Two implementations: local (spawns the `claude` CLI) and remote (Anthropic API via https).
-// Main-process only — never imported in the renderer.
-//
-// KEY RULES:
-//   - Never use spawnSync/execSync — they block the Electron main thread and freeze the UI.
-//   - Write large prompts to a temp file; piping 100K+ bytes to stdin deadlocks the OS pipe.
+// Agent harness — sends a prompt to the Anthropic Messages API and returns the
+// response. Remote-only. Main-process only — never imported in the renderer.
 
-import { spawn } from 'node:child_process'
 import https from 'node:https'
-import os from 'node:os'
-import path from 'node:path'
 
-export type HarnessConfig =
-  | { harness: 'local'; cliPath?: string }
-  | { harness: 'remote'; apiKey: string; model: string; maxTokens?: number; stream?: boolean
-      tools?: object[]; toolChoice?: { type: 'tool'; name: string } }
+export interface HarnessConfig {
+  apiKey: string
+  model: string
+  maxTokens?: number
+  stream?: boolean
+  tools?: object[]
+  toolChoice?: { type: 'tool'; name: string }
+}
 
 export async function runAgent(
   prompt: string,
   config: HarnessConfig,
   onChunk: (text: string) => void,
 ): Promise<string> {
-  if (config.harness === 'local') return runLocal(prompt, config.cliPath, onChunk)
   return runRemote(
     prompt, config.apiKey, config.model, onChunk,
     config.maxTokens ?? 32000, config.stream ?? true,
@@ -29,124 +24,7 @@ export async function runAgent(
   )
 }
 
-// ─── Async helpers ────────────────────────────────────────────────────────────
-
-// Non-blocking version check — resolves with stdout or rejects on error/timeout.
-function checkVersion(bin: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(bin, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
-    let out = '', err = ''
-    proc.stdout.on('data', (c: Buffer) => { out += c.toString() })
-    proc.stderr.on('data', (c: Buffer) => { err += c.toString() })
-    const t = setTimeout(() => { proc.kill(); reject(new Error('--version timed out')) }, 8000)
-    proc.on('error', e => { clearTimeout(t); reject(e) })
-    proc.on('close', code => {
-      clearTimeout(t)
-      if (code !== 0) reject(new Error(`exit ${code}${err ? ': ' + err.slice(0, 200) : ''}`))
-      else resolve(out.trim())
-    })
-  })
-}
-
-// Locate the claude binary without blocking the UI.
-async function resolveClaudeBin(cliPath?: string, onChunk?: (t: string) => void): Promise<string> {
-  if (cliPath) return cliPath
-  const candidates = [
-    path.join(os.homedir(), '.local/bin/claude'),
-    '/usr/local/bin/claude',
-    '/opt/homebrew/bin/claude',
-  ]
-  for (const c of candidates) {
-    try { await checkVersion(c); return c } catch { /* try next */ }
-  }
-  // Fall back to PATH — version check will surface the error if it's not there
-  return 'claude'
-}
-
-// ─── Local: claude CLI ────────────────────────────────────────────────────────
-
-async function runLocal(
-  prompt: string,
-  cliPath: string | undefined,
-  onChunk: (text: string) => void,
-): Promise<string> {
-  const bin = await resolveClaudeBin(cliPath, onChunk)
-
-  // ── Diagnostics (non-blocking) ──────────────────────────────────────────
-  onChunk(`[diag] binary : ${bin}\n`)
-  onChunk(`[diag] user   : ${os.userInfo().username}\n`)
-  onChunk(`[diag] PATH   : ${process.env.PATH?.slice(0, 120)}…\n`)
-
-  let version = '(unknown)'
-  try { version = await checkVersion(bin) } catch (e: any) {
-    throw new Error(`'${bin} --version' failed: ${e.message}\nSet a custom cliPath in AI Coach settings if the binary is elsewhere.`)
-  }
-  onChunk(`[diag] version : ${version.slice(0, 80)}\n`)
-
-  onChunk(`[diag] prompt  : ${(prompt.length / 1024).toFixed(1)} KB\n`)
-  onChunk(`[harness] spawning: ${bin} --print "<prompt>"\n`)
-  return spawnWithArg(bin, prompt, onChunk)
-}
-
-// Pass the prompt as a positional argument — matches the documented CLI usage:
-//   claude [options] [command] [prompt]
-// stdin is ignored entirely, avoiding all pipe/stream issues.
-function spawnWithArg(bin: string, prompt: string, onChunk: (t: string) => void): Promise<string> {
-  return new Promise((resolve, reject) => {
-    onChunk(`[harness] spawn ${bin} --print "<prompt>" (no stdin)\n`)
-
-    const proc = spawn(bin, ['--print', prompt], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-    })
-    onChunk(`[harness] pid=${proc.pid ?? '?'}\n`)
-
-    let full = ''
-
-    proc.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8')
-      full += text
-      onChunk(text)
-    })
-
-    proc.stderr.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8').trim()
-      if (text) onChunk(`[stderr] ${text}\n`)
-    })
-
-    proc.on('error', err => reject(new Error(`spawn error: ${err.message}`)))
-
-    proc.on('close', (code, signal) => {
-      onChunk(`[harness] exited code=${code} signal=${signal}\n`)
-      if (code !== 0 && code !== null) {
-        reject(new Error(`claude CLI exited ${code} — check [stderr] lines above`))
-      } else {
-        resolve(full)
-      }
-    })
-
-    // Heartbeat: every 30 s confirm the process is still alive.
-    // claude --print buffers all output until done, so silence is expected.
-    let elapsed = 0
-    const heartbeat = setInterval(() => {
-      elapsed += 30
-      const ps = spawn('ps', ['-p', String(proc.pid), '-o', 'pid,stat'])
-      let psOut = ''
-      ps.stdout.on('data', (c: Buffer) => { psOut += c.toString() })
-      ps.on('close', () => {
-        const alive = psOut.includes(String(proc.pid))
-        if (alive) {
-          onChunk(`[harness] still running (${elapsed}s elapsed, waiting for API response…)\n`)
-        } else {
-          onChunk('[harness] process no longer in ps — may have exited before close event\n')
-        }
-      })
-    }, 30_000)
-    proc.on('close', () => clearInterval(heartbeat))
-  })
-}
-
-// ─── Remote: Anthropic Messages API (SSE streaming) ──────────────────────────
+// ─── Anthropic Messages API (SSE streaming) ──────────────────────────────────
 
 const THINKING_PHRASES = [
   'Reviewing lap data…',

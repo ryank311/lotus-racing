@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisData, RacingLineLap, TrackGeometryPayload, CoachLinePoint } from '../../garmin/analysisData'
 import type { CoachAnnotation } from '../../shared/types'
+import { useUnits } from '../units'
 import { LAP_PALETTE } from './PlotlyChart'
 
 // Structural subset of AnalysisData that this component actually needs. Both
@@ -174,6 +175,8 @@ function HeatmapPath({ lap, values, vmin, vmax }: {
 
 export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner, hoverRef, focusAnnotation, coachLine, aiCoachLine }: Props) {
   const { trackGeometry: geom, racingLines } = data
+  // Speed values in `data` are already in the active display unit; this labels them.
+  const speedUnit = (data as AnalysisData).speedUnit ?? 'mph'
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const dragStateRef = useRef<{ x: number; y: number; vb: ViewBox } | null>(null)
@@ -950,7 +953,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         </div>
         <div className="track-map-legend-labels">
           {(() => {
-            const { unit, abs } = METRIC_META[metric]
+            const { unit: rawUnit, abs } = METRIC_META[metric]
+            const unit = metric === 'speed_mph' ? speedUnit : rawUnit
             const fmt = (v: number) => metric === 'speed_mph' ? `${Math.round(v)} ${unit}` : `${v.toFixed(2)}${unit}`
             return <>
               <span>{fmt(vmin)}</span>
@@ -966,7 +970,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         )}
         {crosshair && hoverDistanceM != null && (
           <div className="track-map-legend-hover">
-            {Math.round(hoverDistanceM)} m · {crosshair.speed.toFixed(1)} mph
+            {Math.round(hoverDistanceM)} m · {crosshair.speed.toFixed(1)} {speedUnit}
           </div>
         )}
         {showCoachLine && coachLine && (
@@ -998,7 +1002,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
               const idx = i === 0 ? hoverIdx : nearestDistIdx(lap.dist, distM)
               const color = i === 0 ? '#ff5e3a' : LAP_PALETTE[(i - 1) % LAP_PALETTE.length]
               const label = `L${lap.lapIdx + 1}${i === 0 ? ' ★' : ''}`
-              const { unit } = METRIC_META[metric]
+              const unit = metric === 'speed_mph' ? speedUnit : METRIC_META[metric].unit
               const raw = (lap[metric] as number[])[idx]
               const val = raw != null
                 ? metric === 'speed_mph' ? `${raw.toFixed(1)} ${unit}` : `${raw.toFixed(2)} ${unit}`
@@ -1038,14 +1042,18 @@ function CoachIntelPanel({
   pinned: boolean
   onDismiss: () => void
 }) {
+  const { speedFromMph, speedUnit } = useUnits()
   const color = annotation.severity === 3 ? 'var(--signal)' : annotation.severity === 2 ? '#f5a623' : 'var(--cyan)'
-  // Speeds arrive in mph. Legacy sessions stored m/s in *_mps — back-convert those.
+  // Coach speeds are stored in mph. Legacy sessions stored m/s in *_mps —
+  // back-convert those, then convert mph → the active display unit.
   const actualMphVal = annotation.actual_apex_mph ?? (annotation.actual_apex_mps != null ? annotation.actual_apex_mps * 2.237 : undefined)
   const targetMphVal = annotation.target_apex_mph ?? (annotation.target_apex_mps != null ? annotation.target_apex_mps * 2.237 : undefined)
   const hasSpeed = actualMphVal != null && targetMphVal != null
-  const actualMph = hasSpeed ? actualMphVal!.toFixed(1) : null
-  const targetMph = hasSpeed ? targetMphVal!.toFixed(1) : null
-  const deltaMph  = hasSpeed ? (targetMphVal! - actualMphVal!) : null
+  const actualDisp = hasSpeed ? speedFromMph(actualMphVal!) : null
+  const targetDisp = hasSpeed ? speedFromMph(targetMphVal!) : null
+  const actualMph = actualDisp != null ? actualDisp.toFixed(1) : null
+  const targetMph = targetDisp != null ? targetDisp.toFixed(1) : null
+  const deltaMph  = actualDisp != null && targetDisp != null ? (targetDisp - actualDisp) : null
 
   return (
     <div className="coach-intel-panel" style={{ '--intel-color': color } as React.CSSProperties}>
@@ -1058,7 +1066,7 @@ function CoachIntelPanel({
           <div className="coach-intel-speed-block">
             <span className="coach-intel-speed-label">actual</span>
             <span className="coach-intel-speed-value">{actualMph}</span>
-            <span className="coach-intel-speed-unit">mph</span>
+            <span className="coach-intel-speed-unit">{speedUnit}</span>
           </div>
           <div className="coach-intel-speed-arrow" style={{ color }}>
             {deltaMph! > 0 ? '▲' : '▼'}{Math.abs(deltaMph!).toFixed(1)}
@@ -1066,7 +1074,7 @@ function CoachIntelPanel({
           <div className="coach-intel-speed-block">
             <span className="coach-intel-speed-label">target</span>
             <span className="coach-intel-speed-value" style={{ color }}>{targetMph}</span>
-            <span className="coach-intel-speed-unit">mph</span>
+            <span className="coach-intel-speed-unit">{speedUnit}</span>
           </div>
         </div>
       )}

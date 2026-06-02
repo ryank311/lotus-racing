@@ -1,5 +1,7 @@
 // Shared types between main and renderer processes.
 
+import type { UnitSystem } from './units.js'
+
 export interface SessionSummary {
   sessionGuid: string
   sessionStart?: string
@@ -104,6 +106,13 @@ export interface CarProfile {
   carMdPath: string
 }
 
+// Driver totals for the Account page, derived from the loaded telemetry DB.
+export interface AccountStats {
+  allTime: { laps: number; tracks: number; sessions: number; hours: number }
+  year: number
+  thisYear: { laps: number; hours: number }
+}
+
 // ─── AI Coach ──────────────────────────────────────────────────────────────
 
 export type CoachAnnotationType = 'corner_tip' | 'segment_tip' | 'speed_annotation' | 'line_deviation'
@@ -173,11 +182,8 @@ export interface CoachOptions {
 }
 
 export interface AiSettings {
-  harness: 'local' | 'remote'
   apiKey?: string
   model?: string
-  maxTokens?: number
-  stream?: boolean
 }
 
 export interface BriefOptions {
@@ -291,8 +297,15 @@ export interface CatalystBridge {
   getAiSettings(): Promise<AiSettings>
   saveAiSettings(s: AiSettings): Promise<void>
 
+  // Units (Metric vs Imperial)
+  getUnits(): Promise<UnitSystem>
+  setUnits(system: UnitSystem): Promise<void>
+
+  // Account / driver totals
+  getAccountStats(): Promise<AccountStats>
+
   // Analysis (Plotly data)
-  buildAnalysis(sessionGuids: string[]): Promise<AnalysisDataPayload>
+  buildAnalysis(sessionGuids: string[], units?: UnitSystem): Promise<AnalysisDataPayload>
 
   // Tracks editor
   listTracks(): Promise<TrackListEntry[]>

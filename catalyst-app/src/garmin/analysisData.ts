@@ -10,9 +10,11 @@ import { openDb } from './loadToDb.js'
 import { DB_PATH, TRACKS_DIR } from './paths.js'
 import { loadTrackYaml, resolveTrackYamlPath, TrackCorner, TrackSegment } from './trackYaml.js'
 import { buildTrackGeometry, projectLatLon, TrackGeometry } from './trackGeometry.js'
+import { DEFAULT_UNIT_SYSTEM, speedFromMps, speedUnitLabel, type UnitSystem } from '../shared/units.js'
 
-const MPH = (mps: number | null | undefined): number | null =>
-  mps == null ? null : mps * 2.23694
+// Canonical m/s → the active display unit. Threaded from buildAnalysis so a unit
+// toggle reflows the whole Analysis page on the next fetch.
+type SpeedConv = (mps: number | null | undefined) => number | null
 const G = (mps2: number | null | undefined): number | null =>
   mps2 == null ? null : mps2 / 9.81
 
@@ -137,6 +139,8 @@ export interface AnalysisData {
   avgLapMs: number | null
   // Optimal racing line stitched from per-segment personal bests
   coachLine: CoachLinePoint[] | null
+  // Display unit label for every speed field above ("mph" or "km/h").
+  speedUnit: string
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +178,7 @@ async function fetchLapMeta(con: DuckDBConnection, sgList: string[]): Promise<La
   return laps
 }
 
-async function fetchSpeedTraces(con: DuckDBConnection, laps: LapMeta[], strideM = 25): Promise<SpeedTrace[]> {
+async function fetchSpeedTraces(con: DuckDBConnection, laps: LapMeta[], conv: SpeedConv, strideM = 25): Promise<SpeedTrace[]> {
   const out: SpeedTrace[] = []
   for (const lap of laps) {
     const r = await rows(con, `
@@ -189,7 +193,7 @@ async function fetchSpeedTraces(con: DuckDBConnection, laps: LapMeta[], strideM 
     out.push({
       ...lap,
       dist: r.map(x => Number(x[0])),
-      speed_mph: r.map(x => MPH(Number(x[1])) ?? 0),
+      speed_mph: r.map(x => conv(Number(x[1])) ?? 0),
     })
   }
   return out
@@ -237,7 +241,7 @@ async function fetchLongGTraces(con: DuckDBConnection, laps: LapMeta[], strideM 
   return out
 }
 
-async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], nBest = 12, everyNth = 4): Promise<GGData> {
+async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], conv: SpeedConv, nBest = 12, everyNth = 4): Promise<GGData> {
   const sorted = [...laps].filter(L => L.durationMs).sort((a, b) => a.durationMs - b.durationMs).slice(0, nBest)
   const lat_g: number[] = []
   const long_g: number[] = []
@@ -255,7 +259,7 @@ async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], nBest = 12, e
     for (const row of r) {
       lat_g.push(G(Number(row[0]))!)
       long_g.push(G(Number(row[1]))!)
-      speed_mph.push(MPH(Number(row[2])) ?? 0)
+      speed_mph.push(conv(Number(row[2])) ?? 0)
       dist.push(Number(row[3]))
     }
   }
@@ -274,6 +278,7 @@ async function fetchRacingLines(
   con: DuckDBConnection,
   laps: LapMeta[],
   geom: TrackGeometry,
+  conv: SpeedConv,
   strideM = 5,
 ): Promise<RacingLineLap[]> {
   const out: RacingLineLap[] = []
@@ -292,7 +297,7 @@ async function fetchRacingLines(
     for (const row of r) {
       const pos = projectLatLon(Number(row[1]), Number(row[2]), geom.projection)
       xs.push(pos.x); ys.push(pos.y); ds.push(Number(row[0]))
-      speeds.push(MPH(Number(row[3])) ?? 0)
+      speeds.push(conv(Number(row[3])) ?? 0)
       lg.push(G(Number(row[4])) ?? 0)
       yg.push(G(Number(row[5])) ?? 0)
     }
@@ -301,7 +306,7 @@ async function fetchRacingLines(
   return out
 }
 
-async function fetchTrackMap(con: DuckDBConnection, best: LapMeta, strideM = 10): Promise<TrackMapData> {
+async function fetchTrackMap(con: DuckDBConnection, best: LapMeta, conv: SpeedConv, strideM = 10): Promise<TrackMapData> {
   const r = await rows(con, `
     SELECT distance_m, lat, lon, gnss_speed_mps
     FROM samples
@@ -314,7 +319,7 @@ async function fetchTrackMap(con: DuckDBConnection, best: LapMeta, strideM = 10)
     dist: r.map(x => Number(x[0])),
     lat: r.map(x => Number(x[1])),
     lon: r.map(x => Number(x[2])),
-    speed_mph: r.map(x => MPH(Number(x[3])) ?? 0),
+    speed_mph: r.map(x => conv(Number(x[3])) ?? 0),
   }
 }
 
@@ -491,7 +496,7 @@ async function buildHeatmap(con: DuckDBConnection, laps: LapMeta[], segments: Tr
   }
 }
 
-async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: TrackCorner[]): Promise<CornerRow[]> {
+async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: TrackCorner[], conv: SpeedConv): Promise<CornerRow[]> {
   if (!corners.length) return []
   const out: CornerRow[] = []
   for (const lap of laps) {
@@ -518,9 +523,9 @@ async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: 
         name: c.name,
         lapLbl: `${lap.sgShort}… L${lap.lapIdx + 1}`,
         isBest: lap.isBest,
-        entry_mph: MPH(entry)!,
-        apex_mph: MPH(apex)!,
-        exit_mph: MPH(exit)!,
+        entry_mph: conv(entry)!,
+        apex_mph: conv(apex)!,
+        exit_mph: conv(exit)!,
         max_lat_g: maxLat,
       })
     }
@@ -530,11 +535,16 @@ async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: 
 
 // ---------------------------------------------------------------------------
 
-export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisData> {
+export async function buildAnalysis(sessionGuids: string[], system: UnitSystem = DEFAULT_UNIT_SYSTEM): Promise<AnalysisData> {
   if (!fs.existsSync(DB_PATH)) throw new Error(`no database at ${DB_PATH} — run "Rebuild DB" first`)
   console.log(`[analysis] building for ${sessionGuids.length} session(s)`)
   const analysisDb = await openDb(DB_PATH)
   const con = analysisDb.con
+
+  // Canonical m/s → the active display unit. All speed fields below carry this
+  // unit; `speedUnit` labels it for the renderer.
+  const toSpeed: SpeedConv = (mps) => mps == null ? null : speedFromMps(mps, system)
+  const speedUnit = speedUnitLabel(system)
 
   const placeholders = sessionGuids.map(() => '?').join(',')
   const sessRows = await rows(con, `
@@ -595,6 +605,7 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
       trackGeometry: null, racingLines: [],
       heatmap: null, cornerRows: [],
       theoreticalBestMs: null, avgLapMs: null, coachLine: null,
+      speedUnit,
     }
   }
   const bestLap = laps.find(L => L.isBest) ?? laps[0]
@@ -605,11 +616,11 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
   // still tearing down the optimizer state. Each fetcher already does many
   // sequential queries internally; running the seven of them serially keeps
   // total wall-clock fine (~couple of seconds for typical analysis sizes).
-  const speedTraces = await fetchSpeedTraces(con, laps, 25)
+  const speedTraces = await fetchSpeedTraces(con, laps, toSpeed, 25)
   const lateralTraces = await fetchLateralTraces(con, laps, 25)
   const longgTraces = await fetchLongGTraces(con, laps, 25)
-  const gg = await fetchGGData(con, laps)
-  const trackMap = await fetchTrackMap(con, bestLap, 10)
+  const gg = await fetchGGData(con, laps, toSpeed)
+  const trackMap = await fetchTrackMap(con, bestLap, toSpeed, 10)
 
   // Build the SVG-ready track geometry + projected racing lines for each lap.
   // Cap the lap count so we don't ship a megabyte of polylines to the renderer
@@ -636,12 +647,12 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
         .filter(L => L.durationMs > 0)
         .sort((a, b) => a.durationMs - b.durationMs)
         .slice(0, 8)
-      racingLines = await fetchRacingLines(con, top, geom, 5)
+      racingLines = await fetchRacingLines(con, top, geom, toSpeed, 5)
     }
   }
 
   const heatmap = await buildHeatmap(con, laps, segments)
-  const cornerRows = await fetchCornerRows(con, laps, corners)
+  const cornerRows = await fetchCornerRows(con, laps, corners, toSpeed)
   const coachLine = racingLines.length && segments.length
     ? await computeCoachLine(con, racingLines, segments)
     : null
@@ -685,5 +696,6 @@ export async function buildAnalysis(sessionGuids: string[]): Promise<AnalysisDat
     speedTraces, lateralTraces, longgTraces,
     gg, trackMap, trackGeometry, racingLines, heatmap, cornerRows,
     theoreticalBestMs, avgLapMs, coachLine,
+    speedUnit,
   }
 }

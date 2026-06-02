@@ -423,7 +423,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
 
 // ─── GGChart ─────────────────────────────────────────────────────────────────
 
-export function GGChart({ gg, height, onHoverDistance }: { gg: GGData; height: number; onHoverDistance?: (d: number | null) => void }) {
+export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg: GGData; height: number; onHoverDistance?: (d: number | null) => void; speedUnit?: string }) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const rafRef      = useRef(0)
   const wrapRef     = useRef<HTMLDivElement>(null)
@@ -586,7 +586,7 @@ export function GGChart({ gg, height, onHoverDistance }: { gg: GGData; height: n
       rows: [
         { label: 'Lat G',  value: `${gg.lat_g[nearI].toFixed(2)}g`,        color: PALETTE.cyan     },
         { label: 'Long G', value: `${gg.long_g[nearI].toFixed(2)}g`,       color: PALETTE.signal   },
-        { label: 'Speed',  value: `${Math.round(gg.speed_mph[nearI])} mph`, color: PALETTE.textMute },
+        { label: 'Speed',  value: `${Math.round(gg.speed_mph[nearI])} ${speedUnit}`, color: PALETTE.textMute },
       ],
     })
   }
@@ -691,7 +691,7 @@ interface DotInfo {
   entry_mph: number; apex_mph: number; exit_mph: number
 }
 
-export function CornerChart({ data, height }: { data: AnalysisData; height: number }) {
+export function CornerChart({ data, height, speedUnit = 'mph' }: { data: AnalysisData; height: number; speedUnit?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef(0)
   const dotsRef = useRef<DotInfo[]>([])
@@ -815,9 +815,9 @@ export function CornerChart({ data, height }: { data: AnalysisData; height: numb
       px: mx, py: my,
       header: `${nearDot.turn}  ${nearDot.lapLbl}${nearDot.isBest ? ' ★' : ''}`,
       rows: [
-        { label: 'Entry', value: `${nearDot.entry_mph.toFixed(1)} mph`, color: PALETTE.cyan   },
-        { label: 'Apex',  value: `${nearDot.apex_mph.toFixed(1)} mph`,  color: PALETTE.signal },
-        { label: 'Exit',  value: `${nearDot.exit_mph.toFixed(1)} mph`,  color: PALETTE.green  },
+        { label: 'Entry', value: `${nearDot.entry_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan   },
+        { label: 'Apex',  value: `${nearDot.apex_mph.toFixed(1)} ${speedUnit}`,  color: PALETTE.signal },
+        { label: 'Exit',  value: `${nearDot.exit_mph.toFixed(1)} ${speedUnit}`,  color: PALETTE.green  },
       ],
     })
   }

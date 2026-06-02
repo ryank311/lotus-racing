@@ -6,10 +6,15 @@ import { AICoach } from './pages/AICoach'
 import { Garage } from './pages/Garage'
 import { Tracks } from './pages/Tracks'
 import { Analysis } from './pages/Analysis'
+import { Account } from './pages/Account'
 import { Logs, type LogEntry } from './pages/Logs'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { Modal } from './components/Modal'
+import { LoginModal } from './components/LoginModal'
+import { SignedOutGate } from './components/SignedOutGate'
+import { SignedOutBanner } from './components/SignedOutBanner'
 import { api } from './api'
-import { AccountState, getActiveAccount, loadAccounts, tokenValid } from './accounts'
+import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid, upsertAccount } from './accounts'
 import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession } from '../shared/types'
 
 function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () => void }) {
@@ -140,7 +145,9 @@ export function App() {
     setBusy('sync')
     setLogLine('starting sync...')
     setProgress({ current: 0, total: 0, label: 'Fetching session list…' })
-    const active = getActiveAccount(accounts)
+    // Read fresh from storage so an auto-sync right after sign-in picks up the
+    // token that was just persisted (React state may not have flushed yet).
+    const active = getActiveAccount()
     try {
       await api.startSync({
         token: tokenValid(active) ? active!.token : undefined,
@@ -155,6 +162,36 @@ export function App() {
     setAccounts(next)
     setRefreshTick(t => t + 1)
   }, [])
+
+  // ── Auth / sign-in modal ────────────────────────────────────────────────
+  const signedIn = tokenValid(getActiveAccount(accounts))
+  const activeLabel = getActiveAccount(accounts)?.label ?? null
+  // Cached telemetry already in the DB. When present, feature pages stay usable
+  // read-only even while signed out (a banner notes sync is unavailable); only a
+  // signed-out AND empty DB shows the full sign-in gate.
+  const hasData = (stats?.sessionCount ?? 0) > 0
+  const canView = signedIn || hasData
+  const [loginOpen, setLoginOpen] = useState(false)
+  const [signOutOpen, setSignOutOpen] = useState(false)
+  const openLogin = useCallback(() => setLoginOpen(true), [])
+
+  const handleSignedIn = (label: string, token: string, expiresAt: number) => {
+    onAccountsChange(upsertAccount(label, token, expiresAt))
+    setLoginOpen(false)
+    // Automatically pull sessions/tracks/metadata for the freshly linked account.
+    void startSync()
+  }
+
+  const confirmSignOut = () => {
+    if (activeLabel) onAccountsChange(removeAccount(activeLabel))
+    setSignOutOpen(false)
+    // Leave the Account page once signed out (it requires a session).
+    if (page === 'account') setPage('home')
+    // Also wipe the main-process Garmin/Catalyst tokens so the app is truly
+    // signed out everywhere (the cached config token must not keep "LINK" green
+    // or let a stale token sync). Refresh auth state afterwards.
+    void api.clearTokens().then(refresh).catch(() => {})
+  }
 
   const startLoad = async () => {
     if (busy) return
@@ -180,48 +217,64 @@ export function App() {
       <Sidebar
         active={page}
         onChange={setPage}
-        connected={!!auth?.tokenValid}
+        connected={signedIn}
         selectionCount={selected.size}
+        signedIn={signedIn}
+        email={activeLabel}
+        onSignIn={openLogin}
       />
       <div className="main-pane">
+        {!signedIn && hasData && <SignedOutBanner onSignIn={openLogin} />}
         <ErrorBoundary label={`${page} page`} resetKey={page}>
           {page === 'home' && (
             <Home
               auth={auth} stats={stats} busy={busy}
+              signedIn={signedIn}
               onSync={startSync}
-              accounts={accounts} onAccountsChange={onAccountsChange}
+              onRequestSignIn={openLogin}
             />
           )}
           {page === 'sessions' && (
-            <Sessions
-              refreshTick={refreshTick}
-              selected={selected}
-              setSelected={setSelected}
-              onAnalyze={openAnalysis}
-              activeAccount={accounts.activeLabel}
-            />
+            canView ? (
+              <Sessions
+                refreshTick={refreshTick}
+                selected={selected}
+                setSelected={setSelected}
+                onAnalyze={openAnalysis}
+                activeAccount={accounts.activeLabel}
+              />
+            ) : <SignedOutGate feature="Sessions" onSignIn={openLogin} />
           )}
           {page === 'coach' && (
-            <AICoach
-              refreshTick={refreshTick}
-              selected={selected}
-              busy={busy}
-              setBusy={setBusy}
-              onLoadSession={loadCoachSession}
-            />
+            canView ? (
+              <AICoach
+                refreshTick={refreshTick}
+                selected={selected}
+                busy={busy}
+                setBusy={setBusy}
+                onLoadSession={loadCoachSession}
+              />
+            ) : <SignedOutGate feature="AI Coach" onSignIn={openLogin} />
           )}
-          {page === 'garage' && <Garage />}
+          {page === 'garage' && (canView ? <Garage /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
           {page === 'tracks' && <Tracks />}
           {page === 'analysis' && (
-            <Analysis
-              selected={selected}
-              setSelected={setSelected}
-              onBack={() => setPage('sessions')}
-              activeCoachSession={activeCoachSession}
-              onClearCoachSession={() => setActiveCoachSession(null)}
-              busy={busy}
-              setBusy={setBusy}
-            />
+            canView ? (
+              <Analysis
+                selected={selected}
+                setSelected={setSelected}
+                onBack={() => setPage('sessions')}
+                activeCoachSession={activeCoachSession}
+                onClearCoachSession={() => setActiveCoachSession(null)}
+                busy={busy}
+                setBusy={setBusy}
+              />
+            ) : <SignedOutGate feature="Analysis" onSignIn={openLogin} />
+          )}
+          {page === 'account' && (
+            signedIn
+              ? <Account email={activeLabel} auth={auth} onSignOut={() => setSignOutOpen(true)} />
+              : <SignedOutGate feature="Account" onSignIn={openLogin} />
           )}
         </ErrorBoundary>
 
@@ -230,6 +283,31 @@ export function App() {
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <Logs entries={logEntries} onLoad={startLoad} busy={busy} />
           </div>
+        )}
+
+        {/* Global sign-in modal */}
+        {loginOpen && (
+          <LoginModal
+            initialEmail={activeLabel ?? ''}
+            onClose={() => setLoginOpen(false)}
+            onSignedIn={handleSignedIn}
+          />
+        )}
+
+        {/* Sign-out confirmation */}
+        {signOutOpen && (
+          <Modal
+            eyebrow="// account"
+            title="Sign out"
+            onClose={() => setSignOutOpen(false)}
+            actions={<>
+              <button className="btn ghost" onClick={() => setSignOutOpen(false)}>Cancel</button>
+              <button className="btn primary" onClick={confirmSignOut}>Sign out</button>
+            </>}
+          >
+            Sign out {activeLabel ? <strong style={{ color: 'var(--text)' }}>{activeLabel}</strong> : 'this account'} and
+            remove its Garmin token? You'll need to sign in again to sync.
+          </Modal>
         )}
 
         {/* Coach analysis ready toast */}
@@ -273,7 +351,7 @@ export function App() {
               </div>
             )}
             <div className="tag" style={{ flexShrink: 0 }}>
-              {auth?.tokenValid ? `TOKEN · ${auth.tokenDaysRemaining}D` : 'NO TOKEN'}
+              {signedIn ? `TOKEN · ${auth?.tokenDaysRemaining ?? 0}D` : 'NO TOKEN'}
             </div>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-mute)', flexShrink: 0 }}>
               {logsExpanded ? '▼ logs' : '▲ logs'}

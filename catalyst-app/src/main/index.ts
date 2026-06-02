@@ -1,6 +1,6 @@
 // Electron main entry — creates the window, registers IPC.
 
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, Menu } from 'electron'
 import path from 'node:path'
 import { registerIpc } from './ipc.js'
 import { loadInitialBounds, trackWindowState } from './windowState.js'
@@ -40,6 +40,26 @@ function createWindow(): void {
   if (fullScreen) mainWindow.setFullScreen(true)
 
   trackWindowState(mainWindow)
+
+  // Right-click editing menu — Electron shows none by default, so inputs (e.g.
+  // the API key field) had no Cut/Copy/Paste. Build one for editable targets
+  // and for any selected text.
+  mainWindow.webContents.on('context-menu', (_e, params) => {
+    const { isEditable, editFlags, selectionText } = params
+    if (!isEditable && !selectionText) return
+    const template: Electron.MenuItemConstructorOptions[] = isEditable
+      ? [
+          { role: 'undo', enabled: editFlags.canUndo },
+          { role: 'redo', enabled: editFlags.canRedo },
+          { type: 'separator' },
+          { role: 'cut', enabled: editFlags.canCut },
+          { role: 'copy', enabled: editFlags.canCopy },
+          { role: 'paste', enabled: editFlags.canPaste },
+          { role: 'selectAll' },
+        ]
+      : [{ role: 'copy', enabled: editFlags.canCopy }, { role: 'selectAll' }]
+    Menu.buildFromTemplate(template).popup({ window: mainWindow! })
+  })
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173/')

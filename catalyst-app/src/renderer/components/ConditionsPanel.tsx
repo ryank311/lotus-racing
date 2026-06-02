@@ -6,6 +6,7 @@
 
 import { useState } from 'react'
 import { msToLap } from '../api'
+import { useUnits } from '../units'
 import type { AnalysisData } from '../../garmin/analysisData'
 
 type SessionConditions = AnalysisData['sessions'][number]
@@ -44,9 +45,9 @@ function compass(deg: number | null): string {
 // ── wind compass gauge ──────────────────────────────────────────────────────
 // 16 ticks (cardinals longer), an N marker, and a needle pointing in the
 // wind-FROM direction with the session's thermal colour. Speed sits in the hub.
-function WindCompass({ deg, speedMps, color }: { deg: number | null; speedMps: number | null; color: string }) {
+function WindCompass({ deg, speed, unit, color }: { deg: number | null; speed: number | null; unit: string; color: string }) {
   const C = 50
-  const hasWind = speedMps != null && !Number.isNaN(speedMps)
+  const hasWind = speed != null && !Number.isNaN(speed)
   const hasDir = deg != null && !Number.isNaN(deg)
 
   const ticks = Array.from({ length: 16 }, (_, i) => {
@@ -81,9 +82,9 @@ function WindCompass({ deg, speedMps, color }: { deg: number | null; speedMps: n
 
       <circle cx={C} cy={C} r="17" className="cond-hub" />
       <text x={C} y={hasWind ? 47 : 53} className="cond-hub-val" fill={color}>
-        {hasWind ? speedMps!.toFixed(1) : '—'}
+        {hasWind ? speed!.toFixed(hasWind && speed! >= 100 ? 0 : 1) : '—'}
       </text>
-      {hasWind && <text x={C} y="58" className="cond-hub-unit">m/s</text>}
+      {hasWind && <text x={C} y="58" className="cond-hub-unit">{unit}</text>}
     </svg>
   )
 }
@@ -95,6 +96,7 @@ function fmtDateTime(start: string | null): { date: string; time: string } {
 }
 
 export function ConditionsPanel({ sessions }: { sessions: SessionConditions[] }) {
+  const { tempFromC, tempUnit, speedFromMps, speedUnit } = useUnits()
   const [open, setOpen] = useState(true)
   const [expanded, setExpanded] = useState(false)
 
@@ -136,7 +138,9 @@ export function ConditionsPanel({ sessions }: { sessions: SessionConditions[] })
   const hiddenCount = ordered.length - summary.length
 
   const rangeLabel = temps.length
-    ? span < 0.5 ? `${minT.toFixed(1)}°C` : `${minT.toFixed(1)}–${maxT.toFixed(1)}°C`
+    ? span < 0.5
+      ? `${tempFromC(minT).toFixed(1)}${tempUnit}`
+      : `${tempFromC(minT).toFixed(1)}–${tempFromC(maxT).toFixed(1)}${tempUnit}`
     : 'no weather data'
 
   const badgeFor = (sg: string): 'FASTEST' | 'SLOWEST' | null =>
@@ -156,7 +160,7 @@ export function ConditionsPanel({ sessions }: { sessions: SessionConditions[] })
               cold→hot gradient. The instrument-scale reading of the whole set. */}
           {temps.length > 1 && span >= 0.5 && (
             <div className="cond-scale">
-              <span className="cond-scale-end">{minT.toFixed(0)}°</span>
+              <span className="cond-scale-end">{tempFromC(minT).toFixed(0)}°</span>
               <div className="cond-scale-track">
                 {ordered.filter(s => s.tempC != null).map(s => (
                   <span
@@ -167,11 +171,11 @@ export function ConditionsPanel({ sessions }: { sessions: SessionConditions[] })
                       background: thermalColor(norm(s.tempC)),
                       boxShadow: `0 0 7px ${thermalColor(norm(s.tempC))}`,
                     }}
-                    title={`${s.tempC!.toFixed(1)}°C`}
+                    title={`${tempFromC(s.tempC!).toFixed(1)}${tempUnit}`}
                   />
                 ))}
               </div>
-              <span className="cond-scale-end">{maxT.toFixed(0)}°</span>
+              <span className="cond-scale-end">{tempFromC(maxT).toFixed(0)}°</span>
             </div>
           )}
 
@@ -201,12 +205,17 @@ export function ConditionsPanel({ sessions }: { sessions: SessionConditions[] })
                   <div className="cond-tile-main">
                     <div className="cond-temp-block">
                       <div className="cond-temp">
-                        {s.tempC != null ? s.tempC.toFixed(1) : '—'}
-                        <span className="cond-temp-deg">°C</span>
+                        {s.tempC != null ? tempFromC(s.tempC).toFixed(1) : '—'}
+                        <span className="cond-temp-deg">{tempUnit}</span>
                       </div>
                       <div className="cond-temp-label">air temp</div>
                     </div>
-                    <WindCompass deg={s.windDeg} speedMps={s.windMps} color={accent} />
+                    <WindCompass
+                      deg={s.windDeg}
+                      speed={s.windMps != null ? speedFromMps(s.windMps) : null}
+                      unit={speedUnit}
+                      color={accent}
+                    />
                   </div>
 
                   <div className="cond-tile-sub">

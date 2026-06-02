@@ -3,8 +3,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { CONFIG_PATH } from './paths.js'
+import type { UnitSystem } from '../shared/units.js'
 
 export interface AppConfig {
+  // Metric vs Imperial — drives all unit display across the app and the AI brief.
+  units?: UnitSystem
   auth?: {
     email?: string
     password?: string
@@ -20,11 +23,8 @@ export interface AppConfig {
     page_size?: number
   }
   ai?: {
-    harness?: 'local' | 'remote'
     api_key?: string
     model?: string
-    max_tokens?: number
-    stream?: boolean
   }
 }
 

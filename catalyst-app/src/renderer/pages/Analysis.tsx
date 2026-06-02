@@ -5,6 +5,7 @@ import { LineChart, GGChart, HeatmapGrid, CornerChart } from '../components/Char
 import { speedSeries, lateralSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
+import { useUnits } from '../units'
 import type { AnalysisData } from '../../garmin/analysisData'
 import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
@@ -19,31 +20,70 @@ interface Props {
   setBusy?: (b: 'sync' | 'load' | 'coach' | null) => void
 }
 
+// Order-independent identity for a set of session guids — lets us tell whether
+// the current selection still matches what coaching was generated for.
+function guidKey(guids: Iterable<string>): string {
+  return [...guids].sort().join(',')
+}
+
 export function Analysis({ selected, setSelected, onBack, activeCoachSession, onClearCoachSession, busy, setBusy }: Props) {
+  const { system } = useUnits()
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [splitPct, setSplitPct] = useState(62)
   const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
   const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
+  // Order-independent key of the session set the current coaching corresponds to.
+  // When the selection diverges from this, the coaching no longer matches the
+  // analysis and is cleared automatically.
+  const [coachedKey, setCoachedKey] = useState<string | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
+  const [coachError, setCoachError] = useState<string | null>(null)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
   const [focusedAnnotation, setFocusedAnnotation] = useState<CoachAnnotation | null | undefined>(undefined)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
 
-  // When a coaching session is loaded from the AI Coach tab, apply its result.
+  // When a coaching session is loaded from the AI Coach tab, apply its result
+  // and record the session set it was generated for.
   useEffect(() => {
     if (activeCoachSession) {
       setCoachResult(activeCoachSession.parsed_result)
+      setCoachedKey(guidKey(activeCoachSession.session_guids))
     }
   }, [activeCoachSession])
 
+  // Clear stale coaching when the selected sessions no longer match the set the
+  // coaching was generated for — the advice wouldn't correspond to the analysis.
+  useEffect(() => {
+    if (!coachResult || coachedKey == null) return
+    if (guidKey(selected) !== coachedKey) {
+      setCoachResult(null)
+      setCoachedKey(null)
+      setFocusedRef(null)
+      setHoveredRef(null)
+      setFocusedAnnotation(undefined)
+      onClearCoachSession?.()
+    }
+  }, [selected, coachResult, coachedKey, onClearCoachSession])
+
   const askCoach = async () => {
     if (!data || coachRunning || busy) return
+
+    // Coaching requires a remote API key — surface a clear modal instead of a
+    // silent failure when it isn't configured.
+    const settings = await api.getAiSettings()
+    if (!settings.apiKey) {
+      setCoachError('No Anthropic API key configured. Open the Overview page and add your API key under "AI Coach" to run coaching analysis.')
+      return
+    }
+
     setCoachRunning(true)
     setBusy?.('coach')
+    // The set submitted to the coach — the result will correspond to exactly this.
+    const submitted = [...selected]
     const profile = await api.getActiveProfile() ?? 'Lotus'
     const unsub = api.onWorker(evt => {
       if (evt.kind !== 'coach') return
@@ -53,7 +93,10 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         setBusy?.(null)
         if (evt.payload) {
           void api.getCoachSession(evt.payload).then(s => {
-            if (s) setCoachResult(s.parsed_result)
+            if (s) {
+              setCoachResult(s.parsed_result)
+              setCoachedKey(guidKey(submitted))
+            }
           })
         }
       }
@@ -61,14 +104,16 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         unsub()
         setCoachRunning(false)
         setBusy?.(null)
+        setCoachError(evt.payload || 'Coaching failed. Check the logs for details.')
       }
     })
     try {
-      await api.runCoach({ profile, scope: 'overview', sessionGuids: [...selected] })
-    } catch {
+      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted })
+    } catch (e: any) {
       unsub()
       setCoachRunning(false)
       setBusy?.(null)
+      setCoachError(e?.message ?? 'Coaching failed to start.')
     }
   }
 
@@ -98,7 +143,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     setLoading(true); setErr(null)
     void (async () => {
       try {
-        const d = (await api.buildAnalysis([...selected])) as AnalysisData
+        const d = (await api.buildAnalysis([...selected], system)) as AnalysisData
         setData(d)
       } catch (e: any) {
         setErr(e.message ?? String(e))
@@ -106,7 +151,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         setLoading(false)
       }
     })()
-  }, [selected])
+  }, [selected, system])
 
   if (selected.size === 0) {
     return (
@@ -198,7 +243,27 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           }
         </div>
       </div>
+
+      {coachError && (
+        <CoachErrorModal message={coachError} onDismiss={() => setCoachError(null)} />
+      )}
     </>
+  )
+}
+
+function CoachErrorModal({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div className="modal-overlay" onClick={onDismiss}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        <div className="card-corner-marks"><i /></div>
+        <div className="modal-eyebrow">// coach unavailable</div>
+        <div className="modal-title">Can't run coaching</div>
+        <div className="modal-body">{message}</div>
+        <div className="modal-actions">
+          <button className="btn primary" onClick={onDismiss}>Got it</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -367,11 +432,11 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
       {/* CHARTS */}
       <div className="analysis-charts">
-        <ChartCard channel="SPEED" meta={`${data.speedTraces.length} laps · mph`}>
+        <ChartCard channel="SPEED" meta={`${data.speedTraces.length} laps · ${data.speedUnit}`}>
           <LineChart
             series={speedSeries(data)}
             height={420}
-            yUnit="mph"
+            yUnit={data.speedUnit}
             corners={data.corners}
             segments={data.segments}
             onHoverX={onHoverDistance}
@@ -385,7 +450,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
         )}
 
         <ChartCard channel="G-G" meta={`p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
-          <GGChart gg={data.gg} height={420} onHoverDistance={onHoverDistance} />
+          <GGChart gg={data.gg} height={420} onHoverDistance={onHoverDistance} speedUnit={data.speedUnit} />
         </ChartCard>
 
         <ChartCard channel="LATERAL POSITION" meta="0 = inner · 1 = outer · 0.5 = centre">
@@ -412,7 +477,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
         {data.cornerRows.length > 0 && (
           <ChartCard channel="CORNER STATS" meta="entry · apex · exit">
-            <CornerChart data={data} height={480} />
+            <CornerChart data={data} height={480} speedUnit={data.speedUnit} />
           </ChartCard>
         )}
       </div>

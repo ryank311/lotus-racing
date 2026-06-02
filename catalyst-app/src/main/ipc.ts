@@ -13,6 +13,7 @@ import {
   REPO_ROOT,
 } from '../garmin/paths.js'
 import { loadConfig, saveConfig, setCredentials } from '../garmin/config.js'
+import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
 import {
   CatalystAPI,
   fetchAllSessions,
@@ -56,6 +57,7 @@ import type {
   BriefFile,
   DbSessionRow,
   SyncStats,
+  AccountStats,
   WorkerEvent,
   CoachOptions,
   CoachingSession,
@@ -347,23 +349,67 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   ipcMain.handle('ai:getSettings', (): AiSettings => {
     const cfg = loadConfig()
     return {
-      harness:   cfg.ai?.harness   ?? 'local',
-      apiKey:    cfg.ai?.api_key,
-      model:     cfg.ai?.model     ?? 'claude-sonnet-4-6',
-      maxTokens: cfg.ai?.max_tokens ?? 32000,
-      stream:    cfg.ai?.stream    ?? true,
+      apiKey: cfg.ai?.api_key,
+      model:  cfg.ai?.model ?? 'claude-sonnet-4-6',
     }
   })
 
   ipcMain.handle('ai:saveSettings', (_e, s: AiSettings) => {
     const cfg = loadConfig()
     cfg.ai = {
-      harness:    s.harness,
-      api_key:    s.apiKey,
-      model:      s.model,
-      max_tokens: s.maxTokens,
-      stream:     s.stream,
+      api_key: s.apiKey,
+      model:   s.model,
     }
+    saveConfig(cfg)
+  })
+
+  // ── Account / driver totals ──────────────────────────────────────────────────
+  ipcMain.handle('account:stats', async (): Promise<AccountStats> => {
+    const year = new Date().getFullYear()
+    const empty: AccountStats = {
+      allTime: { laps: 0, tracks: 0, sessions: 0, hours: 0 },
+      year, thisYear: { laps: 0, hours: 0 },
+    }
+    if (!fs.existsSync(DB_PATH)) return empty
+    try {
+      return await withDb(async con => {
+        const a = (await con.runAndReadAll(`
+          SELECT
+            (SELECT COUNT(*) FROM laps WHERE lap_type = 'DRIVEN'),
+            (SELECT COUNT(DISTINCT track_configuration_id) FROM sessions WHERE track_configuration_id IS NOT NULL),
+            (SELECT COUNT(*) FROM sessions),
+            (SELECT COALESCE(SUM(duration_ms), 0) FROM laps WHERE lap_type = 'DRIVEN')
+        `)).getRowsJson()[0] ?? []
+        const y = (await con.runAndReadAll(`
+          SELECT COUNT(*), COALESCE(SUM(l.duration_ms), 0)
+          FROM laps l JOIN sessions s ON s.session_guid = l.session_guid
+          WHERE l.lap_type = 'DRIVEN' AND EXTRACT(year FROM s.session_start) = ?
+        `, [year])).getRowsJson()[0] ?? []
+        return {
+          allTime: {
+            laps: Number(a[0] ?? 0),
+            tracks: Number(a[1] ?? 0),
+            sessions: Number(a[2] ?? 0),
+            hours: Number(a[3] ?? 0) / 3_600_000,
+          },
+          year,
+          thisYear: {
+            laps: Number(y[0] ?? 0),
+            hours: Number(y[1] ?? 0) / 3_600_000,
+          },
+        }
+      }, DB_PATH)
+    } catch (e: any) {
+      console.error('[account:stats] query failed:', e?.message ?? e)
+      return empty
+    }
+  })
+
+  // ── Units (Metric vs Imperial) ───────────────────────────────────────────────
+  ipcMain.handle('units:get', (): UnitSystem => loadConfig().units ?? DEFAULT_UNIT_SYSTEM)
+  ipcMain.handle('units:set', (_e, system: UnitSystem) => {
+    const cfg = loadConfig()
+    cfg.units = system
     saveConfig(cfg)
   })
 
@@ -410,6 +456,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           profile: opts.profile,
           scope: opts.scope,
           dbPath: DB_PATH,
+          system: loadConfig().units ?? DEFAULT_UNIT_SYSTEM,
         })
         builtPrompt = prompt
         resolvedProfileName = resolvedProfile
@@ -419,18 +466,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           progress: { current: 1, total: 3, label: 'Sending to LLM…' } })
 
         const cfg = loadConfig()
-        const harnessConfig: Parameters<typeof runAgent>[1] =
-          cfg.ai?.harness === 'remote' && cfg.ai?.api_key
-            ? {
-                harness:   'remote',
-                apiKey:    cfg.ai.api_key,
-                model:     cfg.ai.model     ?? 'claude-sonnet-4-6',
-                maxTokens: cfg.ai.max_tokens ?? 32000,
-                stream:    cfg.ai.stream    ?? true,
-                tools:     [COACHING_TOOL],
-                toolChoice: { type: 'tool' as const, name: COACHING_TOOL.name },
-              }
-            : { harness: 'local' }
+        if (!cfg.ai?.api_key) {
+          throw new Error('No API key configured. Add your Anthropic API key in the AI Coach settings on the Overview page.')
+        }
+        const harnessConfig: Parameters<typeof runAgent>[1] = {
+          apiKey:    cfg.ai.api_key,
+          model:     cfg.ai.model ?? 'claude-sonnet-4-6',
+          maxTokens: 32000,
+          stream:    true,
+          tools:     [COACHING_TOOL],
+          toolChoice: { type: 'tool' as const, name: COACHING_TOOL.name },
+        }
 
         const rawResponse = await runAgent(prompt, harnessConfig, (text) => {
           if (text.startsWith('[status] ')) {
@@ -447,7 +493,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           progress: { current: 2, total: 3, label: 'Parsing result…' } })
 
         const parsed = parseCoachResponse(rawResponse)
-        const modelUsed = harnessConfig.harness === 'remote' ? harnessConfig.model : 'local-cli'
+        const modelUsed = harnessConfig.model
         const title = parsed?.headline
           ?? `Coach · ${resolvedProfile} · ${new Date().toISOString().slice(0, 10)}`
 
@@ -683,6 +729,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       sessionGuids: opts.sessionGuids,
       csv: opts.csv,
       includeGuides: opts.includeGuides,
+      system: loadConfig().units ?? DEFAULT_UNIT_SYSTEM,
     })
     return { outPath: res.outPath }
   })
@@ -691,8 +738,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     shell.showItemInFolder(p)
   })
 
-  ipcMain.handle('analysis:build', async (_e, sessionGuids: string[]) => {
-    return buildAnalysis(sessionGuids)
+  ipcMain.handle('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem) => {
+    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM)
   })
 
   // ---- workers ---------------------------------------------------------
