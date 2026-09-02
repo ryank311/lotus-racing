@@ -48,6 +48,7 @@ import {
   resolveVehicleProfile,
   setActiveProfileName,
   setVehicleProfile,
+  writeProfileMarkdown,
 } from '../garmin/profiles.js'
 import { randomUUID } from 'node:crypto'
 import type {
@@ -197,9 +198,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return fs.readFileSync(filePath, 'utf-8')
   })
   ipcMain.handle('profiles:writeCarMd', (_e, profileName: string, fileName: string, content: string) => {
-    const profile = discoverProfiles().find(p => p.name === profileName)
-    if (!profile) throw new Error(`unknown profile ${profileName}`)
-    fs.writeFileSync(path.join(profile.dir, fileName), content)
+    const dest = writeProfileMarkdown(profileName, fileName, content)
+    console.log(`[profiles] wrote ${dest} (${content.length} chars)`)
+    return dest
   })
   ipcMain.handle('profiles:readCarMd', (_e, name: string) => {
     const profile = discoverProfiles().find(p => p.name === name)
@@ -350,7 +351,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     const cfg = loadConfig()
     return {
       apiKey: cfg.ai?.api_key,
-      model:  cfg.ai?.model ?? 'claude-sonnet-4-6',
+      model:  cfg.ai?.model ?? 'claude-sonnet-5',
     }
   })
 
@@ -471,7 +472,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         }
         const harnessConfig: Parameters<typeof runAgent>[1] = {
           apiKey:    cfg.ai.api_key,
-          model:     cfg.ai.model ?? 'claude-sonnet-4-6',
+          model:     cfg.ai.model ?? 'claude-sonnet-5',
           maxTokens: 32000,
           stream:    true,
           tools:     [COACHING_TOOL],

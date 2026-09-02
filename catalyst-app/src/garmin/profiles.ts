@@ -12,6 +12,18 @@ const NON_PROFILE_DIRS = new Set([
   'node_modules', 'catalyst-app', 'src',
 ])
 
+export function writeProfileMarkdown(profileName: string, fileNameOrPath: string, content: string): string {
+  const profile = discoverProfiles().find(p => p.name === profileName)
+  if (!profile) throw new Error(`unknown profile ${profileName}`)
+  const base = path.basename(fileNameOrPath)
+  if (!base || base === '.' || base === '..') throw new Error('invalid file name')
+  const dest = path.join(profile.dir, base)
+  fs.mkdirSync(profile.dir, { recursive: true })
+  try { fs.chmodSync(dest, 0o644) } catch { /* new file */ }
+  fs.writeFileSync(dest, content, 'utf-8')
+  return dest
+}
+
 export function discoverProfiles(): CarProfile[] {
   const out: CarProfile[] = []
   if (!fs.existsSync(REPO_ROOT)) return out

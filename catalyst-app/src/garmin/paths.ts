@@ -26,10 +26,32 @@ function findRepoRoot(start: string): string {
   return start
 }
 
-// In dev, resolve paths relative to the source tree.
-// In packaged builds, use the user-data directory for everything writable.
+// Stable Application Support dir — must match SETTINGS_PATH and must NOT
+// depend on Electron's productName ("Catalyst Coach" vs "catalyst-coach") or
+// on app.getPath('userData') being callable before `ready`. A mismatch here
+// is why Garage markdown saves looked like they worked in one session and
+// vanished after relaunch in the packaged app.
+function defaultUserDataDir(): string {
+  if (process.env.APPDATA) return path.join(process.env.APPDATA, 'catalyst-coach')
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'catalyst-coach')
+  }
+  return path.join(os.homedir(), '.config', 'catalyst-coach')
+}
+
 function getUserDataDir(): string {
-  try { return require('electron').app.getPath('userData') } catch { return os.homedir() }
+  const fallback = defaultUserDataDir()
+  try {
+    const electron = require('electron') as typeof import('electron')
+    const app = electron.app
+    if (!app) return fallback
+    // Pin userData before `ready` so Chromium, window-state, and profile
+    // markdown all share the same folder in packaged and unpackaged runs.
+    try { app.setPath('userData', fallback) } catch { /* already ready */ }
+    try { return app.getPath('userData') } catch { return fallback }
+  } catch {
+    return fallback
+  }
 }
 
 const REPO_ROOT_DEFAULT = isPackaged
@@ -69,17 +91,18 @@ export const COACHING_DIR = isPackaged
   : path.join(REPO_ROOT, 'coaching')
 
 // App-data settings (active profile, etc.).
-export const SETTINGS_PATH = path.join(
-  process.env.APPDATA ||
-    (process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support')
-      : path.join(os.homedir(), '.config')),
-  'catalyst-coach',
-  'settings.json',
-)
+export const SETTINGS_PATH = path.join(defaultUserDataDir(), 'settings.json')
 
 export function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true })
+}
+
+function copyWritable(src: string, dest: string): void {
+  fs.copyFileSync(src, dest)
+  // extraResources inside the .app are often mode 0444. copyFileSync keeps
+  // that mode, and a later Garage save then fails with EACCES — only in the
+  // packaged app, which is exactly the "works in dev" report.
+  try { fs.chmodSync(dest, 0o644) } catch { /* non-fatal */ }
 }
 
 // Seed writable userData directories from bundled read-only resources.
@@ -99,7 +122,7 @@ export function seedUserData(): void {
       for (const fn of fs.readdirSync(bundledTracks)) {
         if (!fn.toLowerCase().endsWith('.yaml')) continue
         const dest = path.join(TRACKS_DIR, fn)
-        if (!fs.existsSync(dest)) fs.copyFileSync(path.join(bundledTracks, fn), dest)
+        if (!fs.existsSync(dest)) copyWritable(path.join(bundledTracks, fn), dest)
       }
     }
   } catch (e) {
@@ -118,7 +141,8 @@ export function seedUserData(): void {
         ensureDir(destDir)
         for (const fn of fs.readdirSync(srcDir)) {
           const dest = path.join(destDir, fn)
-          if (!fs.existsSync(dest)) fs.copyFileSync(path.join(srcDir, fn), dest)
+          if (!fs.existsSync(dest)) copyWritable(path.join(srcDir, fn), dest)
+          else try { fs.chmodSync(dest, 0o644) } catch { /* already writable */ }
         }
       }
     }

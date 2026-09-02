@@ -288,6 +288,7 @@ export interface CatalystBridge {
   startLoad(): Promise<void>
   onWorker(cb: (evt: WorkerEvent) => void): () => void
   onLog(cb: (msg: { level: string; message: string; ts: number }) => void): () => void
+  onSaveRequest(cb: () => void): () => void
 
   // AI Coach
   runCoach(opts: CoachOptions): Promise<{ sessionId: null }>

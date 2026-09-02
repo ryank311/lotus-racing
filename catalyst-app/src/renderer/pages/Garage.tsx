@@ -25,6 +25,7 @@ export function Garage() {
   const [original, setOriginal]   = useState('')
   const [dropping, setDropping]   = useState(false)
   const [saving, setSaving]       = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const dirty = content !== original
 
   const load = useCallback(async () => {
@@ -48,8 +49,18 @@ export function Garage() {
   }, [selectedVehicle?.profile, refreshFiles])
 
   useEffect(() => {
-    if (!editPath) { setContent(''); setOriginal(''); return }
-    void api.readProfileFile(editPath).then(t => { setContent(t); setOriginal(t) })
+    if (!editPath) { setContent(''); setOriginal(''); setSaveError(null); return }
+    let cancelled = false
+    void api.readProfileFile(editPath).then(t => {
+      if (cancelled) return
+      setContent(t)
+      setOriginal(t)
+      setSaveError(null)
+    }).catch(e => {
+      if (cancelled) return
+      setSaveError(e instanceof Error ? e.message : String(e))
+    })
+    return () => { cancelled = true }
   }, [editPath])
 
   const onSelectVehicle = (guid: string) => {
@@ -59,13 +70,37 @@ export function Garage() {
     setContent(''); setOriginal('')
   }
 
-  const onSave = async () => {
+  const onSave = useCallback(async () => {
     if (!editPath || !selectedVehicle?.profile) return
+    if (content === original) return
     setSaving(true)
-    await api.writeCarMd(selectedVehicle.profile, editPath.split('/').pop()!, content)
-    setOriginal(content)
-    setSaving(false)
-  }
+    setSaveError(null)
+    try {
+      await api.writeCarMd(selectedVehicle.profile, editPath, content)
+      setOriginal(content)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSaveError(msg)
+      console.error('[garage] save failed', e)
+    } finally {
+      setSaving(false)
+    }
+  }, [editPath, selectedVehicle?.profile, content, original])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        void onSave()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    const unsub = typeof api.onSaveRequest === 'function' ? api.onSaveRequest(() => { void onSave() }) : () => {}
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      unsub()
+    }
+  }, [onSave])
 
   const onDelete = async (fileName: string) => {
     if (!selectedVehicle?.profile) return
@@ -149,6 +184,7 @@ export function Garage() {
               content={content}
               dirty={dirty}
               saving={saving}
+              saveError={saveError}
               dropping={dropping}
               onSelectFile={(p) => {
                 if (dirty && !confirm('Discard unsaved edits?')) return
@@ -223,7 +259,7 @@ function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: 
 
 // ─── ProfileDetail ────────────────────────────────────────────────────────────
 
-function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, dropping,
+function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveError, dropping,
   onSelectFile, onDelete, onContentChange, onSave, onDrop, onDragOver, onDragLeave, onCreateProfile,
 }: {
   vehicle: VehicleSummary
@@ -232,6 +268,7 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, dropp
   content: string
   dirty: boolean
   saving: boolean
+  saveError: string | null
   dropping: boolean
   onSelectFile: (p: string) => void
   onDelete: (name: string) => void
@@ -315,7 +352,8 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, dropp
               <span className="spacer" />
               <span className="muted text-mono" style={{ fontSize: 10 }}>
                 {content.length.toLocaleString()} chars
-                {dirty && <span style={{ color: 'var(--signal)', marginLeft: 8 }}>unsaved</span>}
+                {saveError && <span style={{ color: 'var(--signal)', marginLeft: 8 }}>{saveError}</span>}
+                {!saveError && dirty && <span style={{ color: 'var(--signal)', marginLeft: 8 }}>unsaved</span>}
               </span>
               <button className="btn primary" disabled={!dirty || saving} onClick={onSave} style={{ marginLeft: 12, padding: '4px 14px' }}>
                 {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}

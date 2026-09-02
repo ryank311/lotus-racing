@@ -65,6 +65,11 @@ const bridge: CatalystBridge = {
     ipcRenderer.on('app:log', handler)
     return () => ipcRenderer.off('app:log', handler)
   },
+  onSaveRequest: cb => {
+    const handler = () => cb()
+    ipcRenderer.on('app:save', handler)
+    return () => ipcRenderer.off('app:save', handler)
+  },
 
   buildAnalysis: (sessionGuids: string[], units?: UnitSystem) => ipcRenderer.invoke('analysis:build', sessionGuids, units),
 

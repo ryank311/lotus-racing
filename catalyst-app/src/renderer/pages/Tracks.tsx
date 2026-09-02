@@ -193,6 +193,21 @@ export function Tracks() {
     setSavingMsg(null)
   }
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        if (dirty) void save()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    const unsub = typeof api.onSaveRequest === 'function' ? api.onSaveRequest(() => { if (dirty) void save() }) : () => {}
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      unsub()
+    }
+  }, [loaded, selectedGuid, corners, dirty])
+
   // ── render ────────────────────────────────────────────────────────────────
   return (
     <>

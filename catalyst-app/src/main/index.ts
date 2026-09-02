@@ -18,6 +18,29 @@ const iconPath = app.isPackaged
 
 let mainWindow: BrowserWindow | null = null
 
+function installAppMenu(getWin: () => BrowserWindow | null): void {
+  const isMac = process.platform === 'darwin'
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Save',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => getWin()?.webContents.send('app:save'),
+        },
+        { type: 'separator' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 function createWindow(): void {
   const { bounds, maximized, fullScreen } = loadInitialBounds()
   mainWindow = new BrowserWindow({
@@ -145,6 +168,7 @@ app.whenReady().then(async () => {
     try { app.dock.setIcon(iconPath) } catch {}
   }
   registerIpc(() => mainWindow)
+  installAppMenu(() => mainWindow)
   createWindow()
   hookConsoleToRenderer(() => mainWindow)
   app.on('activate', () => {
