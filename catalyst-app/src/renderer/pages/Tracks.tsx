@@ -62,9 +62,35 @@ interface LoadedTrack {
   corners: EditableCorner[]
 }
 
+interface TrackPreview {
+  centerline: Array<{ x: number; y: number }>
+  bbox: { minX: number; maxX: number; minY: number; maxY: number }
+}
+
+function TrackSilhouette({ preview }: { preview?: TrackPreview }) {
+  if (!preview?.centerline.length) return <span className="tracks-preview-empty">—</span>
+  const { minX, maxX, minY, maxY } = preview.bbox
+  const pad = Math.max(maxX - minX, maxY - minY) * 0.08
+  const points = preview.centerline
+    .filter((_, index) => index % 8 === 0 || index === preview.centerline.length - 1)
+    .map(point => `${point.x},${-point.y}`)
+    .join(' ')
+  return (
+    <svg
+      className="tracks-preview"
+      viewBox={`${minX - pad} ${-maxY - pad} ${Math.max(1, maxX - minX + pad * 2)} ${Math.max(1, maxY - minY + pad * 2)}`}
+      aria-hidden="true"
+    >
+      <polyline points={points} />
+    </svg>
+  )
+}
+
 export function Tracks() {
   const [list, setList] = useState<TrackListEntry[]>([])
+  const [selectedTrackName, setSelectedTrackName] = useState<string | null>(null)
   const [selectedGuid, setSelectedGuid] = useState<string | null>(null)
+  const [trackPreviews, setTrackPreviews] = useState<Record<string, TrackPreview>>({})
   const [loaded, setLoaded] = useState<LoadedTrack | null>(null)
   const [loading, setLoading] = useState(false)
   const [corners, setCorners] = useState<EditableCorner[]>([])
@@ -79,10 +105,39 @@ export function Tracks() {
       setList(tracks)
       if (!selectedGuid && tracks.length) {
         const first = tracks.find(t => t.meanLineExists) ?? tracks[0]
+        setSelectedTrackName(first.trackName)
         if (first.meanLineGuid) setSelectedGuid(first.meanLineGuid)
       }
     })()
   }, [])
+
+  const trackGroups = useMemo(() => {
+    const groups = new Map<string, TrackListEntry[]>()
+    for (const entry of list) {
+      const current = groups.get(entry.trackName) ?? []
+      current.push(entry)
+      groups.set(entry.trackName, current)
+    }
+    return [...groups.entries()].map(([trackName, layouts]) => ({ trackName, layouts }))
+  }, [list])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all(trackGroups.map(async group => {
+      const representative = group.layouts.find(layout => layout.meanLineExists && layout.meanLineGuid)
+      if (!representative?.meanLineGuid) return null
+      const detail = await api.getTrack(representative.meanLineGuid) as LoadedTrack | null
+      if (!detail?.geometry) return null
+      return [group.trackName, {
+        centerline: detail.geometry.centerline,
+        bbox: detail.geometry.bbox,
+      }] as const
+    })).then(results => {
+      if (cancelled) return
+      setTrackPreviews(Object.fromEntries(results.filter((item): item is NonNullable<typeof item> => item != null)))
+    })
+    return () => { cancelled = true }
+  }, [trackGroups])
 
   useEffect(() => {
     if (!selectedGuid) return
@@ -117,6 +172,15 @@ export function Tracks() {
   )
 
   const activeEntry = list.find(t => t.meanLineGuid === selectedGuid) ?? null
+  const activeTrackName = selectedTrackName ?? activeEntry?.trackName ?? trackGroups[0]?.trackName ?? null
+  const activeLayouts = trackGroups.find(group => group.trackName === activeTrackName)?.layouts ?? []
+
+  const selectTrack = (trackName: string) => {
+    setSelectedTrackName(trackName)
+    const layouts = trackGroups.find(group => group.trackName === trackName)?.layouts ?? []
+    const first = layouts.find(layout => layout.meanLineExists && layout.meanLineGuid) ?? layouts[0]
+    setSelectedGuid(first?.meanLineGuid ?? null)
+  }
 
   // ── corner mutations ──────────────────────────────────────────────────────
   const updateCorner = (turn: string, patch: Partial<EditableCorner>) => {
@@ -217,7 +281,7 @@ export function Tracks() {
           <div className="page-title">Tra<span className="accent">cks</span></div>
         </div>
         <div className="page-meta">
-          {list.length} configurations<br />
+          {trackGroups.length} {trackGroups.length === 1 ? 'track' : 'tracks'} · {list.length} layouts<br />
           <span className="muted">
             {activeEntry ? `${activeEntry.trackName} · ${activeEntry.configName}` : '—'}
           </span>
@@ -225,28 +289,55 @@ export function Tracks() {
       </header>
 
       <div className="page-body tracks-body">
-        {/* Track picker */}
-        <div className="tracks-picker">
+        {/* Track and layout pickers */}
+        <section className="tracks-selector" aria-label="Track and layout selector">
           {list.length === 0 && (
             <div className="muted small">No track data yet — sync some sessions first.</div>
           )}
-          {list.map(t => (
-            <button
-              key={`${t.meanLineGuid ?? 'noguid'}-${t.configName}`}
-              className={`chip ${selectedGuid === t.meanLineGuid ? 'signal' : ''}`}
-              disabled={!t.meanLineExists}
-              onClick={() => t.meanLineGuid && setSelectedGuid(t.meanLineGuid)}
-              title={t.meanLineExists ? '' : 'mean_line.pb missing — re-sync to fetch it'}
-              style={{ cursor: t.meanLineExists ? 'pointer' : 'not-allowed' }}
-            >
-              {t.configName || '(unnamed config)'}
-              <span className="muted" style={{ marginLeft: 6, fontSize: 9 }}>
-                · {t.sessionCount}s
-                {t.yamlExists ? ` · ${t.cornerCount} corners` : ' · no yaml'}
-              </span>
-            </button>
-          ))}
-        </div>
+          {trackGroups.length > 0 && (
+            <>
+              <div className="tracks-selector-label">Circuit</div>
+              <div className="tracks-circuit-picker">
+                {trackGroups.map(group => {
+                  const active = activeTrackName === group.trackName
+                  const sessionCount = group.layouts.reduce((sum, layout) => sum + layout.sessionCount, 0)
+                  return (
+                    <button key={group.trackName} type="button" className={`tracks-circuit-card ${active ? 'active' : ''}`}
+                      aria-pressed={active} onClick={() => selectTrack(group.trackName)}>
+                      <TrackSilhouette preview={trackPreviews[group.trackName]} />
+                      <span className="tracks-circuit-copy">
+                        <strong>{group.trackName}</strong>
+                        <small>{group.layouts.length} {group.layouts.length === 1 ? 'layout' : 'layouts'} · {sessionCount} sessions</small>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="tracks-layout-row">
+                <div className="tracks-selector-label">Layout</div>
+                <div className="tracks-picker">
+                  {activeLayouts.map(t => (
+                    <button
+                      key={`${t.meanLineGuid ?? 'noguid'}-${t.configName}`}
+                      className={`chip ${selectedGuid === t.meanLineGuid ? 'signal' : ''}`}
+                      disabled={!t.meanLineExists}
+                      onClick={() => t.meanLineGuid && setSelectedGuid(t.meanLineGuid)}
+                      title={t.meanLineExists ? '' : 'mean_line.pb missing — re-sync to fetch it'}
+                      style={{ cursor: t.meanLineExists ? 'pointer' : 'not-allowed' }}
+                    >
+                      {t.configName || '(unnamed layout)'}
+                      <span className="muted" style={{ marginLeft: 6, fontSize: 9 }}>
+                        · {t.sessionCount}s
+                        {t.yamlExists ? ` · ${t.cornerCount} corners` : ' · no yaml'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </section>
 
         {loading && <div className="muted small" style={{ padding: 16 }}>Loading track geometry…</div>}
 

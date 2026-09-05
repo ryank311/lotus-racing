@@ -3133,6 +3133,87 @@ input, textarea, select { font-family: inherit; color: inherit; }
   gap: 14px;
 }
 
+.tracks-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.tracks-selector-label {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.tracks-circuit-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+.tracks-circuit-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 82px;
+  padding: 9px 12px;
+  overflow: hidden;
+  text-align: left;
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.tracks-circuit-card:hover { border-color: var(--border-strong); color: var(--text); }
+.tracks-circuit-card.active {
+  border-color: var(--signal);
+  background: var(--signal-soft);
+  color: var(--text);
+  box-shadow: inset 2px 0 var(--signal);
+}
+.tracks-preview {
+  width: 74px;
+  height: 58px;
+  flex: 0 0 74px;
+  overflow: visible;
+}
+.tracks-preview polyline {
+  fill: none;
+  stroke: var(--text-mute);
+  stroke-width: 12;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.tracks-circuit-card.active .tracks-preview polyline { stroke: var(--signal); }
+.tracks-preview-empty {
+  display: grid;
+  place-items: center;
+  width: 74px;
+  height: 58px;
+  color: var(--text-mute);
+}
+.tracks-circuit-copy { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.tracks-circuit-copy strong { font-size: 12px; line-height: 1.25; }
+.tracks-circuit-copy small {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.tracks-layout-row {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
 .tracks-picker {
   display: flex;
   gap: 6px;
