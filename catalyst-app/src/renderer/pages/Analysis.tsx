@@ -6,6 +6,7 @@ import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries,
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
+import { humanSessionLabel, sanitizeCoachingResult } from '../../shared/sessionIdentity'
 import type { AnalysisData } from '../../garmin/analysisData'
 import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
@@ -168,6 +169,16 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     })()
   }, [selected, system, lapFilter])
 
+  const displayCoachResult = useMemo(() => {
+    if (!coachResult) return null
+    const sessions = [...(data?.sessions ?? [])]
+      .sort((a, b) => (b.start ?? '').localeCompare(a.start ?? ''))
+    const aliases = Object.fromEntries(
+      sessions.map((session, index) => [session.sg, humanSessionLabel(session.start, index)]),
+    )
+    return sanitizeCoachingResult(coachResult, aliases)
+  }, [coachResult, data?.sessions])
+
   if (selected.size === 0) {
     return (
       <>
@@ -271,7 +282,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             )}
 
             {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={coachResult} onFocusRef={setFocusedRef} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} onFocusRef={setFocusedRef} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
             )}
           </div>
         </div>
@@ -282,7 +293,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
           {data && !loading && !err
-            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={coachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} focusAnnotation={focusedAnnotation} coachResult={coachResult} />
+            ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={displayCoachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} focusAnnotation={focusedAnnotation} coachResult={displayCoachResult} />
             : <div className="analysis-map-placeholder" />
           }
         </div>
@@ -602,6 +613,17 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
   onFocusAnnotation?: (a: CoachAnnotation | null) => void
 }) {
   const [open, setOpen] = useState(true)
+  const prioritizedTips = useMemo(
+    () => [...result.tips].sort((a, b) => (a.priority ?? 4) - (b.priority ?? 4)),
+    [result.tips],
+  )
+
+  const confidenceLabel = (confidence: 1 | 2 | 3 | undefined): string | null => {
+    if (confidence === 3) return 'High confidence'
+    if (confidence === 2) return 'Medium confidence'
+    if (confidence === 1) return 'Low confidence'
+    return null
+  }
 
   // Extract the ref from a tip's section label, preserving ranges like "T7-T9".
   const refForTip = (tip: CoachingResult['tips'][0]): string | null => {
@@ -613,7 +635,7 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
   }
 
   return (
-    <div className="chart-card coach-card" style={{ marginBottom: 18 }}>
+    <div className="chart-card coach-card coach-notes-card">
       <div className="card-corner-marks"><i /></div>
       <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <span className="channel-tag">COACH NOTES</span>
@@ -621,45 +643,48 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
       </div>
 
       {open && (
-        <div style={{ padding: '28px 16px 16px' }}>
-          {/* Headline + gap chip on one row */}
+        <div className="coach-notes-body">
           {result.headline && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{
-                fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--signal)',
-                lineHeight: 1.5, marginBottom: 8,
-              }}>
-                {result.headline}
+            <section className="coach-summary">
+              <div className="coach-summary-copy">
+                <div className="coach-section-kicker">Biggest opportunity</div>
+                <div className="coach-headline">{result.headline}</div>
               </div>
               {result.consistency_loss_ms > 0 && (
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center',
-                  background: 'var(--signal-soft)', border: '1px solid var(--signal)',
-                  borderRadius: 2, padding: '2px 8px',
-                  fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--signal)',
-                  letterSpacing: '0.1em',
-                }}>
-                  +{(result.consistency_loss_ms / 1000).toFixed(3)}s gap
-                </span>
+                <div className="coach-gap-metric">
+                  <span>Consistency gap</span>
+                  <strong>+{(result.consistency_loss_ms / 1000).toFixed(3)}s</strong>
+                  <small>measured opportunity</small>
+                </div>
               )}
-            </div>
+            </section>
           )}
 
           {(result.strengths?.length ?? 0) > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <div className="card-label" style={{ marginBottom: 7 }}>Keep doing</div>
-              {result.strengths!.map((strength, i) => (
-                <div key={i} style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-dim)', marginBottom: 4 }}>
-                  <span style={{ color: 'var(--green)' }}>✓</span> {strength}
-                </div>
-              ))}
-            </div>
+            <section className="coach-strengths">
+              <div className="coach-section-heading">
+                <span>Keep doing</span>
+                <small>{result.strengths!.length} strengths to preserve</small>
+              </div>
+              <div className="coach-strength-grid">
+                {result.strengths!.map((strength, i) => (
+                  <div className="coach-strength" key={i}>
+                    <span className="coach-strength-check">✓</span>
+                    <span>{strength}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
           )}
 
-          {/* Tip cards — clickable to zoom track map */}
-          {result.tips.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {result.tips.map((tip, i) => {
+          {prioritizedTips.length > 0 && (
+            <section className="coach-recommendations">
+              <div className="coach-section-heading">
+                <span>Priority coaching</span>
+                <small>Work from the top down · one change at a time</small>
+              </div>
+              <div className="coach-tip-list">
+              {prioritizedTips.map((tip, i) => {
                 const ref = refForTip(tip)
                 const clickable = !!ref && !!onFocusRef
                 // For a segment section (S6), highlight the whole segment — not a
@@ -673,82 +698,57 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
                 return (
                   <div
                     key={i}
-                    onClick={clickable ? () => {
-                      onFocusRef!(ref!)
-                      onFocusAnnotation?.(focusAnn)
-                    } : undefined}
-                    style={{
-                      background: 'var(--bg-elev)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 'var(--radius)',
-                      padding: '10px 12px',
-                      cursor: clickable ? 'pointer' : 'default',
-                      transition: 'border-color 0.12s, background 0.12s',
-                    }}
-                    onMouseEnter={e => {
-                      if (!clickable) return
-                      ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--cyan)'
-                      ;(e.currentTarget as HTMLDivElement).style.background = 'var(--cyan-soft)'
-                      onHoverRef?.(ref!)
-                    }}
-                    onMouseLeave={e => {
-                      ;(e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border)'
-                      ;(e.currentTarget as HTMLDivElement).style.background = 'var(--bg-elev)'
-                      onHoverRef?.(null)
-                    }}
+                    className={`coach-tip coach-tip-priority-${tip.priority ?? 3}`}
+                    onMouseEnter={() => clickable && onHoverRef?.(ref!)}
+                    onMouseLeave={() => onHoverRef?.(null)}
                   >
-                    <div style={{
-                      display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5,
-                    }}>
-                      <span style={{
-                        fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--cyan)',
-                        letterSpacing: '0.14em', textTransform: 'uppercase',
-                      }}>
-                        {tip.section}
-                      </span>
-                      {tip.priority && <span className="chip" style={{ fontSize: 8, padding: '1px 5px' }}>P{tip.priority}</span>}
-                      {tip.estimated_gain_ms != null && (
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--signal)' }}>
-                          ~{(tip.estimated_gain_ms / 1000).toFixed(2)}s
-                        </span>
-                      )}
-                      {tip.confidence && (
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-mute)' }}>
-                          confidence {tip.confidence}/3
-                        </span>
-                      )}
-                      {clickable && (
-                        <span style={{
-                          fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-mute)',
-                          letterSpacing: '0.1em',
-                        }}>
-                          ↗ zoom to map
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-dim)' }}>
-                      {tip.body}
-                    </div>
-                    {(tip.evidence?.length ?? 0) > 0 && (
-                      <div style={{ marginTop: 7, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-mute)', lineHeight: 1.45 }}>
-                        {tip.evidence!.map((item, j) => <div key={j}>↳ {item}</div>)}
+                    <div className="coach-tip-header">
+                      <div className="coach-tip-rank">{String(i + 1).padStart(2, '0')}</div>
+                      <div className="coach-tip-title">
+                        <span>{tip.section}</span>
+                        <small>{tip.priority ? `Priority ${tip.priority}` : 'Coaching opportunity'}</small>
                       </div>
+                      <div className="coach-tip-metrics">
+                        {tip.estimated_gain_ms != null && (
+                          <span className="coach-gain">~{(tip.estimated_gain_ms / 1000).toFixed(2)}s gain</span>
+                        )}
+                        {confidenceLabel(tip.confidence) && (
+                          <span className="coach-confidence">{confidenceLabel(tip.confidence)}</span>
+                        )}
+                      </div>
+                      {clickable && (
+                        <button className="coach-map-link" type="button" onClick={() => {
+                          onFocusRef!(ref!)
+                          onFocusAnnotation?.(focusAnn)
+                        }}>View on map ↗</button>
+                      )}
+                    </div>
+                    <div className="coach-tip-body">{tip.body}</div>
+                    {(tip.evidence?.length ?? 0) > 0 && (
+                      <details className="coach-evidence">
+                        <summary>Evidence · {tip.evidence!.length} observation{tip.evidence!.length === 1 ? '' : 's'}</summary>
+                        <div className="coach-evidence-list">
+                          {tip.evidence!.map((item, j) => <div key={j}><span>↳</span>{item}</div>)}
+                        </div>
+                      </details>
                     )}
                     {(tip.cue || tip.success_metric) && (
-                      <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                        {tip.cue && <div className="muted" style={{ fontSize: 9 }}><b>CUE</b><br />{tip.cue}</div>}
-                        {tip.success_metric && <div className="muted" style={{ fontSize: 9 }}><b>VERIFY</b><br />{tip.success_metric}</div>}
+                      <div className="coach-tip-actions">
+                        {tip.cue && <div className="coach-action coach-action-cue"><span>In-car cue</span><strong>{tip.cue}</strong></div>}
+                        {tip.success_metric && <div className="coach-action coach-action-verify"><span>Verify in Catalyst</span><strong>{tip.success_metric}</strong></div>}
                       </div>
                     )}
                   </div>
                 )
               })}
-            </div>
+              </div>
+            </section>
           )}
           {(result.data_quality_notes?.length ?? 0) > 0 && (
-            <div style={{ marginTop: 14, padding: '9px 11px', border: '1px solid var(--border)', color: 'var(--text-mute)', fontSize: 10, lineHeight: 1.5 }}>
-              <b>DATA CAVEATS</b><br />{result.data_quality_notes!.join(' · ')}
-            </div>
+            <details className="coach-caveats">
+              <summary>Data caveats · {result.data_quality_notes!.length}</summary>
+              <div>{result.data_quality_notes!.join(' · ')}</div>
+            </details>
           )}
         </div>
       )}

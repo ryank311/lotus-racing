@@ -11,6 +11,7 @@ import { openDb } from './loadToDb.js'
 import {
   DEFAULT_UNIT_SYSTEM, speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem,
 } from '../shared/units.js'
+import { humanSessionLabel } from '../shared/sessionIdentity.js'
 
 // Each entry: [sqlColumn, [units, interpretation], opts?]. `opts.display` is the
 // name shown in the brief (when it differs from the SQL column); `opts.scale`
@@ -394,6 +395,10 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     ? selectedSessions.filter(session => includedSessionGuids.has(session.session_guid))
     : selectedSessions
   const sgList = sessions.map(s => s.session_guid)
+  const sessionLabels = new Map(
+    sessions.map((session, index) => [session.session_guid, humanSessionLabel(session.session_start, index)]),
+  )
+  const sessionLabel = (sg: string): string => sessionLabels.get(sg) ?? 'Selected session'
   const bySession = new Map<string, any[]>()
   for (const lap of lapRows) {
     if (!bySession.has(lap.session_guid)) bySession.set(lap.session_guid, [])
@@ -431,10 +436,21 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   parts.push('## Analysis scope & guardrails')
   parts.push('')
   parts.push(`- This report contains ${lapRows.length} driven laps from ${sessions.length} selected sessions on **${configName}**. Keep comparisons within this exact track configuration.`)
+  parts.push('- Session GUIDs are internal analysis keys. You may use them to join and disambiguate telemetry while reasoning, but never expose or refer to a GUID/ID in the coaching response.')
+  parts.push('- Cite laps as **<session date/time> · Lap <number>** using the display labels in the tables (for example, “May 24, 2026 15:34 · Lap 4”).')
   parts.push('- All included laps remain visible. Treat laps >5% slower than that session\'s best as outliers/cool-down/mistake candidates: use them to diagnose repeatability, but do not let them set pace targets.')
   parts.push('- Pace targets must be anchored to this driver\'s repeatable observed bests. A track-guide statement is context, not measured proof that the car/driver can achieve it in these conditions.')
   parts.push('- Catalyst does not provide throttle position, brake pressure, steering angle, gear/RPM, tire temperature/pressure, or video in this dataset. Describe those inputs only as hypotheses (for example, “the speed/acceleration trace suggests a lift”), never as measured facts.')
   parts.push('- Longitudinal acceleration also contains grade, aero drag, and bumps. The braking table is a deceleration-derived proxy, not a brake-pedal channel; do not diagnose lockup or brake bias from it alone.')
+  parts.push('')
+  parts.push('### Internal session identity key — analysis only')
+  parts.push('Use the GUID only as a stable join key. Every user-facing citation must use its display label instead.')
+  parts.push('')
+  parts.push('| Display label | Internal session GUID |')
+  parts.push('|---------------|-----------------------|')
+  for (const session of sessions) {
+    parts.push(`| ${sessionLabel(session.session_guid)} | ${session.session_guid} |`)
+  }
   parts.push('')
   parts.push('---')
   parts.push('')
@@ -495,7 +511,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
       const delta = bestMs && L.duration_ms ? (L.duration_ms - bestMs) / 1000 : 0
       const pct = bestMs > 0 && L.duration_ms > 0 ? (L.duration_ms / bestMs - 1) * 100 : 0
       const quality = pct > 15 ? 'major outlier' : pct > 5 ? 'outlier' : 'representative'
-      parts.push(`| ${sg.slice(0, 8)}… | ${L.lap_index + 1} | ${quality} | ${msToLap(L.duration_ms)} | ${delta >= 0 ? '+' : ''}${delta.toFixed(3)}s | ${spd(L.max_speed).toFixed(1)} | ${(L.max_lat_g ?? 0).toFixed(3)} | ${(L.max_long_accel ?? 0) >= 0 ? '+' : ''}${(L.max_long_accel ?? 0).toFixed(3)} | ${(L.min_long_accel ?? 0) >= 0 ? '+' : ''}${(L.min_long_accel ?? 0).toFixed(3)} |`)
+      parts.push(`| ${sessionLabel(sg)} | ${L.lap_index + 1} | ${quality} | ${msToLap(L.duration_ms)} | ${delta >= 0 ? '+' : ''}${delta.toFixed(3)}s | ${spd(L.max_speed).toFixed(1)} | ${(L.max_lat_g ?? 0).toFixed(3)} | ${(L.max_long_accel ?? 0) >= 0 ? '+' : ''}${(L.max_long_accel ?? 0).toFixed(3)} | ${(L.min_long_accel ?? 0) >= 0 ? '+' : ''}${(L.min_long_accel ?? 0).toFixed(3)} |`)
     }
   }
   parts.push('')
@@ -509,7 +525,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     const rep = laps.filter(lap => representativeLapKeys.has(`${sg}:${lap.lap_index}`))
     const durations = rep.map(lap => Number(lap.duration_ms) / 1000)
     const sessionBest = sessionBestByGuid.get(sg) ?? 0
-    parts.push(`| ${sg.slice(0, 8)}… | ${rep.length} / ${laps.length} | ${msToLap(sessionBest)} | ${durations.length ? msToLap(median(durations) * 1000) : '—'} | ${stddev(durations).toFixed(3)} | ${laps.length - rep.length} |`)
+    parts.push(`| ${sessionLabel(sg)} | ${rep.length} / ${laps.length} | ${msToLap(sessionBest)} | ${durations.length ? msToLap(median(durations) * 1000) : '—'} | ${stddev(durations).toFixed(3)} | ${laps.length - rep.length} |`)
   }
   parts.push('')
 
@@ -539,7 +555,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
           if (representativeLapKeys.has(`${sg}:${lapIdx}`)) valuesPerSegment[i].push(v)
         }
       }
-      parts.push(`| ${sg.slice(0, 8)}… | ${lapIdx + 1} | ${cells.join(' | ')} |`)
+      parts.push(`| ${sessionLabel(sg)} | ${lapIdx + 1} | ${cells.join(' | ')} |`)
     }
   }
   parts.push('')
@@ -639,12 +655,12 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     parts.push('### One row per (lap, corner)')
     parts.push(`Speed columns in ${spdU}. lat_g = |accel_y_mps2| m/s². min_accel_g = min(accel_x_mps2) m/s² (negative = braking). ÷9.81 for g-force.`)
     parts.push('lateral_pos: 0=driver-left edge, 1=driver-right edge, 0.5=centerline. entry/apex/exit lateral_pos shows line choice through the corner.')
-    parts.push(`| Sess | Lap | Turn | Name | Entry (${spdU}) | V-min (${spdU}) | V-min dist (m) | Exit (${spdU}) | Drop (${spdU}) | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |`)
+    parts.push(`| Session date/time | Lap | Turn | Name | Entry (${spdU}) | V-min (${spdU}) | V-min dist (m) | Exit (${spdU}) | Drop (${spdU}) | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |`)
     parts.push('|------|----:|------|------|------------:|------------:|---------------:|-----------:|-----------:|------------:|---------------:|-----------:|----------:|----------:|')
     for (const r of allCornerRows) {
       const lat = lateralRows.get(`${r.sg}:${r.lap - 1}:${r.turn}`)
       const fmtL = (v: number | null | undefined) => v == null ? '—' : v.toFixed(2)
-      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${spd(r.entry_speed).toFixed(1)} | ${spd(r.apex_speed).toFixed(1)} | ${r.vmin_distance_m.toFixed(1)} | ${spd(r.exit_speed).toFixed(1)} | ${spd(r.speed_drop).toFixed(1)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
+      parts.push(`| ${sessionLabel(r.sg)} | ${r.lap} | ${r.turn} | ${r.name} | ${spd(r.entry_speed).toFixed(1)} | ${spd(r.apex_speed).toFixed(1)} | ${r.vmin_distance_m.toFixed(1)} | ${spd(r.exit_speed).toFixed(1)} | ${spd(r.speed_drop).toFixed(1)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
     }
     parts.push('')
 
@@ -679,12 +695,12 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
       parts.push('### Deceleration-derived braking episodes — one row per (lap, corner)')
       parts.push('Episodes are inferred from smoothed accel_x (<−0.08 g with a ≥0.18 g peak). Onset relative to apex = apex_dist − onset_dist (larger means earlier); release relative to apex = release_dist − apex_dist (negative means release before geometric apex). This is a technique-comparison proxy, not measured pedal pressure.')
       parts.push('')
-      parts.push('| Sess | Lap | Turn | Onset m | Release m | Onset before apex m | Release vs apex m | Peak decel g |')
+      parts.push('| Session date/time | Lap | Turn | Onset m | Release m | Onset before apex m | Release vs apex m | Peak decel g |')
       parts.push('|------|----:|------|--------:|----------:|--------------------:|------------------:|-------------:|')
       for (const row of allBrakingRows) {
         const corner = corners.find(c => c.turn === row.turn)
         if (!corner) continue
-        parts.push(`| ${row.sg.slice(0, 8)}… | ${row.lap} | ${row.turn} | ${row.onset_dist_m.toFixed(1)} | ${row.release_dist_m.toFixed(1)} | ${(corner.apex_idx - row.onset_dist_m).toFixed(1)} | ${(row.release_dist_m - corner.apex_idx).toFixed(1)} | ${row.peak_brake_g.toFixed(2)} |`)
+        parts.push(`| ${sessionLabel(row.sg)} | ${row.lap} | ${row.turn} | ${row.onset_dist_m.toFixed(1)} | ${row.release_dist_m.toFixed(1)} | ${(corner.apex_idx - row.onset_dist_m).toFixed(1)} | ${(row.release_dist_m - corner.apex_idx).toFixed(1)} | ${row.peak_brake_g.toFixed(2)} |`)
       }
       parts.push('')
       parts.push('### Braking repeatability summary — representative laps only')
@@ -710,7 +726,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     if (sessLaps.length) {
       const bestLap = sessLaps.reduce((acc, L) => (L.duration_ms ?? Infinity) < (acc.duration_ms ?? Infinity) ? L : acc, sessLaps[0])
       parts.push('## Best-lap trace — every ~50 m')
-      parts.push(`_${bestSession.session_guid.slice(0, 8)}… lap ${bestLap.lap_index + 1} (${msToLap(bestLap.duration_ms)})_`)
+      parts.push(`_${sessionLabel(bestSession.session_guid)} · Lap ${bestLap.lap_index + 1} (${msToLap(bestLap.duration_ms)})_`)
       parts.push('')
       const trace = await fetchBestLapTrace(con, bestSession.session_guid, bestLap.lap_index, 50)
       parts.push(`speed in ${spdU} (converted from gnss_speed_mps), long_accel=accel_x_mps2 (m/s², neg=braking), lat_g=accel_y_mps2 (m/s², |val|/9.81=g), altitude=gnss_altitude_m (m MSL), lateral_pos=lateral_position (0–1), heading=gnss_heading_deg (°)`)
@@ -1007,7 +1023,7 @@ You are a professional HPDE coach. Analyze the complete Catalyst dataset above, 
 
 1. **Headline**: the single largest repeatable opportunity, its conservative gain, and where it occurs.
 2. **Strengths**: 2–4 data-backed habits to preserve. Positive reinforcement must be as specific as corrective advice.
-3. **Prioritized tips**: 3–6 tips. Each must include priority (1 highest), conservative \`estimated_gain_ms\` when supportable, confidence, 1–3 exact evidence strings (session short ID + lap + S/T reference + measurement), a short in-car cue, and a Catalyst success metric. The body must explain what changes and why in 2–4 sentences.
+3. **Prioritized tips**: 3–6 tips. Each must include priority (1 highest), conservative \`estimated_gain_ms\` when supportable, confidence, 1–3 exact evidence strings (human-readable session date/time + lap number + S/T reference + measurement), a short in-car cue, and a Catalyst success metric. The body must explain what changes and why in 2–4 sentences.
 4. **Drills**: 3–5 safe, progressive exercises tied to the tips. Specify the corner/segment, number of laps or repetitions, what to hold constant, and when to stop escalating.
 5. **Next-session plan**: 2–4 runs that sequence baseline, one-variable practice, verification, and consolidation. Give each run one primary focus and a measurable review criterion.
 6. **Car setup**: optional and often empty. Only recommend a configuration change when a repeated mechanical signature remains on representative/best laps and the available telemetry supports it. Make one change at a time and describe how to validate or revert it. Do not infer tire pressures/temperatures, brake bias, lockup, steering input, or damper behavior from channels that are not present.
@@ -1047,7 +1063,7 @@ export interface CoachRunOpts {
   system?: UnitSystem
 }
 
-export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; profile: string }> {
+export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; profile: string; sessionAliases: Record<string, string> }> {
   const dbPath = opts.dbPath ?? DB_PATH
   if (!fs.existsSync(dbPath)) throw new Error(`no database at ${dbPath}. Run load first.`)
   const db = await openDb(dbPath)
@@ -1095,7 +1111,10 @@ export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; pr
       lapLimit: opts.lapLimit,
     })
 
-    return { prompt, profile: profile.name }
+    const sessionAliases = Object.fromEntries(
+      sessions.map((session, index) => [session.session_guid, humanSessionLabel(session.session_start, index)]),
+    )
+    return { prompt, profile: profile.name, sessionAliases }
   } finally {
     await db.close()
   }

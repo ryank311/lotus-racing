@@ -1,6 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import type { CoachingSession, CoachAnnotation } from '../../shared/types'
+import { replaceSessionIds, sanitizeCoachingResult, type SessionAliasMap } from '../../shared/sessionIdentity'
+
+function fallbackSessionAliases(session: CoachingSession): SessionAliasMap {
+  return Object.fromEntries(
+    session.session_guids.map((guid, index) => [guid, `Selected session ${index + 1}`]),
+  )
+}
 
 interface Props {
   refreshTick: number
@@ -155,7 +162,9 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
                 className={`list-item ${current?.id === s.id ? 'active' : ''}`}
                 onClick={() => setCurrent(s)}
               >
-                <div className="filename" style={{ lineHeight: 1.3, marginBottom: 3 }}>{s.title}</div>
+                <div className="filename" style={{ lineHeight: 1.3, marginBottom: 3 }}>
+                  {replaceSessionIds(s.title, fallbackSessionAliases(s))}
+                </div>
                 <div className="meta">
                   {s.profile_name} · {s.model_used} · {s.created_at.slice(0, 10)}
                 </div>
@@ -184,7 +193,15 @@ function SessionViewer({ session, onLoad, onDelete }: {
   onDelete: (s: CoachingSession) => void
 }) {
   const [showRaw, setShowRaw] = useState(false)
-  const r = session.parsed_result
+  const aliases = useMemo(() => fallbackSessionAliases(session), [session])
+  const r = useMemo(
+    () => session.parsed_result ? sanitizeCoachingResult(session.parsed_result, aliases) : null,
+    [session.parsed_result, aliases],
+  )
+  const safeRawResponse = useMemo(
+    () => replaceSessionIds(session.raw_response, aliases),
+    [session.raw_response, aliases],
+  )
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', padding: '20px 24px' }}>
@@ -312,7 +329,7 @@ function SessionViewer({ session, onLoad, onDelete }: {
           whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5,
           maxHeight: 400, overflowY: 'auto',
         }}>
-          {session.raw_response}
+          {safeRawResponse}
         </pre>
       )}
     </div>

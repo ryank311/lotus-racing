@@ -14,6 +14,7 @@ import {
 } from '../garmin/paths.js'
 import { loadConfig, saveConfig, setCredentials } from '../garmin/config.js'
 import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
+import { replaceSessionIds } from '../shared/sessionIdentity.js'
 import {
   CatalystAPI,
   fetchAllSessions,
@@ -461,6 +462,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     void (async () => {
       let builtPrompt = ''
       let resolvedProfileName = opts.profile
+      let sessionAliases: Record<string, string> = {}
       const collectedLogs: string[] = []
       const log = (msg: string) => {
         broadcast(win, { kind: 'coach', type: 'log', payload: msg })
@@ -472,7 +474,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         broadcast(win, { kind: 'coach', type: 'progress',
           progress: { current: 0, total: 3, label: 'Building prompt…' } })
 
-        const { prompt, profile: resolvedProfile } = await runCoach({
+        const coachRun = await runCoach({
           sessionGuids: opts.sessionGuids,
           lapLimit: opts.lapLimit,
           profile: opts.profile,
@@ -480,6 +482,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           dbPath: DB_PATH,
           system: loadConfig().units ?? DEFAULT_UNIT_SYSTEM,
         })
+        const { prompt, profile: resolvedProfile } = coachRun
+        sessionAliases = coachRun.sessionAliases
         builtPrompt = prompt
         resolvedProfileName = resolvedProfile
 
@@ -512,8 +516,9 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
             const label = text.slice(9).trim()
             broadcast(win, { kind: 'coach', type: 'progress', progress: { current: 2, total: 3, label } })
           } else {
-            broadcast(win, { kind: 'coach', type: 'log', payload: text })
-            collectedLogs.push(text)
+            const safeText = replaceSessionIds(text, sessionAliases)
+            broadcast(win, { kind: 'coach', type: 'log', payload: safeText })
+            collectedLogs.push(safeText)
           }
         })
 
@@ -521,7 +526,10 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         broadcast(win, { kind: 'coach', type: 'progress',
           progress: { current: 2, total: 3, label: 'Parsing result…' } })
 
-        const parsed = parseCoachResponse(rawResponse)
+        // Keep GUIDs available to the model as analysis keys, then remove them
+        // before any response text is persisted or rendered to the driver.
+        const safeResponse = replaceSessionIds(rawResponse, sessionAliases)
+        const parsed = parseCoachResponse(safeResponse)
         const modelUsed = harnessConfig.model
         const title = parsed?.headline
           ?? `Coach · ${resolvedProfile} · ${new Date().toISOString().slice(0, 10)}`
@@ -535,7 +543,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           model_used: modelUsed,
           title,
           prompt,
-          raw_response: rawResponse,
+          raw_response: safeResponse,
           parsed_result: parsed,
         }
 
@@ -549,7 +557,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         broadcast(win, { kind: 'coach', type: 'done', payload: sessionId })
         log(`[coach] Session saved (${sessionId.slice(0, 8)}…)`)
       } catch (e: any) {
-        const errMsg = String(e.message ?? e)
+        const errMsg = replaceSessionIds(String(e.message ?? e), sessionAliases)
         log(`[coach] ✗ ${errMsg}`)
         broadcast(win, { kind: 'coach', type: 'error', payload: errMsg })
 
@@ -566,7 +574,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
               model_used: 'error',
               title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
               prompt: builtPrompt,
-              raw_response: collectedLogs.join('') + '\n\nERROR: ' + errMsg,
+              raw_response: replaceSessionIds(collectedLogs.join('') + '\n\nERROR: ' + errMsg, sessionAliases),
               parsed_result: null,
             }
             await insertCoachingSession(con, errorSession)
