@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
-import { LineChart, GGChart, HeatmapGrid, CornerChart } from '../components/Charts'
-import { speedSeries, lateralSeries, longGSeries } from '../components/chartSeries'
+import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerConsistencyChart } from '../components/Charts'
+import { speedSeries, speedDeltaSeries, timeDeltaSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
@@ -378,6 +378,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
   onHoverRef?: (ref: string | null) => void
   onFocusAnnotation?: (a: CoachAnnotation | null) => void
 }) {
+  const [speedMode, setSpeedMode] = useState<'absolute' | 'delta'>('absolute')
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
     [data.sessions],
@@ -432,13 +433,27 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
       {/* CHARTS */}
       <div className="analysis-charts">
-        <ChartCard channel="SPEED" meta={`${data.speedTraces.length} laps · ${data.speedUnit}`}>
+        <ChartCard
+          channel="SPEED"
+          meta={(
+            <div className="speed-chart-meta">
+              <span>{data.speedTraces.length} laps · {speedMode === 'delta' ? `Δ ${data.speedUnit} vs fastest` : data.speedUnit}</span>
+              <div className="chart-mode-toggle" role="group" aria-label="Speed chart display">
+                <button type="button" className={speedMode === 'absolute' ? 'active' : ''}
+                  aria-pressed={speedMode === 'absolute'} onClick={() => setSpeedMode('absolute')}>Speed</button>
+                <button type="button" className={speedMode === 'delta' ? 'active' : ''}
+                  aria-pressed={speedMode === 'delta'} onClick={() => setSpeedMode('delta')}>Δ vs fastest</button>
+              </div>
+            </div>
+          )}
+        >
           <LineChart
-            series={speedSeries(data)}
+            series={speedMode === 'delta' ? speedDeltaSeries(data) : speedSeries(data)}
             height={420}
             yUnit={data.speedUnit}
             corners={data.corners}
             segments={data.segments}
+            zeroLine={speedMode === 'delta'}
             onHoverX={onHoverDistance}
           />
         </ChartCard>
@@ -453,12 +468,14 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
           <GGChart gg={data.gg} height={420} onHoverDistance={onHoverDistance} speedUnit={data.speedUnit} />
         </ChartCard>
 
-        <ChartCard channel="LATERAL POSITION" meta="0 = inner · 1 = outer · 0.5 = centre">
+        <ChartCard channel="CUMULATIVE TIME Δ" meta="vs fastest lap · negative = ahead">
           <LineChart
-            series={lateralSeries(data)}
-            height={280}
-            yRange={[-0.05, 1.05]}
+            series={timeDeltaSeries(data)}
+            height={320}
+            yUnit="s"
             corners={data.corners}
+            segments={data.segments}
+            zeroLine
             onHoverX={onHoverDistance}
           />
         </ChartCard>
@@ -476,7 +493,18 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
         </ChartCard>
 
         {data.cornerRows.length > 0 && (
-          <ChartCard channel="CORNER STATS" meta="entry · apex · exit">
+          <ChartCard channel="CORNER CONSISTENCY" meta="V-min range ÷ average · lower is better">
+            <CornerConsistencyChart
+              data={data}
+              height={480}
+              speedUnit={data.speedUnit}
+              onHoverCorner={onHoverRef}
+            />
+          </ChartCard>
+        )}
+
+        {data.cornerRows.length > 0 && (
+          <ChartCard channel="CORNER STATS" meta="entry · V-min · exit">
             <CornerChart data={data} height={480} speedUnit={data.speedUnit} />
           </ChartCard>
         )}
@@ -726,4 +754,3 @@ function WrenchIcon() {
     </svg>
   )
 }
-

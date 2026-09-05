@@ -683,18 +683,22 @@ export function HeatmapGrid({ hm }: { hm: HeatmapData }) {
 
 // ─── CornerChart ─────────────────────────────────────────────────────────────
 
-const CP = { l: 16, r: 16, t: 24, b: 40 } as const
+const CP = { l: 92, r: 18, t: 42, b: 30 } as const
 
-interface DotInfo {
-  px: number; py: number
-  turn: string; lapLbl: string; isBest: boolean
-  entry_mph: number; apex_mph: number; exit_mph: number
+interface CornerHitInfo {
+  py: number
+  rowHeight: number
+  turn: string
+  name: string
+  best: AnalysisData['cornerRows'][number]
+  vminLow: number
+  vminHigh: number
 }
 
 export function CornerChart({ data, height, speedUnit = 'mph' }: { data: AnalysisData; height: number; speedUnit?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef(0)
-  const dotsRef = useRef<DotInfo[]>([])
+  const hitRowsRef = useRef<CornerHitInfo[]>([])
   const [tooltip, setTooltip] = useState<Tip | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
@@ -719,78 +723,86 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
     const yp = (yMax - yMin) * 0.08; yMin -= yp; yMax += yp
     const ySpan = yMax - yMin || 1
 
-    const toX = (i: number) => CP.l + (i + 0.5) / n * plotW
-    const toY = (v: number) => CP.t + (1 - (v - yMin) / ySpan) * plotH
-
-    // Build dot list for hit testing
-    const dots: DotInfo[] = []
-    // Group by turn+lapLbl so we can store all metrics per dot
-    const groups = new Map<string, DotInfo>()
-    for (const r of cornerRows) {
-      const key = `${r.turn}|${r.lapLbl}`
-      if (!groups.has(key)) groups.set(key, { px: 0, py: 0, turn: r.turn, lapLbl: r.lapLbl, isBest: r.isBest, entry_mph: 0, apex_mph: 0, exit_mph: 0 })
-      const g = groups.get(key)!
-      g.entry_mph = r.entry_mph; g.apex_mph = r.apex_mph; g.exit_mph = r.exit_mph
-      const xi = turnOrder.indexOf(r.turn)
-      g.px = toX(xi); g.py = toY(r.apex_mph)  // use apex as the dot position for hit target
-    }
-    groups.forEach(d => dots.push(d))
-    dotsRef.current = dots
-
-    // Y grid
-    ctx.font = '10px "JetBrains Mono", monospace'
-    const yTicks = niceTicks(yMin, yMax)
-    const yStep = yTicks.length > 1 ? Math.abs(yTicks[1] - yTicks[0]) : 1
-    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'
-    for (const t of yTicks) {
-      const py = toY(t)
-      if (py < CP.t - 1 || py > CP.t + plotH + 1) continue
-      ctx.strokeStyle = PALETTE.border; ctx.lineWidth = 1
-      ctx.beginPath(); ctx.moveTo(CP.l, py); ctx.lineTo(CP.l + plotW, py); ctx.stroke()
-      ctx.fillStyle = PALETTE.textMute; ctx.fillText(fmtTick(t, yStep), CP.l - 4, py)
-    }
-
-    // Turn labels
-    ctx.font = '9px "JetBrains Mono", monospace'; ctx.fillStyle = PALETTE.textMute
-    ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-    for (let i = 0; i < n; i++) ctx.fillText(turnOrder[i], toX(i), CP.t + plotH + 5)
-
+    const toX = (v: number) => CP.l + (v - yMin) / ySpan * plotW
+    const rowHeight = plotH / n
+    const rowY = (i: number) => CP.t + (i + 0.5) * rowHeight
     const SERIES = [
-      { key: 'entry_mph' as const, color: PALETTE.cyan,   r: 4 },
-      { key: 'apex_mph'  as const, color: PALETTE.signal, r: 4 },
-      { key: 'exit_mph'  as const, color: PALETTE.green,  r: 4 },
+      { key: 'entry_mph' as const, color: PALETTE.cyan, label: 'Entry', dy: -4 },
+      { key: 'apex_mph' as const, color: PALETTE.signal, label: 'V-min', dy: 0 },
+      { key: 'exit_mph' as const, color: PALETTE.green, label: 'Exit', dy: 4 },
     ]
 
-    for (const { key, color, r } of SERIES) {
-      ctx.fillStyle = color; ctx.globalAlpha = 0.5
-      for (const row of cornerRows.filter(rr => !rr.isBest)) {
-        const xi = turnOrder.indexOf(row.turn); if (xi < 0) continue
-        ctx.beginPath(); ctx.arc(toX(xi), toY(row[key]), r, 0, Math.PI * 2); ctx.fill()
-      }
-      ctx.globalAlpha = 1
-      for (const row of cornerRows.filter(rr => rr.isBest)) {
-        const xi = turnOrder.indexOf(row.turn); if (xi < 0) continue
-        const px = toX(xi), py = toY(row[key])
-        ctx.fillStyle = PALETTE.signal
-        ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2); ctx.fill()
-        ctx.fillStyle = '#000'; ctx.font = 'bold 8px sans-serif'
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-        ctx.fillText('★', px, py + 0.5)
-      }
+    // Vertical speed grid makes each corner a compact horizontal speed profile.
+    ctx.font = '8px "JetBrains Mono", monospace'
+    const speedTicks = niceTicks(yMin, yMax, 6)
+    const tickStep = speedTicks.length > 1 ? Math.abs(speedTicks[1] - speedTicks[0]) : 1
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+    for (const tick of speedTicks) {
+      const px = toX(tick)
+      if (px < CP.l || px > CP.l + plotW) continue
+      ctx.strokeStyle = PALETTE.border; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(px, CP.t); ctx.lineTo(px, CP.t + plotH); ctx.stroke()
+      ctx.fillStyle = PALETTE.textMute
+      ctx.fillText(fmtTick(tick, tickStep), px, CP.t + plotH + 6)
     }
-    ctx.globalAlpha = 1
 
-    // Legend
+    const hits: CornerHitInfo[] = []
+    for (let i = 0; i < turnOrder.length; i++) {
+      const turn = turnOrder[i]
+      const rows = cornerRows.filter(r => r.turn === turn)
+      if (!rows.length) continue
+      const best = rows.find(r => r.isBest) ?? rows[0]
+      const py = rowY(i)
+
+      // Alternating rows and a fixed corner label make the dense chart scannable.
+      if (i % 2 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.018)'
+        ctx.fillRect(0, py - rowHeight / 2, w, rowHeight)
+      }
+      ctx.fillStyle = PALETTE.textDim
+      ctx.font = '8px "JetBrains Mono", monospace'
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+      const cornerName = best.name ? ` ${best.name}` : ''
+      ctx.fillText(`${turn}${cornerName}`.slice(0, 15), 8, py)
+
+      // The muted whiskers show the full selected-lap range for each metric;
+      // the saturated dots are the overall fastest lap's actual values.
+      for (const series of SERIES) {
+        const values = rows.map(r => r[series.key])
+        const lo = Math.min(...values), hi = Math.max(...values)
+        const sy = py + series.dy
+        ctx.strokeStyle = series.color; ctx.globalAlpha = 0.25; ctx.lineWidth = 2
+        ctx.beginPath(); ctx.moveTo(toX(lo), sy); ctx.lineTo(toX(hi), sy); ctx.stroke()
+        ctx.globalAlpha = 1
+        ctx.fillStyle = series.color
+        ctx.beginPath(); ctx.arc(toX(best[series.key]), sy, series.key === 'apex_mph' ? 4.5 : 3.5, 0, Math.PI * 2); ctx.fill()
+        if (series.key === 'apex_mph') {
+          ctx.strokeStyle = '#fff'; ctx.globalAlpha = 0.65; ctx.lineWidth = 1
+          ctx.beginPath(); ctx.arc(toX(best[series.key]), sy, 6.5, 0, Math.PI * 2); ctx.stroke()
+          ctx.globalAlpha = 1
+        }
+      }
+
+      const vmins = rows.map(r => r.apex_mph)
+      hits.push({ py, rowHeight, turn, name: best.name, best, vminLow: Math.min(...vmins), vminHigh: Math.max(...vmins) })
+    }
+    hitRowsRef.current = hits
+
+    // Legend and chart-reading cue.
     ctx.font = '9px "JetBrains Mono", monospace'; let lx = CP.l
-    for (const { color, label } of [{ color: PALETTE.cyan, label: 'Entry' }, { color: PALETTE.signal, label: 'Apex' }, { color: PALETTE.green, label: 'Exit' }]) {
-      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(lx + 5, CP.t - 8, 3.5, 0, Math.PI * 2); ctx.fill()
+    for (const { color, label } of SERIES) {
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(lx + 4, 14, 3.5, 0, Math.PI * 2); ctx.fill()
       ctx.fillStyle = PALETTE.textDim; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-      ctx.fillText(label, lx + 13, CP.t - 8); lx += 56
+      ctx.fillText(label, lx + 12, 14); lx += 58
     }
+    ctx.fillStyle = PALETTE.textMute; ctx.font = '8px "JetBrains Mono", monospace'
+    ctx.fillText('DOT = FASTEST LAP  ·  LINE = ALL-LAP RANGE', CP.l, 29)
+    ctx.textAlign = 'right'
+    ctx.fillText(speedUnit.toUpperCase(), CP.l + plotW, 29)
 
-    ctx.strokeStyle = PALETTE.borderStrong; ctx.lineWidth = 1; ctx.beginPath()
-    ctx.moveTo(CP.l, CP.t); ctx.lineTo(CP.l, CP.t + plotH); ctx.lineTo(CP.l + plotW, CP.t + plotH); ctx.stroke()
-  }, [data])
+    ctx.strokeStyle = PALETTE.borderStrong; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(CP.l, CP.t); ctx.lineTo(CP.l, CP.t + plotH); ctx.stroke()
+  }, [data, speedUnit])
 
   useEffect(() => {
     draw()
@@ -802,22 +814,18 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current!.getBoundingClientRect()
     const mx = e.clientX - rect.left, my = e.clientY - rect.top
-    // Find nearest corner group within 50px
-    let nearD = 50 * 50, nearDot: DotInfo | null = null
-    for (const d of dotsRef.current) {
-      // search across all turns at the same x column
-      const xi = Math.round((d.px - CP.l) / ((rect.width - CP.l - CP.r) / dotsRef.current.filter(dd => dd.lapLbl === d.lapLbl).length || 1))
-      const dx2 = (d.px - mx) ** 2 + (d.py - my) ** 2
-      if (dx2 < nearD) { nearD = dx2; nearDot = d }
-    }
-    if (!nearDot) { setTooltip(null); return }
+    const nearRow = hitRowsRef.current.find(row => Math.abs(row.py - my) <= row.rowHeight / 2)
+    if (!nearRow) { setTooltip(null); return }
+    const best = nearRow.best
+    const spread = nearRow.vminHigh - nearRow.vminLow
     setTooltip({
       px: mx, py: my,
-      header: `${nearDot.turn}  ${nearDot.lapLbl}${nearDot.isBest ? ' ★' : ''}`,
+      header: `${nearRow.turn}${nearRow.name ? ` · ${nearRow.name}` : ''}  ${best.lapLbl} ★`,
       rows: [
-        { label: 'Entry', value: `${nearDot.entry_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan   },
-        { label: 'Apex',  value: `${nearDot.apex_mph.toFixed(1)} ${speedUnit}`,  color: PALETTE.signal },
-        { label: 'Exit',  value: `${nearDot.exit_mph.toFixed(1)} ${speedUnit}`,  color: PALETTE.green  },
+        { label: 'Entry', value: `${best.entry_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan },
+        { label: 'V-min', value: `${best.apex_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.signal },
+        { label: 'Exit', value: `${best.exit_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
+        { label: 'V-min range', value: `${nearRow.vminLow.toFixed(1)}–${nearRow.vminHigh.toFixed(1)} ${speedUnit} (Δ${spread.toFixed(1)})`, color: PALETTE.textMute },
       ],
     })
   }
@@ -828,6 +836,192 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         onMouseMove={onMouseMove} onMouseLeave={() => setTooltip(null)} />
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
+    </div>
+  )
+}
+
+// ─── CornerConsistencyChart ─────────────────────────────────────────────────
+
+const CCP = { l: 100, r: 42, t: 34, b: 28 } as const
+
+interface ConsistencyHit {
+  py: number
+  rowHeight: number
+  turn: string
+  name: string
+  laps: number
+  avg: number
+  stdDev: number
+  low: number
+  high: number
+  spreadPct: number
+  locationLow: number
+  locationHigh: number
+}
+
+function consistencyColor(t: number): string {
+  if (t < 0.5) return `rgb(${Math.round(93 + 303 * t)},${Math.round(209 - 86 * t)},${Math.round(127 - 184 * t)})`
+  const u = (t - 0.5) * 2
+  return `rgb(${Math.round(245 + 10 * u)},${Math.round(166 - 72 * u)},${Math.round(35 + 23 * u)})`
+}
+
+export function CornerConsistencyChart({
+  data, height, speedUnit = 'mph', onHoverCorner,
+}: {
+  data: AnalysisData
+  height: number
+  speedUnit?: string
+  onHoverCorner?: (turn: string | null) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const rafRef = useRef(0)
+  const hitsRef = useRef<ConsistencyHit[]>([])
+  const hoveredTurnRef = useRef<string | null>(null)
+  const [tooltip, setTooltip] = useState<Tip | null>(null)
+  const [lapFilter, setLapFilter] = useState<'all' | 'top3' | 'top5'>('all')
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current; if (!canvas) return
+    const ctx = canvas.getContext('2d')!
+    const dims = setupCanvas(canvas, ctx); if (!dims) return
+    const { w, h } = dims
+    ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
+
+    const limit = lapFilter === 'top3' ? 3 : lapFilter === 'top5' ? 5 : null
+    const includedLaps = limit == null ? null : new Set(
+      [...data.laps]
+        .filter(lap => lap.durationMs > 0)
+        .sort((a, b) => a.durationMs - b.durationMs)
+        .slice(0, limit)
+        .map(lap => `${lap.sg}:${lap.lapIdx}`),
+    )
+    const stats = data.corners.flatMap(corner => {
+      const rows = data.cornerRows.filter(r =>
+        r.turn === corner.turn && (!includedLaps || includedLaps.has(`${r.sg}:${r.lapIdx}`)))
+      if (!rows.length) return []
+      const values = rows.map(r => r.apex_mph)
+      const avg = values.reduce((sum, value) => sum + value, 0) / values.length
+      const stdDev = Math.sqrt(values.reduce((sum, value) => sum + (value - avg) ** 2, 0) / values.length)
+      const locations = rows.map(r => r.vmin_dist_m).filter(Number.isFinite)
+      const spreadPct = avg > 0 ? (Math.max(...values) - Math.min(...values)) / avg * 100 : 0
+      return [{
+        turn: corner.turn,
+        name: corner.name ?? '',
+        laps: rows.length,
+        avg,
+        stdDev,
+        low: Math.min(...values),
+        high: Math.max(...values),
+        spreadPct,
+        locationLow: locations.length ? Math.min(...locations) : 0,
+        locationHigh: locations.length ? Math.max(...locations) : 0,
+      }]
+    }).sort((a, b) => b.spreadPct - a.spreadPct)
+    if (!stats.length) return
+
+    const plotW = w - CCP.l - CCP.r
+    const plotH = h - CCP.t - CCP.b
+    const maxSpreadPct = Math.max(...stats.map(s => s.spreadPct), 0.1)
+    const toX = (spreadPct: number) => CCP.l + spreadPct / maxSpreadPct * plotW
+    const rowHeight = plotH / stats.length
+    const hits: ConsistencyHit[] = []
+
+    // Spread axis.
+    const ticks = niceTicks(0, maxSpreadPct, 5)
+    const tickStep = ticks.length > 1 ? ticks[1] - ticks[0] : 1
+    ctx.font = '8px "JetBrains Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+    for (const tick of ticks) {
+      const px = toX(tick)
+      ctx.strokeStyle = PALETTE.border; ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(px, CCP.t); ctx.lineTo(px, CCP.t + plotH); ctx.stroke()
+      ctx.fillStyle = PALETTE.textMute; ctx.fillText(fmtTick(tick, tickStep), px, CCP.t + plotH + 5)
+    }
+    ctx.fillStyle = PALETTE.textMute; ctx.textAlign = 'right'
+    ctx.fillText(`V-MIN RANGE / AVG · % · ${limit ? `TOP ${limit}` : 'ALL LAPS'}`, CCP.l + plotW, 17)
+
+    stats.forEach((stat, i) => {
+      const py = CCP.t + (i + 0.5) * rowHeight
+      const severity = stat.spreadPct / maxSpreadPct
+      const color = consistencyColor(severity)
+      if (i % 2 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.018)'
+        ctx.fillRect(0, py - rowHeight / 2, w, rowHeight)
+      }
+      ctx.fillStyle = PALETTE.textDim; ctx.font = '8px "JetBrains Mono", monospace'
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+      ctx.fillText(`${stat.turn}${stat.name ? ` ${stat.name}` : ''}`.slice(0, 16), 8, py)
+
+      ctx.fillStyle = color; ctx.globalAlpha = 0.78
+      ctx.fillRect(CCP.l, py - Math.max(2, rowHeight * 0.22), Math.max(2, toX(stat.spreadPct) - CCP.l), Math.max(4, rowHeight * 0.44))
+      ctx.globalAlpha = 1
+      ctx.fillStyle = PALETTE.textDim; ctx.textAlign = 'left'
+      ctx.fillText(`${stat.spreadPct.toFixed(1)}%`, Math.min(toX(stat.spreadPct) + 5, w - CCP.r + 8), py)
+      hits.push({ py, rowHeight, ...stat })
+    })
+    hitsRef.current = hits
+
+    ctx.strokeStyle = PALETTE.borderStrong; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(CCP.l, CCP.t); ctx.lineTo(CCP.l, CCP.t + plotH); ctx.lineTo(CCP.l + plotW, CCP.t + plotH); ctx.stroke()
+  }, [data, speedUnit, lapFilter])
+
+  useEffect(() => {
+    draw()
+    const ro = new ResizeObserver(() => { cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(draw) })
+    const el = canvasRef.current; if (el) ro.observe(el)
+    return () => { ro.disconnect(); cancelAnimationFrame(rafRef.current) }
+  }, [draw])
+
+  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top
+    const hit = hitsRef.current.find(row => Math.abs(row.py - my) <= row.rowHeight / 2)
+    const turn = hit?.turn ?? null
+    if (turn !== hoveredTurnRef.current) {
+      hoveredTurnRef.current = turn
+      onHoverCorner?.(turn)
+    }
+    if (!hit) { setTooltip(null); return }
+    const rawSpread = hit.high - hit.low
+    const stdDevPct = hit.avg > 0 ? hit.stdDev / hit.avg * 100 : 0
+    setTooltip({
+      px: mx, py: my,
+      header: `${hit.turn}${hit.name ? ` · ${hit.name}` : ''}  ${hit.laps} laps`,
+      rows: [
+        { label: 'Normalized spread', value: `${hit.spreadPct.toFixed(1)}%`, color: PALETTE.signal },
+        { label: 'Avg V-min', value: `${hit.avg.toFixed(1)} ${speedUnit}`, color: PALETTE.signal },
+        { label: 'Raw spread', value: `${rawSpread.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan },
+        { label: 'Std dev', value: `${hit.stdDev.toFixed(2)} ${speedUnit} (${stdDevPct.toFixed(1)}%)`, color: PALETTE.cyan },
+        { label: 'V-min range', value: `${hit.low.toFixed(1)}–${hit.high.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
+        { label: 'Location range', value: `${Math.round(hit.locationLow)}–${Math.round(hit.locationHigh)} m`, color: PALETTE.textMute },
+      ],
+    })
+  }
+
+  const clearHover = () => {
+    hoveredTurnRef.current = null
+    onHoverCorner?.(null)
+    setTooltip(null)
+  }
+  const cw = wrapRef.current?.clientWidth ?? 600
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <div className="corner-consistency-filter" role="group" aria-label="Laps included in corner consistency">
+        {([['all', 'All'], ['top3', 'Top 3'], ['top5', 'Top 5']] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={lapFilter === value ? 'active' : ''}
+            aria-pressed={lapFilter === value}
+            onClick={() => setLapFilter(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
+        onMouseMove={onMouseMove} onMouseLeave={clearHover} />
       {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
     </div>
   )

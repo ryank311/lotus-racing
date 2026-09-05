@@ -20,7 +20,7 @@ export function ChartCard({
           {channel}
           {title && <span style={{ color: 'var(--text-dim)', letterSpacing: '0.12em', marginLeft: 10 }}>{title}</span>}
         </span>
-        {meta && <span className="meta">{meta}</span>}
+        {meta && <div className="meta">{meta}</div>}
       </div>
       <div className="chart-card-body">{children}</div>
     </div>

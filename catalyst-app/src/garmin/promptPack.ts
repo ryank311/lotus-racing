@@ -200,6 +200,7 @@ interface CornerStat {
   n_samples: number
   entry_speed: number
   apex_speed: number
+  vmin_distance_m: number
   exit_speed: number
   speed_drop: number
   max_lat_g: number
@@ -225,19 +226,23 @@ async function fetchCornerStats(
       ORDER BY distance_m
     `, [sg, lapIdx, lo, hi])
     if (!rows.length) continue
-    const speeds = rows.filter(r => r.gnss_speed_mps != null).map(r => r.gnss_speed_mps as number)
+    const speedRows = rows.filter(r => r.gnss_speed_mps != null)
+    const speeds = speedRows.map(r => r.gnss_speed_mps as number)
     const longs = rows.filter(r => r.accel_x_mps2 != null).map(r => r.accel_x_mps2 as number)
     const lats = rows.filter(r => r.accel_y_mps2 != null).map(r => Math.abs(r.accel_y_mps2 as number))
     if (!speeds.length) continue
     const nEdge = Math.min(5, Math.max(1, Math.floor(speeds.length / 8)))
     const entry = speeds.slice(0, nEdge).reduce((a, b) => a + b, 0) / nEdge
     const exit = speeds.slice(-nEdge).reduce((a, b) => a + b, 0) / nEdge
-    const apex = Math.min(...speeds)
+    const vminRow = speedRows.reduce((minimum, row) =>
+      (row.gnss_speed_mps as number) < (minimum.gnss_speed_mps as number) ? row : minimum)
+    const apex = vminRow.gnss_speed_mps as number
     out.set(c.turn, {
       name: c.name ?? '',
       n_samples: rows.length,
       entry_speed: entry,
       apex_speed: apex,
+      vmin_distance_m: vminRow.distance_m as number,
       exit_speed: exit,
       speed_drop: entry - apex,
       max_lat_g: lats.length ? Math.max(...lats) : 0,
@@ -416,7 +421,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   // Per-corner stats
   if (corners.length) {
     parts.push('## Per-corner stats — every lap')
-    parts.push(`**entry**=avg speed first 5 samples of zone, **apex**=min speed in zone, **exit**=avg speed last 5 samples, **drop**=entry-apex. All speeds in ${spdU}. max_lat_g = max(|accel_y_mps2|) in m/s² (÷9.81 for g). min_accel_g = min(accel_x_mps2) m/s² — most negative = hardest braking.`)
+    parts.push(`**entry**=avg speed first 5 samples of zone, **V-min**=minimum speed in the corner zone, **V-min distance**=the exact distance_m sample where that minimum occurred, **exit**=avg speed last 5 samples, **drop**=entry−V-min. All speeds in ${spdU}. V-min and its location are critical comparison metrics: use them to compare laps/runs and distinguish line, braking, rotation, and throttle differences. max_lat_g = max(|accel_y_mps2|) in m/s² (÷9.81 for g). min_accel_g = min(accel_x_mps2) m/s² — most negative = hardest braking.`)
     parts.push('')
 
     const allCornerRows: Array<{ sg: string; lap: number; turn: string } & CornerStat> = []
@@ -471,17 +476,17 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     parts.push('### One row per (lap, corner)')
     parts.push(`Speed columns in ${spdU}. lat_g = |accel_y_mps2| m/s². min_accel_g = min(accel_x_mps2) m/s² (negative = braking). ÷9.81 for g-force.`)
     parts.push('lateral_pos: 0=driver-left edge, 1=driver-right edge, 0.5=centerline. entry/apex/exit lateral_pos shows line choice through the corner.')
-    parts.push(`| Sess | Lap | Turn | Name | Entry (${spdU}) | Apex (${spdU}) | Exit (${spdU}) | Drop (${spdU}) | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |`)
-    parts.push('|------|----:|------|------|------------:|-----------:|-----------:|-----------:|------------:|---------------:|-----------:|----------:|----------:|')
+    parts.push(`| Sess | Lap | Turn | Name | Entry (${spdU}) | V-min (${spdU}) | V-min dist (m) | Exit (${spdU}) | Drop (${spdU}) | LatG (m/s²) | MinAccX (m/s²) | LPos Entry | LPos Apex | LPos Exit |`)
+    parts.push('|------|----:|------|------|------------:|------------:|---------------:|-----------:|-----------:|------------:|---------------:|-----------:|----------:|----------:|')
     for (const r of allCornerRows) {
       const lat = lateralRows.get(`${r.sg}:${r.lap - 1}:${r.turn}`)
       const fmtL = (v: number | null | undefined) => v == null ? '—' : v.toFixed(2)
-      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${spd(r.entry_speed).toFixed(1)} | ${spd(r.apex_speed).toFixed(1)} | ${spd(r.exit_speed).toFixed(1)} | ${spd(r.speed_drop).toFixed(1)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
+      parts.push(`| ${r.sg.slice(0, 8)}… | ${r.lap} | ${r.turn} | ${r.name} | ${spd(r.entry_speed).toFixed(1)} | ${spd(r.apex_speed).toFixed(1)} | ${r.vmin_distance_m.toFixed(1)} | ${spd(r.exit_speed).toFixed(1)} | ${spd(r.speed_drop).toFixed(1)} | ${r.max_lat_g.toFixed(3)} | ${r.min_accel_g >= 0 ? '+' : ''}${r.min_accel_g.toFixed(3)} | ${fmtL(lat?.entry)} | ${fmtL(lat?.apex)} | ${fmtL(lat?.exit)} |`)
     }
     parts.push('')
 
     parts.push('### Personal-best per corner')
-    parts.push(`| Turn | Name | Best apex (${spdU}) | Best exit (${spdU}) | Hardest braking min(accel_x) m/s² | Max LatG |accel_y| m/s² |`)
+    parts.push(`| Turn | Name | Best V-min (${spdU}) | Best exit (${spdU}) | Hardest braking min(accel_x) m/s² | Max LatG |accel_y| m/s² |`)
     parts.push('|------|------|----------------:|----------------:|----------------------------------:|---------------------:|')
     for (const c of corners) {
       const pb = pbCorner.get(c.turn)
@@ -570,7 +575,7 @@ Use the tables above to produce a **data-grounded coaching report**. Every claim
 
 1. **Headline** — overall pace vs PB potential. Compute: best theoretical lap = sum of best splits per segment. Compare to actual best lap. The gap is "consistency loss." Quote the number.
 2. **Per-segment analysis** — for each S1..S${segments.length || 'N'} segment, identify (a) whether the driver is consistent, (b) average gap to PB, (c) which corners live in that segment and what's happening there. Specifically call out the 3 segments with largest avg gap-to-PB.
-3. **Per-corner analysis** — for each named corner with notable data, cite entry/apex/exit speeds vs PB.
+3. **Per-corner analysis** — for each named corner with notable data, cite entry/V-min/exit speeds vs PB and compare where V-min occurs. Treat V-min as a critical metric: when its value or location reveals a meaningful opportunity, explain it explicitly and carry it into the coaching recommendation.
 4. **Cross-lap consistency** — which laps are outliers; describe what is different.
 5. **Cross-session trends** — if multiple sessions, find improvement or regression; correlate to weather if there's a clear pattern.
 6. **Prioritised recommendations** — top 3 concrete changes to work on with expected lap-time gain.
@@ -661,14 +666,14 @@ async function writeCsvPack(
 
   // corner_stats.csv + best_lap_trace.csv
   {
-    const lines = ['session_guid,lap_index,turn,corner_name,entry_speed_mps,apex_speed_mps,exit_speed_mps,speed_drop_mps,max_lat_g_mps2,min_accel_x_mps2,max_accel_x_mps2']
+    const lines = ['session_guid,lap_index,turn,corner_name,entry_speed_mps,vmin_speed_mps,vmin_distance_m,exit_speed_mps,speed_drop_mps,max_lat_g_mps2,min_accel_x_mps2,max_accel_x_mps2']
     let n = 0
     for (const sg of sgList) {
       const sessLaps = await rowsToDicts(con, 'SELECT lap_index FROM laps WHERE session_guid = ? ORDER BY lap_index', [sg])
       for (const { lap_index } of sessLaps) {
         const stats = await fetchCornerStats(con, sg, lap_index, corners)
         for (const [turn, st] of stats) {
-          lines.push([sg, lap_index, turn, st.name, st.entry_speed, st.apex_speed, st.exit_speed, st.speed_drop, st.max_lat_g, st.min_accel_g, st.max_accel_g].join(','))
+          lines.push([sg, lap_index, turn, st.name, st.entry_speed, st.apex_speed, st.vmin_distance_m, st.exit_speed, st.speed_drop, st.max_lat_g, st.min_accel_g, st.max_accel_g].join(','))
           n++
         }
       }
@@ -790,15 +795,16 @@ After your written analysis, append a SINGLE JSON block in exactly this format (
   "tips": [
     {
       "section": "T7-T9",
-      "body": "You're lifting mid-corner through the Esses and losing 1-2 mph at each apex. Data shows entry at 116 mph with apex dropping to 112 mph — it should stay flat. Trust the grip and commit to throttle through all three crests.",
+      "body": "You're lifting mid-corner through the Esses and losing 1-2 mph at each V-min. Data shows entry at 116 mph with V-min dropping to 112 mph — it should stay flat. Trust the grip and commit to throttle through all three crests.",
       "annotations": [
         {
           "type": "corner_tip",
           "ref": "T7",
-          "body": "Apex is 112 mph where it should be 114 mph minimum. You're lifting when the car has grip to spare — stay flat through the crest.",
+          "body": "V-min is 112 mph where it should be 114 mph. You're lifting when the car has grip to spare — stay flat through the crest.",
           "severity": 2,
-          "actual_apex_mph": 112.0,
-          "target_apex_mph": 114.0
+          "actual_vmin_mph": 112.0,
+          "target_vmin_mph": 114.0,
+          "actual_vmin_dist_m": 1842.0
         }
       ]
     }
@@ -833,7 +839,9 @@ Rules for annotations:
 - \`type\`: corner_tip | segment_tip | speed_annotation | line_deviation
 - \`ref\` must be a single label exactly matching a corner (T4) or segment (S3) from the data — no ranges in ref, one annotation per corner
 - \`severity\`: 1 = minor, 2 = meaningful gain available, 3 = critical issue affecting safety or significant time
-- \`actual_apex_mph\` / \`target_apex_mph\`: the driver's and target apex speed, always in **mph** regardless of the table unit (these two numeric fields are canonical; the app converts to ${spdU} for display). Optional — include for corner_tip when the data supports it.
+- V-min is the minimum measured velocity inside the named corner zone; it is not necessarily at the YAML/geometric apex. Compare both V-min speed and V-min distance across laps/runs when evaluating corner opportunities.
+- \`actual_vmin_mph\` / \`target_vmin_mph\`: the driver's measured and recommended minimum corner speed, always in **mph** regardless of the table unit (the app converts to ${spdU} for display). Include for a corner tip whenever V-min is relevant and supported by the data.
+- \`actual_vmin_dist_m\`: exact measured distance where the driver's V-min occurred. Include it with an actual V-min when available. Use \`actual_apex_mph\` / \`target_apex_mph\` only for legacy compatibility.
 - The flat \`annotations\` array must list every annotation from every tip — this duplication is required
 - Use empty arrays rather than omitting array fields; omit optional speed fields rather than guessing
 

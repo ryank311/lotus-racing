@@ -125,6 +125,9 @@ export interface CoachAnnotation {
   recommended_apex_dist_m?: number  // corner_tip: where AI says apex should be
   // Speeds in mph — the coach reads mph and answers in mph (no conversion).
   actual_entry_mph?: number
+  actual_vmin_mph?: number
+  target_vmin_mph?: number
+  actual_vmin_dist_m?: number
   actual_apex_mph?: number
   actual_exit_mph?: number
   target_apex_mph?: number

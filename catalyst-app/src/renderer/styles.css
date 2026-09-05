@@ -2019,6 +2019,37 @@ input, textarea, select { font-family: inherit; color: inherit; }
   border-radius: 2px;
 }
 
+.speed-chart-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.chart-mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+}
+.chart-mode-toggle button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-mute);
+  padding: 2px 6px;
+  font: inherit;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.chart-mode-toggle button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.chart-mode-toggle button.active {
+  border-color: var(--signal);
+  background: var(--signal-soft);
+  color: var(--signal);
+}
+
 .chart-card-body {
   position: relative;
   margin-top: 16px;
@@ -2973,6 +3004,41 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .track-map-tooltip-label {
   font-weight: 700;
   letter-spacing: 0.08em;
+}
+.track-map-vmin-tooltip {
+  min-width: 190px;
+  border-color: rgba(255, 94, 58, 0.55);
+}
+
+.corner-consistency-filter {
+  position: absolute;
+  z-index: 2;
+  top: 7px;
+  left: 8px;
+  display: flex;
+  gap: 3px;
+}
+.corner-consistency-filter button {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: rgba(12, 12, 16, 0.9);
+  color: var(--text-mute);
+  padding: 3px 7px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.corner-consistency-filter button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.corner-consistency-filter button.active {
+  border-color: var(--signal);
+  background: var(--signal-soft);
+  color: var(--signal);
 }
 
 /* ── tracks editor ───────────────────────────────────────────────────── */

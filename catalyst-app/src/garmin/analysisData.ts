@@ -43,6 +43,11 @@ export interface LongGTrace extends LapMeta {
   long_g: number[]
 }
 
+export interface TimeDeltaTrace extends LapMeta {
+  dist: number[]
+  delta_s: number[]
+}
+
 export interface GGData {
   lat_g: number[]
   long_g: number[]
@@ -67,6 +72,18 @@ export interface RacingLineLap extends LapMeta {
   speed_mph: number[]
   long_g: number[]
   lat_g: number[]
+  // Exact raw telemetry sample where minimum speed occurred in each named
+  // corner. These are intentionally not snapped to the 5 m racing-line trace.
+  cornerVMins: CornerVMinPoint[]
+}
+
+export interface CornerVMinPoint {
+  turn: string
+  name: string
+  dist: number
+  x: number
+  y: number
+  speed_mph: number
 }
 
 // Lightweight, transport-friendly subset of TrackGeometry — we drop the
@@ -94,12 +111,15 @@ export interface HeatmapData {
 }
 
 export interface CornerRow {
+  sg: string
+  lapIdx: number
   turn: string
   name: string
   lapLbl: string
   isBest: boolean
   entry_mph: number
   apex_mph: number
+  vmin_dist_m: number
   exit_mph: number
   max_lat_g: number
 }
@@ -127,6 +147,7 @@ export interface AnalysisData {
   speedTraces: SpeedTrace[]
   lateralTraces: LateralTrace[]
   longgTraces: LongGTrace[]
+  timeDeltaTraces: TimeDeltaTrace[]
   gg: GGData
   trackMap: TrackMapData
   trackGeometry: TrackGeometryPayload | null
@@ -241,6 +262,72 @@ async function fetchLongGTraces(con: DuckDBConnection, laps: LapMeta[], strideM 
   return out
 }
 
+function interpolateAt(xs: number[], ys: number[], target: number): number | null {
+  if (!xs.length || target < xs[0] || target > xs[xs.length - 1]) return null
+  let lo = 0, hi = xs.length - 1
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >>> 1
+    if (xs[mid] <= target) lo = mid
+    else hi = mid
+  }
+  if (lo === hi || xs[hi] === xs[lo]) return ys[lo]
+  const t = (target - xs[lo]) / (xs[hi] - xs[lo])
+  return ys[lo] + (ys[hi] - ys[lo]) * t
+}
+
+// Elapsed-time difference at the same distance versus the overall fastest lap.
+// Negative means the lap is ahead/faster; positive means it has lost time.
+async function fetchTimeDeltaTraces(
+  con: DuckDBConnection,
+  laps: LapMeta[],
+  best: LapMeta,
+  totalDistM: number,
+  strideM = 25,
+): Promise<TimeDeltaTrace[]> {
+  const raw = new Map<string, { dist: number[]; elapsedMs: number[] }>()
+  for (const lap of laps) {
+    const r = await rows(con, `
+      SELECT distance_m, time_ms
+      FROM samples
+      WHERE session_guid = ? AND lap_index = ?
+        AND distance_m % ? = 0 AND time_ms IS NOT NULL
+      ORDER BY distance_m
+    `, [lap.sg, lap.lapIdx, strideM])
+    if (!r.length) continue
+    const firstMs = Number(r[0][1])
+    raw.set(`${lap.sg}:${lap.lapIdx}`, {
+      dist: r.map(x => Number(x[0])),
+      elapsedMs: r.map(x => Number(x[1]) - firstMs),
+    })
+  }
+
+  const reference = raw.get(`${best.sg}:${best.lapIdx}`)
+  if (!reference) return []
+  const out: TimeDeltaTrace[] = []
+  for (const lap of laps) {
+    const trace = raw.get(`${lap.sg}:${lap.lapIdx}`)
+    if (!trace) continue
+    const dist: number[] = []
+    const delta_s: number[] = []
+    for (let i = 0; i < trace.dist.length; i++) {
+      const refMs = interpolateAt(reference.dist, reference.elapsedMs, trace.dist[i])
+      if (refMs == null) continue
+      dist.push(trace.dist[i])
+      delta_s.push((trace.elapsedMs[i] - refMs) / 1000)
+    }
+    if (totalDistM > 0 && lap.durationMs > 0 && best.durationMs > 0) {
+      const finishDelta = (lap.durationMs - best.durationMs) / 1000
+      if (dist.length && dist[dist.length - 1] === totalDistM) delta_s[delta_s.length - 1] = finishDelta
+      else {
+        dist.push(totalDistM)
+        delta_s.push(finishDelta)
+      }
+    }
+    out.push({ ...lap, dist, delta_s })
+  }
+  return out
+}
+
 async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], conv: SpeedConv, nBest = 12, everyNth = 4): Promise<GGData> {
   const sorted = [...laps].filter(L => L.durationMs).sort((a, b) => a.durationMs - b.durationMs).slice(0, nBest)
   const lat_g: number[] = []
@@ -279,6 +366,7 @@ async function fetchRacingLines(
   laps: LapMeta[],
   geom: TrackGeometry,
   conv: SpeedConv,
+  corners: TrackCorner[],
   strideM = 5,
 ): Promise<RacingLineLap[]> {
   const out: RacingLineLap[] = []
@@ -301,7 +389,40 @@ async function fetchRacingLines(
       lg.push(G(Number(row[4])) ?? 0)
       yg.push(G(Number(row[5])) ?? 0)
     }
-    out.push({ ...lap, x: xs, y: ys, dist: ds, speed_mph: speeds, long_g: lg, lat_g: yg })
+    const cornerVMins: CornerVMinPoint[] = []
+    const validCorners = corners.filter(c => c.dist_idx_start != null && c.dist_idx_end != null)
+    if (validCorners.length) {
+      const zoneSql = validCorners.map(() => '(distance_m BETWEEN ? AND ?)').join(' OR ')
+      const zoneParams = validCorners.flatMap(c => [c.dist_idx_start, c.dist_idx_end])
+      const cornerSamples = await rows(con, `
+        SELECT distance_m, lat, lon, gnss_speed_mps
+        FROM samples
+        WHERE session_guid = ? AND lap_index = ?
+          AND lat IS NOT NULL AND lon IS NOT NULL AND gnss_speed_mps IS NOT NULL
+          AND (${zoneSql})
+        ORDER BY distance_m
+      `, [lap.sg, lap.lapIdx, ...zoneParams])
+
+      for (const corner of validCorners) {
+        let minimum: any[] | null = null
+        for (const sample of cornerSamples) {
+          const dist = Number(sample[0])
+          if (dist < corner.dist_idx_start || dist > corner.dist_idx_end) continue
+          if (!minimum || Number(sample[3]) < Number(minimum[3])) minimum = sample
+        }
+        if (!minimum) continue
+        const pos = projectLatLon(Number(minimum[1]), Number(minimum[2]), geom.projection)
+        cornerVMins.push({
+          turn: corner.turn,
+          name: corner.name ?? '',
+          dist: Number(minimum[0]),
+          x: pos.x,
+          y: pos.y,
+          speed_mph: conv(Number(minimum[3])) ?? 0,
+        })
+      }
+    }
+    out.push({ ...lap, x: xs, y: ys, dist: ds, speed_mph: speeds, long_g: lg, lat_g: yg, cornerVMins })
   }
   return out
 }
@@ -504,7 +625,7 @@ async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: 
       const lo = c.dist_idx_start, hi = c.dist_idx_end
       if (lo == null || hi == null) continue
       const r = await rows(con, `
-        SELECT gnss_speed_mps, accel_y_mps2
+        SELECT distance_m, gnss_speed_mps, accel_y_mps2
         FROM samples
         WHERE session_guid = ? AND lap_index = ?
           AND distance_m BETWEEN ? AND ?
@@ -512,19 +633,23 @@ async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: 
         ORDER BY distance_m
       `, [lap.sg, lap.lapIdx, lo, hi])
       if (r.length < 3) continue
-      const speeds = r.map(x => Number(x[0]))
+      const speeds = r.map(x => Number(x[1]))
       const nEdge = Math.min(5, Math.max(1, Math.floor(speeds.length / 8)))
       const entry = speeds.slice(0, nEdge).reduce((a, b) => a + b, 0) / nEdge
       const exit = speeds.slice(-nEdge).reduce((a, b) => a + b, 0) / nEdge
       const apex = Math.min(...speeds)
-      const maxLat = Math.max(...r.map(x => Math.abs(G(Number(x[1])) ?? 0)))
+      const vminIdx = speeds.indexOf(apex)
+      const maxLat = Math.max(...r.map(x => Math.abs(G(Number(x[2])) ?? 0)))
       out.push({
+        sg: lap.sg,
+        lapIdx: lap.lapIdx,
         turn: c.turn,
         name: c.name,
         lapLbl: `${lap.sgShort}… L${lap.lapIdx + 1}`,
         isBest: lap.isBest,
         entry_mph: conv(entry)!,
         apex_mph: conv(apex)!,
+        vmin_dist_m: Number(r[vminIdx][0]),
         exit_mph: conv(exit)!,
         max_lat_g: maxLat,
       })
@@ -599,7 +724,7 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
     return {
       config, totalDistM: trackYaml.total_dist_m ?? 0,
       segments, corners, sessions, laps: [], bestLap: null,
-      speedTraces: [], lateralTraces: [], longgTraces: [],
+      speedTraces: [], lateralTraces: [], longgTraces: [], timeDeltaTraces: [],
       gg: { lat_g: [], long_g: [], speed_mph: [], dist: [], p95_g: 0, circle: { x: [], y: [] } },
       trackMap: { dist: [], lat: [], lon: [], speed_mph: [] },
       trackGeometry: null, racingLines: [],
@@ -619,6 +744,7 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
   const speedTraces = await fetchSpeedTraces(con, laps, toSpeed, 25)
   const lateralTraces = await fetchLateralTraces(con, laps, 25)
   const longgTraces = await fetchLongGTraces(con, laps, 25)
+  const timeDeltaTraces = await fetchTimeDeltaTraces(con, laps, bestLap, trackYaml.total_dist_m ?? 0, 25)
   const gg = await fetchGGData(con, laps, toSpeed)
   const trackMap = await fetchTrackMap(con, bestLap, toSpeed, 10)
 
@@ -647,7 +773,7 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
         .filter(L => L.durationMs > 0)
         .sort((a, b) => a.durationMs - b.durationMs)
         .slice(0, 8)
-      racingLines = await fetchRacingLines(con, top, geom, toSpeed, 5)
+      racingLines = await fetchRacingLines(con, top, geom, toSpeed, corners, 5)
     }
   }
 
@@ -693,7 +819,7 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
     totalDistM: trackYaml.total_dist_m ?? 0,
     segments, corners, sessions,
     laps, bestLap,
-    speedTraces, lateralTraces, longgTraces,
+    speedTraces, lateralTraces, longgTraces, timeDeltaTraces,
     gg, trackMap, trackGeometry, racingLines, heatmap, cornerRows,
     theoreticalBestMs, avgLapMs, coachLine,
     speedUnit,

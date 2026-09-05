@@ -99,6 +99,9 @@ function coerceAnnotation(a: unknown): CoachAnnotation | null {
     recommended_apex_dist_m:  num(x.recommended_apex_dist_m),
     // Prefer mph fields; fall back to legacy m/s if a model still emits them.
     actual_entry_mph:         num(x.actual_entry_mph) ?? mphFromMps(x.actual_entry_mps),
+    actual_vmin_mph:          num(x.actual_vmin_mph),
+    target_vmin_mph:          num(x.target_vmin_mph),
+    actual_vmin_dist_m:       num(x.actual_vmin_dist_m),
     actual_apex_mph:          num(x.actual_apex_mph)  ?? mphFromMps(x.actual_apex_mps),
     actual_exit_mph:          num(x.actual_exit_mph)  ?? mphFromMps(x.actual_exit_mps),
     target_apex_mph:          num(x.target_apex_mph)  ?? mphFromMps(x.target_apex_mps),

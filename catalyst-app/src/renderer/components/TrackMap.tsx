@@ -207,8 +207,38 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
   const [activeAnnotation, setActiveAnnotation] = useState<CoachAnnotation | null>(null)
   const [tooltipPos,  setTooltipPos]  = useState<{ x: number; y: number } | null>(null)
   const [zoneHover,   setZoneHover]   = useState<{ annotation: CoachAnnotation; x: number; y: number } | null>(null)
+  const [vminHover, setVminHover] = useState<{
+    turn: string; name: string; dist: number; speed: number
+    lapLabel: string; color: string; x: number; y: number
+  } | null>(null)
 
   const bestLap = racingLines[0] ?? null
+
+  // New analysis payloads carry exact raw V-min points. The fallback keeps a
+  // currently-open renderer useful across a main-process hot reload by finding
+  // the closest available (5 m) racing-line sample until the app restarts.
+  const cornerVMinsByLap = useMemo(() => {
+    const corners = (data as AnalysisData).corners ?? []
+    return racingLines.map(lap => {
+      if (lap.cornerVMins?.length) return lap.cornerVMins
+      return corners.flatMap(corner => {
+        let minIdx = -1
+        for (let i = 0; i < lap.dist.length; i++) {
+          if (lap.dist[i] < corner.dist_idx_start || lap.dist[i] > corner.dist_idx_end) continue
+          if (minIdx < 0 || lap.speed_mph[i] < lap.speed_mph[minIdx]) minIdx = i
+        }
+        if (minIdx < 0) return []
+        return [{
+          turn: corner.turn,
+          name: corner.name ?? '',
+          dist: lap.dist[minIdx],
+          x: lap.x[minIdx],
+          y: lap.y[minIdx],
+          speed_mph: lap.speed_mph[minIdx],
+        }]
+      })
+    })
+  }, [data, racingLines])
 
   // Value range for the current metric (used for heatmap colour scale + legend).
   const [vmin, vmax] = useMemo(() => {
@@ -693,6 +723,50 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           <HeatmapPath lap={bestLap} values={getMetricValues(bestLap, metric)} vmin={vmin} vmax={vmax} />
         )}
 
+        {/* Exact per-corner V-min samples. Visible only for the speed map and
+            placed on each selected lap's measured racing line. */}
+        {!edit && metric === 'speed_mph' && racingLines.flatMap((lap, lapIndex) => {
+          if (!selectedLapIdxs.has(lapIndex)) return []
+          const color = lapIndex === 0 ? '#ff5e3a' : LAP_PALETTE[(lapIndex - 1) % LAP_PALETTE.length]
+          return cornerVMinsByLap[lapIndex].map(vminPoint => {
+            const lapLabel = `L${lap.lapIdx + 1}${lapIndex === 0 ? ' ★' : ''}`
+            const setHover = (e: React.MouseEvent<SVGGElement>) => {
+              e.stopPropagation()
+              setHoverIdx(null)
+              setTooltipPos(null)
+              const cRect = containerRef.current?.getBoundingClientRect()
+              if (!cRect) return
+              setVminHover({
+                turn: vminPoint.turn,
+                name: vminPoint.name,
+                dist: vminPoint.dist,
+                speed: vminPoint.speed_mph,
+                lapLabel,
+                color,
+                x: e.clientX - cRect.left,
+                y: e.clientY - cRect.top,
+              })
+            }
+            return (
+              <g
+                key={`vmin-${lap.sg}-${lap.lapIdx}-${vminPoint.turn}`}
+                style={{ cursor: 'help' }}
+                onMouseEnter={setHover}
+                onMouseMove={setHover}
+                onPointerMove={e => e.stopPropagation()}
+                onMouseLeave={() => setVminHover(null)}
+              >
+                <circle cx={vminPoint.x} cy={-vminPoint.y} r={6.5}
+                  fill="#09090d" fillOpacity={0.9} stroke="#09090d" strokeWidth={3}
+                  vectorEffect="non-scaling-stroke" />
+                <circle cx={vminPoint.x} cy={-vminPoint.y} r={4}
+                  fill={color} stroke="#fff" strokeWidth={1}
+                  vectorEffect="non-scaling-stroke" />
+              </g>
+            )
+          })
+        })}
+
         {/* L5c — coach's line (data-derived optimal from per-segment PBs) */}
         {showCoachLine && coachLine && coachLine.length > 1 && (
           <path
@@ -824,6 +898,28 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           return (
             <path d={d} fill="none" stroke="#22d3ee" strokeOpacity={0.22}
               strokeWidth={geom.widthM} strokeLinecap="round" pointerEvents="none" />
+          )
+        })()}
+
+        {/* Analysis-chart corner hover — independent of AI annotations. */}
+        {(() => {
+          if (!hoverRef || !/^T\d+/i.test(hoverRef)) return null
+          const corner = ((data as AnalysisData).corners ?? []).find(c => c.turn === hoverRef)
+          if (!corner) return null
+          const lo = Math.max(0, Math.round(corner.dist_idx_start))
+          const hi = Math.min(geom.centerline.length - 1, Math.round(corner.dist_idx_end))
+          const slice = geom.centerline.slice(lo, hi + 1)
+          if (slice.length < 2) return null
+          return (
+            <path
+              d={pathFromPoints(slice)}
+              fill="none"
+              stroke="#22d3ee"
+              strokeOpacity={0.55}
+              strokeWidth={Math.max(5, geom.widthM * 0.9)}
+              strokeLinecap="round"
+              pointerEvents="none"
+            />
           )
         })()}
 
@@ -1017,6 +1113,24 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         </div>
       )}
 
+      {vminHover && (
+        <div
+          className="track-map-tooltip track-map-vmin-tooltip"
+          style={{
+            left: Math.max(8, Math.min(vminHover.x + 14, (containerRef.current?.clientWidth ?? 240) - 230)),
+            top: Math.max(8, vminHover.y - 10),
+          }}
+        >
+          <div className="track-map-tooltip-dist">
+            {vminHover.turn}{vminHover.name ? ` · ${vminHover.name}` : ''} · {Math.round(vminHover.dist)} m
+          </div>
+          <div className="track-map-tooltip-row">
+            <span className="track-map-tooltip-label" style={{ color: vminHover.color }}>{vminHover.lapLabel}</span>
+            <span>V-min {vminHover.speed.toFixed(1)} {speedUnit}</span>
+          </div>
+        </div>
+      )}
+
       {showGMeter && bestLap && (
         <GMeter latG={gMeterValues?.lat_g ?? null} longG={gMeterValues?.long_g ?? null} gMax={gMax} />
       )}
@@ -1046,8 +1160,9 @@ function CoachIntelPanel({
   const color = annotation.severity === 3 ? 'var(--signal)' : annotation.severity === 2 ? '#f5a623' : 'var(--cyan)'
   // Coach speeds are stored in mph. Legacy sessions stored m/s in *_mps —
   // back-convert those, then convert mph → the active display unit.
-  const actualMphVal = annotation.actual_apex_mph ?? (annotation.actual_apex_mps != null ? annotation.actual_apex_mps * 2.237 : undefined)
-  const targetMphVal = annotation.target_apex_mph ?? (annotation.target_apex_mps != null ? annotation.target_apex_mps * 2.237 : undefined)
+  const actualMphVal = annotation.actual_vmin_mph ?? annotation.actual_apex_mph ?? (annotation.actual_apex_mps != null ? annotation.actual_apex_mps * 2.237 : undefined)
+  const targetMphVal = annotation.target_vmin_mph ?? annotation.target_apex_mph ?? (annotation.target_apex_mps != null ? annotation.target_apex_mps * 2.237 : undefined)
+  const usesVmin = annotation.actual_vmin_mph != null || annotation.target_vmin_mph != null
   const hasSpeed = actualMphVal != null && targetMphVal != null
   const actualDisp = hasSpeed ? speedFromMph(actualMphVal!) : null
   const targetDisp = hasSpeed ? speedFromMph(targetMphVal!) : null
@@ -1064,15 +1179,17 @@ function CoachIntelPanel({
       {hasSpeed && (
         <div className="coach-intel-speeds">
           <div className="coach-intel-speed-block">
-            <span className="coach-intel-speed-label">actual</span>
+            <span className="coach-intel-speed-label">actual{usesVmin ? ' V-min' : ''}</span>
             <span className="coach-intel-speed-value">{actualMph}</span>
-            <span className="coach-intel-speed-unit">{speedUnit}</span>
+            <span className="coach-intel-speed-unit">
+              {speedUnit}{usesVmin && annotation.actual_vmin_dist_m != null ? ` @ ${Math.round(annotation.actual_vmin_dist_m)}m` : ''}
+            </span>
           </div>
           <div className="coach-intel-speed-arrow" style={{ color }}>
             {deltaMph! > 0 ? '▲' : '▼'}{Math.abs(deltaMph!).toFixed(1)}
           </div>
           <div className="coach-intel-speed-block">
-            <span className="coach-intel-speed-label">target</span>
+            <span className="coach-intel-speed-label">target{usesVmin ? ' V-min' : ''}</span>
             <span className="coach-intel-speed-value" style={{ color }}>{targetMph}</span>
             <span className="coach-intel-speed-unit">{speedUnit}</span>
           </div>
