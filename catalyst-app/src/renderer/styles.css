@@ -3171,9 +3171,8 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .tracks-circuit-card:hover { border-color: var(--border-strong); color: var(--text); }
 .tracks-circuit-card.active {
   border-color: var(--signal);
-  background: var(--signal-soft);
+  background: var(--bg);
   color: var(--text);
-  box-shadow: inset 2px 0 var(--signal);
 }
 .tracks-preview {
   width: 74px;
@@ -3183,13 +3182,13 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 .tracks-preview polyline {
   fill: none;
-  stroke: var(--text-mute);
-  stroke-width: 12;
+  stroke: #a7abb3;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
-.tracks-circuit-card.active .tracks-preview polyline { stroke: var(--signal); }
+.tracks-circuit-card.active .tracks-preview polyline { stroke: #c5c8ce; }
 .tracks-preview-empty {
   display: grid;
   place-items: center;
