@@ -133,18 +133,62 @@ function AiSettingsCard() {
 
   if (!settings) return null
 
+  const provider = settings.provider ?? (settings.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
+  const providerLabel = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+  const selectedKey = provider === 'openai' ? settings.openAiApiKey : settings.anthropicApiKey
+  const modelOptions = provider === 'openai'
+    ? [
+        ['gpt-6-astra', 'Astra — gpt-6-astra · x-high'],
+        ['gpt-5.6-sol', 'Sol — gpt-5.6-sol · x-high'],
+        ['gpt-5.6-terra', 'Terra — gpt-5.6-terra · x-high'],
+      ]
+    : [
+        ['claude-opus-5', 'High — claude-opus-5'],
+        ['claude-opus-4-8', 'High — claude-opus-4-8'],
+        ['claude-opus-4-6', 'High — claude-opus-4-6'],
+        ['claude-sonnet-5', 'Medium — claude-sonnet-5'],
+        ['claude-sonnet-4-6', 'Medium — claude-sonnet-4-6'],
+        ['claude-haiku-4-5-20251001', 'Low — claude-haiku-4-5'],
+      ]
+
+  const changeProvider = (next: 'anthropic' | 'openai') => {
+    updateSettings(s => ({
+      ...s,
+      provider: next,
+      model: next === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5',
+    }))
+  }
+
   return (
     <div className="card" style={{ padding: '20px 22px 18px' }}>
       <div className="card-label">AI Coach</div>
       <div className="card-corner-marks"><i /></div>
 
       <div style={{ marginTop: 14 }}>
-        <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>API Key</div>
+        <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Provider</div>
+        <select
+          value={provider}
+          onChange={e => changeProvider(e.target.value as 'anthropic' | 'openai')}
+          style={{
+            width: '100%', background: 'var(--bg-elev)',
+            border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+            padding: '7px 10px', color: 'var(--text)',
+            fontFamily: 'var(--font-mono)', fontSize: 11,
+          }}
+        >
+          <option value="anthropic">Anthropic</option>
+          <option value="openai">OpenAI</option>
+        </select>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>{providerLabel} API Key</div>
         <input
           type="password"
-          value={settings.apiKey ?? ''}
-          onChange={e => updateSettings(s => ({ ...s, apiKey: e.target.value }))}
-          placeholder="sk-ant-api…"
+          value={selectedKey ?? ''}
+          onChange={e => updateSettings(s => provider === 'openai'
+            ? ({ ...s, openAiApiKey: e.target.value })
+            : ({ ...s, anthropicApiKey: e.target.value }))}
+          placeholder={provider === 'openai' ? 'sk-…' : 'sk-ant-api…'}
           style={{
             width: '100%', background: 'var(--bg-elev)',
             border: '1px solid var(--border)', borderRadius: 'var(--radius)',
@@ -156,7 +200,7 @@ function AiSettingsCard() {
       <div style={{ marginTop: 12 }}>
         <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
         <select
-          value={settings.model ?? 'claude-sonnet-5'}
+          value={settings.model ?? (provider === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5')}
           onChange={e => updateSettings(s => ({ ...s, model: e.target.value }))}
           style={{
             width: '100%', background: 'var(--bg-elev)',
@@ -165,13 +209,11 @@ function AiSettingsCard() {
             fontFamily: 'var(--font-mono)', fontSize: 11,
           }}
         >
-          <option value="claude-opus-5">High — claude-opus-5</option>
-          <option value="claude-opus-4-8">High — claude-opus-4-8</option>
-          <option value="claude-opus-4-6">High — claude-opus-4-6</option>
-          <option value="claude-sonnet-5">Medium — claude-sonnet-5</option>
-          <option value="claude-sonnet-4-6">Medium — claude-sonnet-4-6</option>
-          <option value="claude-haiku-4-5-20251001">Low — claude-haiku-4-5</option>
+          {modelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
+        <div className="muted" style={{ fontSize: 10, lineHeight: 1.5, marginTop: 8 }}>
+          Keys are stored in your local Catalyst Coach config, never in the source code. OpenAI coaching uses the Responses API with x-high reasoning.
+        </div>
       </div>
     </div>
   )

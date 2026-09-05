@@ -77,6 +77,18 @@ export function timeDeltaSeries(data: AnalysisData): LineSeries[] {
   }))
 }
 
+export function optimalTimeDeltaSeries(data: AnalysisData): LineSeries[] {
+  return (data.optimalTimeDeltaTraces ?? []).map((t, i) => ({
+    id: `${t.sg}-${t.lapIdx}`,
+    label: `${t.isBest ? '★ best ' : ''}${t.sgShort}… L${t.lapIdx + 1}`,
+    xs: t.dist,
+    ys: t.delta_s,
+    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+    width: t.isBest ? 2.4 : 1.5,
+    opacity: t.isBest ? 1 : 0.72,
+  }))
+}
+
 export function longGSeries(data: AnalysisData): LineSeries[] {
   return data.longgTraces.map((t, i) => ({
     id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,

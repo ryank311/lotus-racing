@@ -71,7 +71,8 @@ const bridge: CatalystBridge = {
     return () => ipcRenderer.off('app:save', handler)
   },
 
-  buildAnalysis: (sessionGuids: string[], units?: UnitSystem) => ipcRenderer.invoke('analysis:build', sessionGuids, units),
+  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) =>
+    ipcRenderer.invoke('analysis:build', sessionGuids, units, lapLimit),
 
   // AI Coach
   runCoach: (opts: CoachOptions) => ipcRenderer.invoke('coach:run', opts),

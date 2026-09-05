@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
-import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerConsistencyChart } from '../components/Charts'
-import { speedSeries, speedDeltaSeries, timeDeltaSeries, longGSeries } from '../components/chartSeries'
+import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart } from '../components/Charts'
+import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, longGSeries } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
@@ -26,6 +26,15 @@ function guidKey(guids: Iterable<string>): string {
   return [...guids].sort().join(',')
 }
 
+type LapFilter = 'all' | 'top3' | 'top5' | 'top10'
+const LAP_FILTERS: Array<{ value: LapFilter; label: string; limit: 3 | 5 | 10 | null }> = [
+  { value: 'all', label: 'All', limit: null },
+  { value: 'top3', label: 'Top 3', limit: 3 },
+  { value: 'top5', label: 'Top 5', limit: 5 },
+  { value: 'top10', label: 'Top 10', limit: 10 },
+]
+const lapLimitFor = (filter: LapFilter) => LAP_FILTERS.find(item => item.value === filter)?.limit ?? null
+
 export function Analysis({ selected, setSelected, onBack, activeCoachSession, onClearCoachSession, busy, setBusy }: Props) {
   const { system } = useUnits()
   const [data, setData] = useState<AnalysisData | null>(null)
@@ -40,6 +49,8 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [coachedKey, setCoachedKey] = useState<string | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
   const [coachError, setCoachError] = useState<string | null>(null)
+  const [lapFilter, setLapFilter] = useState<LapFilter>('all')
+  const [coachMenuOpen, setCoachMenuOpen] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
   const [focusedAnnotation, setFocusedAnnotation] = useState<CoachAnnotation | null | undefined>(undefined)
@@ -51,7 +62,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   useEffect(() => {
     if (activeCoachSession) {
       setCoachResult(activeCoachSession.parsed_result)
-      setCoachedKey(guidKey(activeCoachSession.session_guids))
+      setCoachedKey(`${guidKey(activeCoachSession.session_guids)}|all`)
     }
   }, [activeCoachSession])
 
@@ -59,7 +70,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   // coaching was generated for — the advice wouldn't correspond to the analysis.
   useEffect(() => {
     if (!coachResult || coachedKey == null) return
-    if (guidKey(selected) !== coachedKey) {
+    if (`${guidKey(selected)}|${lapFilter}` !== coachedKey) {
       setCoachResult(null)
       setCoachedKey(null)
       setFocusedRef(null)
@@ -67,16 +78,19 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       setFocusedAnnotation(undefined)
       onClearCoachSession?.()
     }
-  }, [selected, coachResult, coachedKey, onClearCoachSession])
+  }, [selected, lapFilter, coachResult, coachedKey, onClearCoachSession])
 
-  const askCoach = async () => {
+  const askCoach = async (coachFilter: LapFilter = lapFilter) => {
     if (!data || coachRunning || busy) return
 
     // Coaching requires a remote API key — surface a clear modal instead of a
     // silent failure when it isn't configured.
     const settings = await api.getAiSettings()
-    if (!settings.apiKey) {
-      setCoachError('No Anthropic API key configured. Open the Overview page and add your API key under "AI Coach" to run coaching analysis.')
+    const provider = settings.provider ?? (settings.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
+    const hasKey = provider === 'openai' ? !!settings.openAiApiKey : !!settings.anthropicApiKey
+    if (!hasKey) {
+      const label = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+      setCoachError(`No ${label} API key configured. Open the Overview page and add it under "AI Coach" before running coaching analysis.`)
       return
     }
 
@@ -84,6 +98,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     setBusy?.('coach')
     // The set submitted to the coach — the result will correspond to exactly this.
     const submitted = [...selected]
+    const submittedKey = `${guidKey(submitted)}|${coachFilter}`
     const profile = await api.getActiveProfile() ?? 'Lotus'
     const unsub = api.onWorker(evt => {
       if (evt.kind !== 'coach') return
@@ -95,7 +110,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           void api.getCoachSession(evt.payload).then(s => {
             if (s) {
               setCoachResult(s.parsed_result)
-              setCoachedKey(guidKey(submitted))
+              setCoachedKey(submittedKey)
             }
           })
         }
@@ -108,7 +123,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       }
     })
     try {
-      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted })
+      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted, lapLimit: lapLimitFor(coachFilter) })
     } catch (e: any) {
       unsub()
       setCoachRunning(false)
@@ -143,7 +158,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     setLoading(true); setErr(null)
     void (async () => {
       try {
-        const d = (await api.buildAnalysis([...selected], system)) as AnalysisData
+        const d = (await api.buildAnalysis([...selected], system, lapLimitFor(lapFilter))) as AnalysisData
         setData(d)
       } catch (e: any) {
         setErr(e.message ?? String(e))
@@ -151,7 +166,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         setLoading(false)
       }
     })()
-  }, [selected, system])
+  }, [selected, system, lapFilter])
 
   if (selected.size === 0) {
     return (
@@ -186,16 +201,45 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         </div>
         <div className="page-meta">
           {selected.size} sessions<br />
-          <span className="muted">{data ? `${data.laps.length} driven laps` : 'loading…'}</span>
+          <span className="muted">{data ? `${data.laps.length} ${lapFilter === 'all' ? 'driven' : 'filtered'} laps` : 'loading…'}</span>
         </div>
 
-        <button
-          className={`btn ask-coach-btn${coachResult ? ' clearing' : ''}`}
-          disabled={!data || !!busy}
-          onClick={coachResult ? () => { setCoachResult(null); onClearCoachSession?.() } : askCoach}
-        >
-          {coachRunning ? 'Coaching…' : coachResult ? '✕ Clear Coach' : '✦ Ask Coach'}
-        </button>
+        <div className="analysis-lap-filter" role="group" aria-label="Laps included in analysis">
+          <span>Analyze</span>
+          {LAP_FILTERS.map(item => (
+            <button key={item.value} type="button" className={lapFilter === item.value ? 'active' : ''}
+              aria-pressed={lapFilter === item.value} disabled={loading}
+              onClick={() => setLapFilter(item.value)}>{item.label}</button>
+          ))}
+        </div>
+
+        <div className="ask-coach-split">
+          <button
+            className={`btn ask-coach-btn${coachResult ? ' clearing' : ''}`}
+            disabled={!data || !!busy}
+            onClick={coachResult ? () => { setCoachResult(null); onClearCoachSession?.() } : () => void askCoach(lapFilter)}
+          >
+            {coachRunning ? 'Coaching…' : coachResult ? '✕ Clear Coach' : '✦ Ask Coach'}
+          </button>
+          {!coachResult && (
+            <button type="button" className="ask-coach-caret" aria-label="Choose laps for coaching"
+              aria-expanded={coachMenuOpen} disabled={!data || !!busy}
+              onClick={() => setCoachMenuOpen(open => !open)}>▾</button>
+          )}
+          {coachMenuOpen && !coachResult && (
+            <div className="ask-coach-menu">
+              <div className="ask-coach-menu-label">Coach using</div>
+              <button type="button" onClick={() => { setCoachMenuOpen(false); void askCoach(lapFilter) }}>
+                Current filter · {LAP_FILTERS.find(item => item.value === lapFilter)?.label}
+              </button>
+              {LAP_FILTERS.map(item => (
+                <button key={item.value} type="button" onClick={() => { setCoachMenuOpen(false); void askCoach(item.value) }}>
+                  {item.label} laps
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </header>
 
       <div
@@ -379,6 +423,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
   onFocusAnnotation?: (a: CoachAnnotation | null) => void
 }) {
   const [speedMode, setSpeedMode] = useState<'absolute' | 'delta'>('absolute')
+  const [timeDeltaMode, setTimeDeltaMode] = useState<'fastest' | 'optimal'>('fastest')
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
     [data.sessions],
@@ -428,6 +473,10 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
         <RecommendedPracticePanel drills={coachResult.drills} />
       )}
 
+      {coachResult && (coachResult.next_session_plan?.length ?? 0) > 0 && (
+        <NextSessionPlanPanel plan={coachResult.next_session_plan!} />
+      )}
+
       {/* CAR SETUP */}
       {coachResult && <CarSetupPanel setup={coachResult.setup} />}
 
@@ -460,7 +509,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
         {data.heatmap && (
           <ChartCard channel="SEGMENT Δ" meta="seconds · best per segment = 0">
-            <HeatmapGrid hm={data.heatmap} />
+            <HeatmapGrid hm={data.heatmap} onHoverSegment={onHoverRef} />
           </ChartCard>
         )}
 
@@ -468,9 +517,22 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
           <GGChart gg={data.gg} height={420} onHoverDistance={onHoverDistance} speedUnit={data.speedUnit} />
         </ChartCard>
 
-        <ChartCard channel="CUMULATIVE TIME Δ" meta="vs fastest lap · negative = ahead">
+        <ChartCard
+          channel="CUMULATIVE TIME Δ"
+          meta={(
+            <div className="speed-chart-meta">
+              <span>{timeDeltaMode === 'optimal' ? 'vs stitched segment optimal' : 'vs fastest lap'} · negative = ahead</span>
+              <div className="chart-mode-toggle" role="group" aria-label="Cumulative time delta reference">
+                <button type="button" className={timeDeltaMode === 'fastest' ? 'active' : ''}
+                  aria-pressed={timeDeltaMode === 'fastest'} onClick={() => setTimeDeltaMode('fastest')}>Vs fastest</button>
+                <button type="button" className={timeDeltaMode === 'optimal' ? 'active' : ''}
+                  aria-pressed={timeDeltaMode === 'optimal'} onClick={() => setTimeDeltaMode('optimal')}>Vs optimal</button>
+              </div>
+            </div>
+          )}
+        >
           <LineChart
-            series={timeDeltaSeries(data)}
+            series={timeDeltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data)}
             height={320}
             yUnit="s"
             corners={data.corners}
@@ -491,6 +553,12 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
             onHoverX={onHoverDistance}
           />
         </ChartCard>
+
+        {(data.cornerBrakingRows?.length ?? 0) > 0 && (
+          <ChartCard channel="BRAKING TECHNIQUE" meta="onset → release · distance relative to apex">
+            <CornerBrakingChart data={data} height={480} onHoverCorner={onHoverRef} />
+          </ChartCard>
+        )}
 
         {data.cornerRows.length > 0 && (
           <ChartCard channel="CORNER CONSISTENCY" meta="V-min range ÷ average · lower is better">
@@ -577,6 +645,17 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
             </div>
           )}
 
+          {(result.strengths?.length ?? 0) > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div className="card-label" style={{ marginBottom: 7 }}>Keep doing</div>
+              {result.strengths!.map((strength, i) => (
+                <div key={i} style={{ fontSize: 11.5, lineHeight: 1.5, color: 'var(--text-dim)', marginBottom: 4 }}>
+                  <span style={{ color: 'var(--green)' }}>✓</span> {strength}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Tip cards — clickable to zoom track map */}
           {result.tips.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -627,6 +706,17 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
                       }}>
                         {tip.section}
                       </span>
+                      {tip.priority && <span className="chip" style={{ fontSize: 8, padding: '1px 5px' }}>P{tip.priority}</span>}
+                      {tip.estimated_gain_ms != null && (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--signal)' }}>
+                          ~{(tip.estimated_gain_ms / 1000).toFixed(2)}s
+                        </span>
+                      )}
+                      {tip.confidence && (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-mute)' }}>
+                          confidence {tip.confidence}/3
+                        </span>
+                      )}
                       {clickable && (
                         <span style={{
                           fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-mute)',
@@ -639,11 +729,51 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
                     <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-dim)' }}>
                       {tip.body}
                     </div>
+                    {(tip.evidence?.length ?? 0) > 0 && (
+                      <div style={{ marginTop: 7, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-mute)', lineHeight: 1.45 }}>
+                        {tip.evidence!.map((item, j) => <div key={j}>↳ {item}</div>)}
+                      </div>
+                    )}
+                    {(tip.cue || tip.success_metric) && (
+                      <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        {tip.cue && <div className="muted" style={{ fontSize: 9 }}><b>CUE</b><br />{tip.cue}</div>}
+                        {tip.success_metric && <div className="muted" style={{ fontSize: 9 }}><b>VERIFY</b><br />{tip.success_metric}</div>}
+                      </div>
+                    )}
                   </div>
                 )
               })}
             </div>
           )}
+          {(result.data_quality_notes?.length ?? 0) > 0 && (
+            <div style={{ marginTop: 14, padding: '9px 11px', border: '1px solid var(--border)', color: 'var(--text-mute)', fontSize: 10, lineHeight: 1.5 }}>
+              <b>DATA CAVEATS</b><br />{result.data_quality_notes!.join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NextSessionPlanPanel({ plan }: { plan: NonNullable<CoachingResult['next_session_plan']> }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className="chart-card coach-card" style={{ marginBottom: 18 }}>
+      <div className="card-corner-marks"><i /></div>
+      <div className="chart-card-header" style={{ cursor: 'pointer' }} onClick={() => setOpen(value => !value)}>
+        <span className="channel-tag">Next Session Plan</span>
+        <span className="meta">{open ? '▲ collapse' : '▼ expand'}</span>
+      </div>
+      {open && (
+        <div style={{ padding: '28px 16px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {plan.map((step, index) => (
+            <div key={index} style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '11px 13px' }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--cyan)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{step.run}</div>
+              <div style={{ marginTop: 5, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5 }}>{step.focus}</div>
+              <div style={{ marginTop: 6, fontSize: 9.5, color: 'var(--text-mute)', lineHeight: 1.45 }}><b>VERIFY</b> · {step.success_metric}</div>
+            </div>
+          ))}
         </div>
       )}
     </div>

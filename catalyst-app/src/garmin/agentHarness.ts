@@ -1,11 +1,13 @@
-// Agent harness — sends a prompt to the Anthropic Messages API and returns the
-// response. Remote-only. Main-process only — never imported in the renderer.
+// Agent harness — sends a prompt to the selected remote provider and returns a
+// structured coaching response. Main-process only — never imported in renderer.
 
 import https from 'node:https'
 
 export interface HarnessConfig {
+  provider: 'anthropic' | 'openai'
   apiKey: string
   model: string
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   maxTokens?: number
   stream?: boolean
   tools?: object[]
@@ -17,10 +19,16 @@ export async function runAgent(
   config: HarnessConfig,
   onChunk: (text: string) => void,
 ): Promise<string> {
-  return runRemote(
-    prompt, config.apiKey, config.model, onChunk,
-    config.maxTokens ?? 32000, config.stream ?? true,
-    config.tools, config.toolChoice,
+  const maxTokens = config.maxTokens ?? 32000
+  if (config.provider === 'openai') {
+    return runOpenAI(
+      prompt, config.apiKey, config.model, onChunk, maxTokens,
+      config.tools, config.toolChoice, config.reasoningEffort ?? 'xhigh',
+    )
+  }
+  return runAnthropic(
+    prompt, config.apiKey, config.model, onChunk, maxTokens,
+    config.stream ?? true, config.tools, config.toolChoice,
   )
 }
 
@@ -38,13 +46,13 @@ const THINKING_PHRASES = [
   'Mapping the circuit…',
   'Cross-referencing segments…',
   'Computing theoretical best…',
-  'Watching onboard footage…',
+  'Comparing representative laps…',
   'Talking to the engineers…',
   'Reviewing telemetry traces…',
   'Dialing in the suspension…',
 ]
 
-function runRemote(
+function runAnthropic(
   prompt: string,
   apiKey: string,
   model: string,
@@ -192,6 +200,140 @@ function runRemote(
     req.on('error', (err) => {
       clearInterval(statusTimer)
       onChunk(`[error] ${err.message}\n`)
+      reject(err)
+    })
+    req.write(body)
+    req.end()
+  })
+}
+
+// ─── OpenAI Responses API (structured function call) ────────────────────────
+
+function runOpenAI(
+  prompt: string,
+  apiKey: string,
+  model: string,
+  onChunk: (text: string) => void,
+  maxTokens: number,
+  tools?: object[],
+  toolChoice?: { type: 'tool'; name: string },
+  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'xhigh',
+): Promise<string> {
+  // The app's canonical schema uses Anthropic's input_schema spelling. Convert
+  // it at the provider boundary so both providers are constrained identically.
+  const openAiTools = (tools ?? []).map((tool: any) => ({
+    type: 'function',
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.input_schema ?? tool.parameters,
+    // The shared schema intentionally has optional fields, so it is not a
+    // strict-schema-compatible shape. Forced function choice still guarantees
+    // a machine-readable arguments object.
+    strict: false,
+  }))
+  const reqObj: Record<string, unknown> = {
+    model,
+    input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+    reasoning: { effort: reasoningEffort },
+    max_output_tokens: maxTokens,
+    store: false,
+  }
+  if (openAiTools.length) {
+    reqObj.tools = openAiTools
+    reqObj.tool_choice = toolChoice
+      ? { type: 'function', name: toolChoice.name }
+      : 'required'
+    reqObj.parallel_tool_calls = false
+  }
+  const body = JSON.stringify(reqObj)
+
+  onChunk(`[status] Connecting to ${model}…\n`)
+  onChunk(`[diag] provider=openai model=${model} reasoning=${reasoningEffort} max_output_tokens=${maxTokens} prompt=${(prompt.length / 1024).toFixed(1)}KB\n`)
+
+  return new Promise((resolve, reject) => {
+    const requestStart = Date.now()
+    let phraseIdx = 0
+    const statusTimer = setInterval(() => {
+      onChunk(`[status] ${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
+      onChunk(`[diag] waiting for response… ${((Date.now() - requestStart) / 1000).toFixed(0)}s elapsed\n`)
+      phraseIdx++
+    }, 4000)
+
+    const req = https.request({
+      hostname: 'api.openai.com',
+      path: '/v1/responses',
+      method: 'POST',
+      // xhigh analysis can be substantially slower than ordinary generation.
+      timeout: 600_000,
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      },
+    }, (res) => {
+      let rawBody = ''
+      res.on('data', (chunk: Buffer) => { rawBody += chunk.toString('utf-8') })
+      res.on('end', () => {
+        clearInterval(statusTimer)
+        let response: any
+        try {
+          response = JSON.parse(rawBody)
+        } catch {
+          reject(new Error(`OpenAI API returned an unreadable response (HTTP ${res.statusCode ?? 'unknown'})`))
+          return
+        }
+
+        if (res.statusCode && res.statusCode >= 400) {
+          const message = response?.error?.message ?? rawBody.slice(0, 500)
+          onChunk(`[error] OpenAI HTTP ${res.statusCode}: ${message}\n`)
+          reject(new Error(`OpenAI API ${res.statusCode}: ${message}`))
+          return
+        }
+
+        const functionCall = response.output?.find(
+          (item: any) => item.type === 'function_call' && (!toolChoice || item.name === toolChoice.name),
+        )
+        let full = typeof functionCall?.arguments === 'string' ? functionCall.arguments : ''
+        if (!full) {
+          full = (response.output ?? [])
+            .filter((item: any) => item.type === 'message')
+            .flatMap((item: any) => item.content ?? [])
+            .filter((item: any) => item.type === 'output_text')
+            .map((item: any) => item.text ?? '')
+            .join('')
+        }
+
+        const usage = response.usage
+        if (usage) {
+          onChunk(`[diag] input_tokens=${usage.input_tokens ?? '?'} output_tokens=${usage.output_tokens ?? '?'} reasoning_tokens=${usage.output_tokens_details?.reasoning_tokens ?? '?'}\n`)
+        }
+        if (response.status === 'incomplete') {
+          const reason = response.incomplete_details?.reason ?? 'unknown reason'
+          reject(new Error(`OpenAI response was incomplete: ${reason}`))
+          return
+        }
+        if (!full) {
+          reject(new Error('OpenAI response ended without a coaching report'))
+          return
+        }
+
+        onChunk(`[diag] response complete: ${(full.length / 1024).toFixed(1)}KB in ${((Date.now() - requestStart) / 1000).toFixed(1)}s\n`)
+        onChunk('[status] Parsing coaching report…\n')
+        resolve(full)
+      })
+      res.on('error', (err) => {
+        clearInterval(statusTimer)
+        reject(err)
+      })
+    })
+
+    req.on('timeout', () => {
+      clearInterval(statusTimer)
+      req.destroy()
+      reject(new Error('OpenAI request timed out after 10 minutes'))
+    })
+    req.on('error', (err) => {
+      clearInterval(statusTimer)
       reject(err)
     })
     req.write(body)

@@ -629,7 +629,7 @@ function cellColor(val: number | null, zmax: number): string {
   return `rgba(${r},${g},${b},${0.12 + t * 0.32})`
 }
 
-export function HeatmapGrid({ hm }: { hm: HeatmapData }) {
+export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSegment?: (ref: string | null) => void }) {
   return (
     <div style={{ overflowX: 'auto', padding: '4px 0' }}>
       <table style={{ borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: 10, width: '100%' }}>
@@ -659,7 +659,10 @@ export function HeatmapGrid({ hm }: { hm: HeatmapData }) {
                 // Tooltip: show full text + column label
                 const tipText = rawText && rawText !== '—' ? `${col}: ${rawText}` : undefined
                 return (
-                  <td key={ci} title={tipText} style={{
+                  <td key={ci} title={tipText}
+                    onMouseEnter={() => onHoverSegment?.(col)}
+                    onMouseLeave={() => onHoverSegment?.(null)}
+                    style={{
                     padding: '3px 4px',
                     background: cellColor(val, hm.zmax),
                     textAlign: 'center',
@@ -667,7 +670,7 @@ export function HeatmapGrid({ hm }: { hm: HeatmapData }) {
                     fontWeight: val === 0 ? 700 : 400,
                     letterSpacing: '0.04em',
                     border: '1px solid rgba(255,255,255,0.03)',
-                    cursor: tipText ? 'default' : undefined,
+                    cursor: 'crosshair',
                   }}>
                     {display}
                   </td>
@@ -841,6 +844,149 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
   )
 }
 
+// ─── CornerBrakingChart ────────────────────────────────────────────────────
+
+const BP = { l: 102, r: 34, t: 42, b: 30 } as const
+
+interface BrakingHit {
+  py: number
+  rowHeight: number
+  turn: string
+  name: string
+  rows: AnalysisData['cornerBrakingRows']
+}
+
+export function CornerBrakingChart({
+  data, height, onHoverCorner,
+}: {
+  data: AnalysisData
+  height: number
+  onHoverCorner?: (turn: string | null) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const rafRef = useRef(0)
+  const hitsRef = useRef<BrakingHit[]>([])
+  const hoveredTurnRef = useRef<string | null>(null)
+  const [tooltip, setTooltip] = useState<Tip | null>(null)
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current; if (!canvas) return
+    const ctx = canvas.getContext('2d')!
+    const dims = setupCanvas(canvas, ctx); if (!dims) return
+    const { w, h } = dims
+    ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
+
+    const brakingRows = data.cornerBrakingRows ?? []
+    const groups = data.corners.flatMap(corner => {
+      const rows = brakingRows.filter(row => row.turn === corner.turn)
+      return rows.length ? [{ turn: corner.turn, name: corner.name ?? '', rows }] : []
+    })
+    if (!groups.length) { hitsRef.current = []; return }
+
+    const offsets = groups.flatMap(group => group.rows.flatMap(row => [
+      row.onset_dist_m - row.apex_dist_m,
+      row.release_dist_m - row.apex_dist_m,
+    ]))
+    let xMin = Math.min(...offsets, -25), xMax = Math.max(...offsets, 25)
+    const xPad = Math.max(10, (xMax - xMin) * 0.05)
+    xMin -= xPad; xMax += xPad
+    const plotW = w - BP.l - BP.r, plotH = h - BP.t - BP.b
+    const toX = (value: number) => BP.l + (value - xMin) / (xMax - xMin || 1) * plotW
+    const rowHeight = plotH / groups.length
+
+    const ticks = niceTicks(xMin, xMax, 7)
+    const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : 1
+    ctx.font = '8px "JetBrains Mono", monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+    for (const tick of ticks) {
+      const px = toX(tick)
+      ctx.strokeStyle = tick === 0 ? PALETTE.borderStrong : PALETTE.border
+      ctx.lineWidth = tick === 0 ? 1.5 : 1
+      ctx.beginPath(); ctx.moveTo(px, BP.t); ctx.lineTo(px, BP.t + plotH); ctx.stroke()
+      ctx.fillStyle = PALETTE.textMute; ctx.fillText(fmtTick(tick, step), px, BP.t + plotH + 6)
+    }
+    ctx.fillStyle = PALETTE.textMute; ctx.textAlign = 'right'
+    ctx.fillText('METRES RELATIVE TO APEX · TRIANGLE = ONSET · CIRCLE = RELEASE', BP.l + plotW, 17)
+    ctx.fillStyle = PALETTE.signal; ctx.textAlign = 'left'
+    ctx.fillText('BRIGHT = FASTEST LAP', BP.l, 30)
+
+    const hits: BrakingHit[] = []
+    groups.forEach((group, index) => {
+      const py = BP.t + (index + 0.5) * rowHeight
+      if (index % 2 === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.018)'
+        ctx.fillRect(0, py - rowHeight / 2, w, rowHeight)
+      }
+      ctx.fillStyle = PALETTE.textDim; ctx.font = '8px "JetBrains Mono", monospace'
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+      ctx.fillText(`${group.turn}${group.name ? ` ${group.name}` : ''}`.slice(0, 16), 8, py)
+
+      const spacing = Math.min(3, rowHeight / Math.max(3, group.rows.length + 1))
+      group.rows.forEach((row, lapIndex) => {
+        const y = py + (lapIndex - (group.rows.length - 1) / 2) * spacing
+        const onsetX = toX(row.onset_dist_m - row.apex_dist_m)
+        const releaseX = toX(row.release_dist_m - row.apex_dist_m)
+        ctx.strokeStyle = row.isBest ? PALETTE.signal : PALETTE.textMute
+        ctx.globalAlpha = row.isBest ? 1 : 0.28
+        ctx.lineWidth = row.isBest ? 3 : 1.5
+        ctx.beginPath(); ctx.moveTo(onsetX, y); ctx.lineTo(releaseX, y); ctx.stroke()
+        ctx.fillStyle = row.isBest ? PALETTE.signal : PALETTE.textMute
+        ctx.beginPath(); ctx.moveTo(onsetX, y - 3); ctx.lineTo(onsetX + 5, y); ctx.lineTo(onsetX, y + 3); ctx.closePath(); ctx.fill()
+        ctx.beginPath(); ctx.arc(releaseX, y, row.isBest ? 3.5 : 2, 0, Math.PI * 2); ctx.fill()
+      })
+      ctx.globalAlpha = 1
+      hits.push({ py, rowHeight, ...group })
+    })
+    hitsRef.current = hits
+    ctx.strokeStyle = PALETTE.borderStrong; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(BP.l, BP.t); ctx.lineTo(BP.l, BP.t + plotH); ctx.lineTo(BP.l + plotW, BP.t + plotH); ctx.stroke()
+  }, [data])
+
+  useEffect(() => {
+    draw()
+    const ro = new ResizeObserver(() => { cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(draw) })
+    const el = canvasRef.current; if (el) ro.observe(el)
+    return () => { ro.disconnect(); cancelAnimationFrame(rafRef.current) }
+  }, [draw])
+
+  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect()
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top
+    const hit = hitsRef.current.find(row => Math.abs(row.py - my) <= row.rowHeight / 2)
+    const turn = hit?.turn ?? null
+    if (turn !== hoveredTurnRef.current) { hoveredTurnRef.current = turn; onHoverCorner?.(turn) }
+    if (!hit) { setTooltip(null); return }
+    const best = hit.rows.find(row => row.isBest) ?? hit.rows[0]
+    const onsetOffsets = hit.rows.map(row => row.onset_dist_m - row.apex_dist_m)
+    const releaseOffsets = hit.rows.map(row => row.release_dist_m - row.apex_dist_m)
+    const signed = (value: number) => `${value > 0 ? '+' : ''}${Math.round(value)} m`
+    setTooltip({
+      px: mx, py: my,
+      header: `${hit.turn}${hit.name ? ` · ${hit.name}` : ''}  ${hit.rows.length} laps`,
+      rows: [
+        { label: 'Fastest onset', value: signed(best.onset_dist_m - best.apex_dist_m), color: PALETTE.signal },
+        { label: 'Fastest release', value: signed(best.release_dist_m - best.apex_dist_m), color: PALETTE.green },
+        { label: 'Brake zone', value: `${Math.round(best.release_dist_m - best.onset_dist_m)} m`, color: PALETTE.cyan },
+        { label: 'Peak braking', value: `${best.peak_brake_g.toFixed(2)} g`, color: PALETTE.signal },
+        { label: 'Onset range', value: `${signed(Math.min(...onsetOffsets))} to ${signed(Math.max(...onsetOffsets))}`, color: PALETTE.textMute },
+        { label: 'Release range', value: `${signed(Math.min(...releaseOffsets))} to ${signed(Math.max(...releaseOffsets))}`, color: PALETTE.textMute },
+      ],
+    })
+  }
+
+  const clearHover = () => {
+    hoveredTurnRef.current = null; onHoverCorner?.(null); setTooltip(null)
+  }
+  const cw = wrapRef.current?.clientWidth ?? 600
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
+        onMouseMove={onMouseMove} onMouseLeave={clearHover} />
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
+    </div>
+  )
+}
+
 // ─── CornerConsistencyChart ─────────────────────────────────────────────────
 
 const CCP = { l: 100, r: 42, t: 34, b: 28 } as const
@@ -880,7 +1026,6 @@ export function CornerConsistencyChart({
   const hitsRef = useRef<ConsistencyHit[]>([])
   const hoveredTurnRef = useRef<string | null>(null)
   const [tooltip, setTooltip] = useState<Tip | null>(null)
-  const [lapFilter, setLapFilter] = useState<'all' | 'top3' | 'top5'>('all')
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current; if (!canvas) return
@@ -889,17 +1034,8 @@ export function CornerConsistencyChart({
     const { w, h } = dims
     ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
 
-    const limit = lapFilter === 'top3' ? 3 : lapFilter === 'top5' ? 5 : null
-    const includedLaps = limit == null ? null : new Set(
-      [...data.laps]
-        .filter(lap => lap.durationMs > 0)
-        .sort((a, b) => a.durationMs - b.durationMs)
-        .slice(0, limit)
-        .map(lap => `${lap.sg}:${lap.lapIdx}`),
-    )
     const stats = data.corners.flatMap(corner => {
-      const rows = data.cornerRows.filter(r =>
-        r.turn === corner.turn && (!includedLaps || includedLaps.has(`${r.sg}:${r.lapIdx}`)))
+      const rows = data.cornerRows.filter(r => r.turn === corner.turn)
       if (!rows.length) return []
       const values = rows.map(r => r.apex_mph)
       const avg = values.reduce((sum, value) => sum + value, 0) / values.length
@@ -939,7 +1075,7 @@ export function CornerConsistencyChart({
       ctx.fillStyle = PALETTE.textMute; ctx.fillText(fmtTick(tick, tickStep), px, CCP.t + plotH + 5)
     }
     ctx.fillStyle = PALETTE.textMute; ctx.textAlign = 'right'
-    ctx.fillText(`V-MIN RANGE / AVG · % · ${limit ? `TOP ${limit}` : 'ALL LAPS'}`, CCP.l + plotW, 17)
+    ctx.fillText('V-MIN RANGE / AVG · % · CURRENT ANALYSIS FILTER', CCP.l + plotW, 17)
 
     stats.forEach((stat, i) => {
       const py = CCP.t + (i + 0.5) * rowHeight
@@ -964,7 +1100,7 @@ export function CornerConsistencyChart({
 
     ctx.strokeStyle = PALETTE.borderStrong; ctx.lineWidth = 1
     ctx.beginPath(); ctx.moveTo(CCP.l, CCP.t); ctx.lineTo(CCP.l, CCP.t + plotH); ctx.lineTo(CCP.l + plotW, CCP.t + plotH); ctx.stroke()
-  }, [data, speedUnit, lapFilter])
+  }, [data, speedUnit])
 
   useEffect(() => {
     draw()
@@ -1007,19 +1143,6 @@ export function CornerConsistencyChart({
   const cw = wrapRef.current?.clientWidth ?? 600
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
-      <div className="corner-consistency-filter" role="group" aria-label="Laps included in corner consistency">
-        {([['all', 'All'], ['top3', 'Top 3'], ['top5', 'Top 5']] as const).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={lapFilter === value ? 'active' : ''}
-            aria-pressed={lapFilter === value}
-            onClick={() => setLapFilter(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         onMouseMove={onMouseMove} onMouseLeave={clearHover} />
       {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}

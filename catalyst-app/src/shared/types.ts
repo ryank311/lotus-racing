@@ -159,8 +159,21 @@ export interface CoachSetupRec {
 export interface CoachingResult {
   headline: string
   consistency_loss_ms: number
-  tips: Array<{ section: string; body: string; annotations: CoachAnnotation[] }>
+  strengths?: string[]
+  tips: Array<{
+    section: string
+    body: string
+    annotations: CoachAnnotation[]
+    priority?: 1 | 2 | 3
+    estimated_gain_ms?: number
+    confidence?: 1 | 2 | 3
+    evidence?: string[]
+    cue?: string
+    success_metric?: string
+  }>
   drills: string[]
+  next_session_plan?: Array<{ run: string; focus: string; success_metric: string }>
+  data_quality_notes?: string[]
   annotations: CoachAnnotation[]   // flat list of all annotations across all tips
   coach_line?: CoachLineWaypoint[] // optional sparse AI-recommended line waypoints
   setup?: CoachSetupRec[]          // optional car-setup recommendations (may be empty)
@@ -182,10 +195,15 @@ export interface CoachOptions {
   profile: string
   scope: 'overview' | 'corner' | 'compare'
   sessionGuids: string[]
+  lapLimit?: 3 | 5 | 10 | null
 }
 
+export type AiProvider = 'anthropic' | 'openai'
+
 export interface AiSettings {
-  apiKey?: string
+  provider?: AiProvider
+  anthropicApiKey?: string
+  openAiApiKey?: string
   model?: string
 }
 
@@ -309,7 +327,7 @@ export interface CatalystBridge {
   getAccountStats(): Promise<AccountStats>
 
   // Analysis (Plotly data)
-  buildAnalysis(sessionGuids: string[], units?: UnitSystem): Promise<AnalysisDataPayload>
+  buildAnalysis(sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null): Promise<AnalysisDataPayload>
 
   // Tracks editor
   listTracks(): Promise<TrackListEntry[]>

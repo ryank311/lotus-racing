@@ -1,7 +1,5 @@
-// Anthropic tool definition for the coaching report.
-// Forced tool use (tool_choice: {type:"tool", name:"submit_coaching_report"}) ensures
-// Claude returns guaranteed-valid JSON matching this schema — no regex parsing, no
-// type coercion, no `+0.10` invalid-JSON issues.
+// Provider-neutral tool definition for the coaching report. The harness adapts
+// this schema to Anthropic Messages or OpenAI Responses at the API boundary.
 
 const annotationSchema = {
   type: 'object',
@@ -16,7 +14,7 @@ const annotationSchema = {
     },
     body: {
       type: 'string',
-      description: '1–2 sentences written to the driver. All speeds in mph.',
+      description: '1–2 sentences written to the driver. Use the display unit specified in the prompt.',
     },
     severity: { type: 'integer', enum: [1, 2, 3] },
     actual_vmin_mph:  { type: 'number', description: 'Measured minimum speed in this corner in mph. Include when V-min is relevant to this coaching opportunity.' },
@@ -43,7 +41,12 @@ export const COACHING_TOOL = {
       },
       consistency_loss_ms: {
         type: 'integer',
-        description: 'theoretical_best_ms − actual_best_ms from the lap table.',
+        description: 'Actual best lap milliseconds minus theoretical-best milliseconds. Must be non-negative.',
+      },
+      strengths: {
+        type: 'array',
+        description: '2–4 specific things the driver already does well, each backed by a lap/corner/segment measurement.',
+        items: { type: 'string' },
       },
       tips: {
         type: 'array',
@@ -57,7 +60,32 @@ export const COACHING_TOOL = {
             },
             body: {
               type: 'string',
-              description: '2–4 sentences in plain English. All speeds in mph. No m/s.',
+              description: '2–4 sentences in plain English. Use the display unit specified in the prompt. No m/s.',
+            },
+            priority: {
+              type: 'integer', enum: [1, 2, 3],
+              description: '1 = highest-priority opportunity, 3 = lower priority.',
+            },
+            estimated_gain_ms: {
+              type: 'integer',
+              description: 'Conservative recoverable lap-time estimate for this item, in milliseconds. Omit when unsupported.',
+            },
+            confidence: {
+              type: 'integer', enum: [1, 2, 3],
+              description: '1 = weak/proxy evidence, 2 = repeated correlation, 3 = directly supported across multiple comparable laps.',
+            },
+            evidence: {
+              type: 'array',
+              description: '1–3 compact measurements that support the tip, with session short ID, lap, and corner/segment.',
+              items: { type: 'string' },
+            },
+            cue: {
+              type: 'string',
+              description: 'A short in-car cue the driver can remember. Max 80 chars.',
+            },
+            success_metric: {
+              type: 'string',
+              description: 'A measurable Catalyst result that shows the change worked.',
             },
             annotations: { type: 'array', items: annotationSchema },
           },
@@ -69,13 +97,31 @@ export const COACHING_TOOL = {
         description: '3–5 concrete practice exercises for the next track day.',
         items: { type: 'string' },
       },
+      next_session_plan: {
+        type: 'array',
+        description: 'A progressive 2–4 run plan for the next event. Change one major variable at a time.',
+        items: {
+          type: 'object',
+          properties: {
+            run: { type: 'string', description: 'Run/stint label, e.g. "Run 1 — baseline".' },
+            focus: { type: 'string', description: 'One primary focus and how to execute it.' },
+            success_metric: { type: 'string', description: 'What to verify in Catalyst after the run.' },
+          },
+          required: ['run', 'focus', 'success_metric'],
+        },
+      },
+      data_quality_notes: {
+        type: 'array',
+        description: 'Only material limitations that reduce confidence or prevent a conclusion. Empty when none.',
+        items: { type: 'string' },
+      },
       setup: {
         type: 'array',
         description:
           'Car setup / configuration recommendations grounded in the telemetry (tyre pressure, ' +
           'alignment, suspension, ride height, brakes, aero, differential, etc.). ONLY include a ' +
-          'recommendation when the data supports it — understeer/oversteer signatures in lateral G ' +
-          'and line, locking under braking, inconsistent grip across sessions/temperatures, etc. ' +
+          'recommendation when the data supports it — repeatable balance signatures in lateral G ' +
+          'and line, or consistent grip changes across comparable sessions/temperatures. ' +
           'Return an empty array if the data does not justify any setup change. Do not pad.',
         items: {
           type: 'object',
@@ -90,7 +136,7 @@ export const COACHING_TOOL = {
             },
             rationale: {
               type: 'string',
-              description: 'Why this follows from the data — cite the corners, segments, laps, or conditions that motivate it. All speeds in mph.',
+              description: 'Why this follows from the data — cite the corners, segments, laps, or conditions that motivate it. Use the prompt display unit.',
             },
             confidence: {
               type: 'integer',
@@ -131,6 +177,6 @@ export const COACHING_TOOL = {
         },
       },
     },
-    required: ['headline', 'consistency_loss_ms', 'tips', 'drills', 'annotations'],
+    required: ['headline', 'consistency_loss_ms', 'strengths', 'tips', 'drills', 'next_session_plan', 'data_quality_notes', 'annotations'],
   },
 } as const

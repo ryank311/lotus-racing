@@ -40,14 +40,23 @@ function validate(o: unknown): CoachingResult | null {
   const r = o as Record<string, unknown>
   if (typeof r.headline !== 'string') return null
   const consistency_loss_ms = typeof r.consistency_loss_ms === 'number' && !isNaN(r.consistency_loss_ms)
-    ? Math.round(r.consistency_loss_ms)
+    ? Math.max(0, Math.round(r.consistency_loss_ms))
     : 0
+  const strengths = stringArray(r.strengths)
   const tips = Array.isArray(r.tips)
     ? r.tips
         .filter(t => t && typeof t.section === 'string' && typeof t.body === 'string')
         .map((t: any) => ({
           section: t.section as string,
           body: t.body as string,
+          priority: ordinal(t.priority),
+          estimated_gain_ms: typeof t.estimated_gain_ms === 'number' && !isNaN(t.estimated_gain_ms)
+            ? Math.max(0, Math.round(t.estimated_gain_ms))
+            : undefined,
+          confidence: ordinal(t.confidence),
+          evidence: stringArray(t.evidence),
+          cue: typeof t.cue === 'string' ? t.cue : undefined,
+          success_metric: typeof t.success_metric === 'string' ? t.success_metric : undefined,
           annotations: Array.isArray(t.annotations)
             ? (t.annotations as unknown[]).map(coerceAnnotation).filter((a): a is CoachAnnotation => a !== null)
             : [],
@@ -56,9 +65,16 @@ function validate(o: unknown): CoachingResult | null {
   const annotations = Array.isArray(r.annotations)
     ? r.annotations.map(coerceAnnotation).filter((a): a is CoachAnnotation => a !== null)
     : []
-  const drills = Array.isArray(r.drills)
-    ? r.drills.filter((d): d is string => typeof d === 'string')
-    : []
+  const drills = stringArray(r.drills)
+  const next_session_plan = Array.isArray(r.next_session_plan)
+    ? (r.next_session_plan as unknown[]).flatMap((step) => {
+        if (typeof step !== 'object' || step === null) return []
+        const x = step as Record<string, unknown>
+        if (typeof x.run !== 'string' || typeof x.focus !== 'string' || typeof x.success_metric !== 'string') return []
+        return [{ run: x.run, focus: x.focus, success_metric: x.success_metric }]
+      })
+    : undefined
+  const data_quality_notes = stringArray(r.data_quality_notes)
   const coach_line = Array.isArray(r.coach_line)
     ? (r.coach_line as unknown[]).flatMap((w): CoachLineWaypoint[] => {
         if (typeof w !== 'object' || w === null) return []
@@ -83,7 +99,18 @@ function validate(o: unknown): CoachingResult | null {
         }]
       })
     : undefined
-  return { headline: r.headline, consistency_loss_ms, tips, drills, annotations, coach_line, setup }
+  return {
+    headline: r.headline, consistency_loss_ms, strengths, tips, drills,
+    next_session_plan, data_quality_notes, annotations, coach_line, setup,
+  }
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function ordinal(value: unknown): 1 | 2 | 3 | undefined {
+  return ([1, 2, 3] as const).includes(value as 1 | 2 | 3) ? value as 1 | 2 | 3 : undefined
 }
 
 function coerceAnnotation(a: unknown): CoachAnnotation | null {

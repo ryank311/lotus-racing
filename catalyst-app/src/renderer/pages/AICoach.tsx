@@ -28,6 +28,14 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
 
   const runCoach = async () => {
     if (busy || selected.size === 0) return
+
+    const settings = await api.getAiSettings()
+    const provider = settings.provider ?? (settings.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
+    const hasKey = provider === 'openai' ? !!settings.openAiApiKey : !!settings.anthropicApiKey
+    if (!hasKey) {
+      setErr(`No ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key configured. Add it under AI Coach on the Overview page.`)
+      return
+    }
     setRunning(true)
     setBusy('coach')
     setRunLog([])
@@ -215,6 +223,15 @@ function SessionViewer({ session, onLoad, onDelete }: {
         </div>
       </div>
 
+      {r?.strengths && r.strengths.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div className="card-label" style={{ marginBottom: 10 }}>Keep doing</div>
+          <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 14px' }}>
+            {r.strengths.map((item, i) => <div key={i} style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.55 }}>✓ {item}</div>)}
+          </div>
+        </div>
+      )}
+
       {/* Tips */}
       {r?.tips && r.tips.length > 0 && (
         <div style={{ marginBottom: 20 }}>
@@ -228,11 +245,24 @@ function SessionViewer({ session, onLoad, onDelete }: {
                 fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--signal)',
                 letterSpacing: '0.14em', textTransform: 'uppercase', marginBottom: 6,
               }}>
-                {tip.section}
+                {tip.section}{tip.priority ? ` · P${tip.priority}` : ''}{tip.estimated_gain_ms != null ? ` · ~${(tip.estimated_gain_ms / 1000).toFixed(2)}s` : ''}
               </div>
               <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-dim)' }}>
                 {tip.body}
               </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {r?.next_session_plan && r.next_session_plan.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div className="card-label" style={{ marginBottom: 10 }}>Next session plan</div>
+          {r.next_session_plan.map((step, i) => (
+            <div key={i} style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '10px 12px', marginBottom: 7 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--cyan)' }}>{step.run}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5, marginTop: 4 }}>{step.focus}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-mute)', marginTop: 5 }}>Verify: {step.success_metric}</div>
             </div>
           ))}
         </div>

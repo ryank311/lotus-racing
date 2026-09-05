@@ -23,6 +23,11 @@ export interface AppConfig {
     page_size?: number
   }
   ai?: {
+    provider?: 'anthropic' | 'openai'
+    anthropic_api_key?: string
+    openai_api_key?: string
+    // Legacy Anthropic key location. Read for migration, but new saves use the
+    // provider-specific fields above.
     api_key?: string
     model?: string
   }

@@ -63,6 +63,7 @@ import type {
   CoachOptions,
   CoachingSession,
   AiSettings,
+  AiProvider,
 } from '../shared/types.js'
 import { loginViaBrowser } from './auth.js'
 import { signInWithCredentials, submitMfaCode, cancelMfa } from './garthLogin.js'
@@ -347,19 +348,38 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   // ── AI Settings ────────────────────────────────────────────────────────────
 
+  const providerFor = (ai: ReturnType<typeof loadConfig>['ai']): AiProvider =>
+    ai?.provider ?? (ai?.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
+
+  const defaultModelFor = (provider: AiProvider): string =>
+    provider === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5'
+
+  const configuredModelFor = (ai: ReturnType<typeof loadConfig>['ai'], provider: AiProvider): string => {
+    const model = ai?.model
+    if (!model) return defaultModelFor(provider)
+    const compatible = provider === 'openai' ? model.startsWith('gpt-') : model.startsWith('claude-')
+    return compatible ? model : defaultModelFor(provider)
+  }
+
   ipcMain.handle('ai:getSettings', (): AiSettings => {
     const cfg = loadConfig()
+    const provider = providerFor(cfg.ai)
     return {
-      apiKey: cfg.ai?.api_key,
-      model:  cfg.ai?.model ?? 'claude-sonnet-5',
+      provider,
+      anthropicApiKey: cfg.ai?.anthropic_api_key ?? cfg.ai?.api_key,
+      openAiApiKey: cfg.ai?.openai_api_key,
+      model: configuredModelFor(cfg.ai, provider),
     }
   })
 
   ipcMain.handle('ai:saveSettings', (_e, s: AiSettings) => {
     const cfg = loadConfig()
+    const provider = s.provider ?? 'anthropic'
     cfg.ai = {
-      api_key: s.apiKey,
-      model:   s.model,
+      provider,
+      anthropic_api_key: s.anthropicApiKey,
+      openai_api_key: s.openAiApiKey,
+      model: s.model ?? defaultModelFor(provider),
     }
     saveConfig(cfg)
   })
@@ -454,6 +474,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
         const { prompt, profile: resolvedProfile } = await runCoach({
           sessionGuids: opts.sessionGuids,
+          lapLimit: opts.lapLimit,
           profile: opts.profile,
           scope: opts.scope,
           dbPath: DB_PATH,
@@ -467,14 +488,21 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
           progress: { current: 1, total: 3, label: 'Sending to LLM…' } })
 
         const cfg = loadConfig()
-        if (!cfg.ai?.api_key) {
-          throw new Error('No API key configured. Add your Anthropic API key in the AI Coach settings on the Overview page.')
+        const provider = providerFor(cfg.ai)
+        const apiKey = provider === 'openai'
+          ? cfg.ai?.openai_api_key
+          : (cfg.ai?.anthropic_api_key ?? cfg.ai?.api_key)
+        if (!apiKey) {
+          const label = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+          throw new Error(`No ${label} API key configured. Add it under AI Coach on the Overview page.`)
         }
         const harnessConfig: Parameters<typeof runAgent>[1] = {
-          apiKey:    cfg.ai.api_key,
-          model:     cfg.ai.model ?? 'claude-sonnet-5',
-          maxTokens: 32000,
-          stream:    true,
+          provider,
+          apiKey,
+          model: configuredModelFor(cfg.ai, provider),
+          reasoningEffort: provider === 'openai' ? 'xhigh' : undefined,
+          maxTokens: provider === 'openai' ? 64000 : 32000,
+          stream: provider === 'anthropic',
           tools:     [COACHING_TOOL],
           toolChoice: { type: 'tool' as const, name: COACHING_TOOL.name },
         }
@@ -739,8 +767,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     shell.showItemInFolder(p)
   })
 
-  ipcMain.handle('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem) => {
-    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM)
+  ipcMain.handle('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) => {
+    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapLimit)
   })
 
   // ---- workers ---------------------------------------------------------

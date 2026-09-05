@@ -48,6 +48,15 @@ export interface TimeDeltaTrace extends LapMeta {
   delta_s: number[]
 }
 
+export interface CornerBrakingRow extends LapMeta {
+  turn: string
+  name: string
+  apex_dist_m: number
+  onset_dist_m: number
+  release_dist_m: number
+  peak_brake_g: number
+}
+
 export interface GGData {
   lat_g: number[]
   long_g: number[]
@@ -148,6 +157,8 @@ export interface AnalysisData {
   lateralTraces: LateralTrace[]
   longgTraces: LongGTrace[]
   timeDeltaTraces: TimeDeltaTrace[]
+  optimalTimeDeltaTraces: TimeDeltaTrace[]
+  cornerBrakingRows: CornerBrakingRow[]
   gg: GGData
   trackMap: TrackMapData
   trackGeometry: TrackGeometryPayload | null
@@ -281,9 +292,10 @@ async function fetchTimeDeltaTraces(
   con: DuckDBConnection,
   laps: LapMeta[],
   best: LapMeta,
+  segments: TrackSegment[],
   totalDistM: number,
   strideM = 25,
-): Promise<TimeDeltaTrace[]> {
+): Promise<{ fastest: TimeDeltaTrace[]; optimal: TimeDeltaTrace[] }> {
   const raw = new Map<string, { dist: number[]; elapsedMs: number[] }>()
   for (const lap of laps) {
     const r = await rows(con, `
@@ -302,7 +314,7 @@ async function fetchTimeDeltaTraces(
   }
 
   const reference = raw.get(`${best.sg}:${best.lapIdx}`)
-  if (!reference) return []
+  if (!reference) return { fastest: [], optimal: [] }
   const out: TimeDeltaTrace[] = []
   for (const lap of laps) {
     const trace = raw.get(`${lap.sg}:${lap.lapIdx}`)
@@ -325,7 +337,81 @@ async function fetchTimeDeltaTraces(
     }
     out.push({ ...lap, dist, delta_s })
   }
-  return out
+  // Build a continuous attainable reference by using the quickest observed
+  // elapsed-time slice for each configured segment.
+  const pieces: Array<{
+    start: number
+    end: number
+    trace: { dist: number[]; elapsedMs: number[] }
+    traceStartMs: number
+    gainBeforeMs: number
+    gainMs: number
+  }> = []
+  let cumulativeGainMs = 0
+  for (const segment of [...segments].sort((a, b) => a.start_dist_m - b.start_dist_m)) {
+    const referenceStartMs = interpolateAt(reference.dist, reference.elapsedMs, segment.start_dist_m)
+    const referenceEndMs = interpolateAt(reference.dist, reference.elapsedMs, segment.end_dist_m)
+    if (referenceStartMs == null || referenceEndMs == null) continue
+    const referenceDurationMs = referenceEndMs - referenceStartMs
+    let winner: { trace: { dist: number[]; elapsedMs: number[] }; startMs: number; durationMs: number } | null = null
+    for (const trace of raw.values()) {
+      const startMs = interpolateAt(trace.dist, trace.elapsedMs, segment.start_dist_m)
+      const endMs = interpolateAt(trace.dist, trace.elapsedMs, segment.end_dist_m)
+      if (startMs == null || endMs == null || endMs <= startMs) continue
+      const durationMs = endMs - startMs
+      if (!winner || durationMs < winner.durationMs) winner = { trace, startMs, durationMs }
+    }
+    if (!winner) continue
+    const gainMs = Math.max(0, referenceDurationMs - winner.durationMs)
+    pieces.push({
+      start: segment.start_dist_m,
+      end: segment.end_dist_m,
+      trace: winner.trace,
+      traceStartMs: winner.startMs,
+      gainBeforeMs: cumulativeGainMs,
+      gainMs,
+    })
+    cumulativeGainMs += gainMs
+  }
+
+  const optimalAt = (distance: number): number | null => {
+    const piece = pieces.find(item => distance >= item.start && distance <= item.end)
+    if (piece) {
+      const elapsed = interpolateAt(piece.trace.dist, piece.trace.elapsedMs, distance)
+      const referenceStartMs = interpolateAt(reference.dist, reference.elapsedMs, piece.start)
+      return elapsed == null || referenceStartMs == null
+        ? null
+        : referenceStartMs - piece.gainBeforeMs + elapsed - piece.traceStartMs
+    }
+    const referenceMs = interpolateAt(reference.dist, reference.elapsedMs, distance)
+    if (referenceMs == null) return null
+    const completedGainMs = pieces
+      .filter(item => item.end < distance)
+      .reduce((sum, item) => sum + item.gainMs, 0)
+    return referenceMs - completedGainMs
+  }
+  const optimalDurationMs = best.durationMs - cumulativeGainMs
+  const optimal: TimeDeltaTrace[] = []
+  if (pieces.length) {
+    for (const lap of laps) {
+      const trace = raw.get(`${lap.sg}:${lap.lapIdx}`)
+      if (!trace) continue
+      const dist: number[] = [], delta_s: number[] = []
+      for (let i = 0; i < trace.dist.length; i++) {
+        const optimalMs = optimalAt(trace.dist[i])
+        if (optimalMs == null) continue
+        dist.push(trace.dist[i])
+        delta_s.push((trace.elapsedMs[i] - optimalMs) / 1000)
+      }
+      if (totalDistM > 0 && lap.durationMs > 0 && optimalDurationMs > 0) {
+        const finishDelta = (lap.durationMs - optimalDurationMs) / 1000
+        if (dist.length && dist[dist.length - 1] === totalDistM) delta_s[delta_s.length - 1] = finishDelta
+        else { dist.push(totalDistM); delta_s.push(finishDelta) }
+      }
+      optimal.push({ ...lap, dist, delta_s })
+    }
+  }
+  return { fastest: out, optimal }
 }
 
 async function fetchGGData(con: DuckDBConnection, laps: LapMeta[], conv: SpeedConv, nBest = 12, everyNth = 4): Promise<GGData> {
@@ -658,9 +744,81 @@ async function fetchCornerRows(con: DuckDBConnection, laps: LapMeta[], corners: 
   return out
 }
 
+// Derive the brake episode feeding each corner from lightly smoothed raw
+// longitudinal acceleration. Onset/release use a -0.08 g threshold; the
+// episode must contain at least -0.18 g so coast-only corners are omitted.
+async function fetchCornerBrakingRows(
+  con: DuckDBConnection,
+  laps: LapMeta[],
+  corners: TrackCorner[],
+): Promise<CornerBrakingRow[]> {
+  if (!corners.length) return []
+  const out: CornerBrakingRow[] = []
+  for (const lap of laps) {
+    const raw = await rows(con, `
+      SELECT distance_m, accel_x_mps2
+      FROM samples
+      WHERE session_guid = ? AND lap_index = ?
+        AND distance_m IS NOT NULL AND accel_x_mps2 IS NOT NULL
+      ORDER BY distance_m, time_ms
+    `, [lap.sg, lap.lapIdx])
+    if (raw.length < 5) continue
+    const dist = raw.map(row => Number(row[0]))
+    const gs = raw.map(row => G(Number(row[1])) ?? 0)
+    const smooth = gs.map((_, i) => {
+      const lo = Math.max(0, i - 2), hi = Math.min(gs.length - 1, i + 2)
+      let sum = 0
+      for (let j = lo; j <= hi; j++) sum += gs[j]
+      return sum / (hi - lo + 1)
+    })
+
+    for (const corner of corners) {
+      const apex = corner.apex_idx
+      if (!Number.isFinite(apex)) continue
+      const loDist = Math.max(0, corner.dist_idx_start - 450)
+      const hiDist = corner.dist_idx_end + 150
+      let peakIdx = -1
+      // The last meaningful braking peak before/near apex is the episode that
+      // feeds this corner, avoiding an earlier corner in an overlapping window.
+      for (let i = 0; i < dist.length && dist[i] <= apex + 30; i++) {
+        if (dist[i] < loDist || smooth[i] > -0.18) continue
+        if (peakIdx < 0 || dist[i] > dist[peakIdx] + 35 || smooth[i] < smooth[peakIdx]) peakIdx = i
+      }
+      if (peakIdx < 0) continue
+
+      let onsetIdx = peakIdx
+      while (onsetIdx > 0 && dist[onsetIdx - 1] >= loDist && smooth[onsetIdx - 1] <= -0.08) onsetIdx--
+
+      let releaseIdx = peakIdx
+      let clearCount = 0
+      for (let i = peakIdx + 1; i < dist.length && dist[i] <= hiDist; i++) {
+        if (smooth[i] > -0.08) clearCount++
+        else clearCount = 0
+        if (clearCount >= 3) { releaseIdx = i - 2; break }
+        releaseIdx = i
+      }
+      if (releaseIdx <= onsetIdx) continue
+      out.push({
+        ...lap,
+        turn: corner.turn,
+        name: corner.name ?? '',
+        apex_dist_m: apex,
+        onset_dist_m: dist[onsetIdx],
+        release_dist_m: dist[releaseIdx],
+        peak_brake_g: Math.abs(smooth[peakIdx]),
+      })
+    }
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 
-export async function buildAnalysis(sessionGuids: string[], system: UnitSystem = DEFAULT_UNIT_SYSTEM): Promise<AnalysisData> {
+export async function buildAnalysis(
+  sessionGuids: string[],
+  system: UnitSystem = DEFAULT_UNIT_SYSTEM,
+  lapLimit?: 3 | 5 | 10 | null,
+): Promise<AnalysisData> {
   if (!fs.existsSync(DB_PATH)) throw new Error(`no database at ${DB_PATH} — run "Rebuild DB" first`)
   console.log(`[analysis] building for ${sessionGuids.length} session(s)`)
   const analysisDb = await openDb(DB_PATH)
@@ -717,14 +875,17 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
   const segments = trackYaml.segments ?? []
   const corners = trackYaml.corners ?? []
 
-  const laps = await fetchLapMeta(con, sessionGuids)
+  const allLaps = await fetchLapMeta(con, sessionGuids)
+  const laps = lapLimit
+    ? [...allLaps].filter(lap => lap.durationMs > 0).sort((a, b) => a.durationMs - b.durationMs).slice(0, lapLimit)
+    : allLaps
   console.log(`[analysis] ${sessions.length} sessions, ${laps.length} laps, config="${config}"`)
   if (!laps.length) {
     await analysisDb.close()
     return {
       config, totalDistM: trackYaml.total_dist_m ?? 0,
       segments, corners, sessions, laps: [], bestLap: null,
-      speedTraces: [], lateralTraces: [], longgTraces: [], timeDeltaTraces: [],
+      speedTraces: [], lateralTraces: [], longgTraces: [], timeDeltaTraces: [], optimalTimeDeltaTraces: [], cornerBrakingRows: [],
       gg: { lat_g: [], long_g: [], speed_mph: [], dist: [], p95_g: 0, circle: { x: [], y: [] } },
       trackMap: { dist: [], lat: [], lon: [], speed_mph: [] },
       trackGeometry: null, racingLines: [],
@@ -744,7 +905,10 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
   const speedTraces = await fetchSpeedTraces(con, laps, toSpeed, 25)
   const lateralTraces = await fetchLateralTraces(con, laps, 25)
   const longgTraces = await fetchLongGTraces(con, laps, 25)
-  const timeDeltaTraces = await fetchTimeDeltaTraces(con, laps, bestLap, trackYaml.total_dist_m ?? 0, 25)
+  const timeDeltas = await fetchTimeDeltaTraces(con, laps, bestLap, segments, trackYaml.total_dist_m ?? 0, 25)
+  const timeDeltaTraces = timeDeltas.fastest
+  const optimalTimeDeltaTraces = timeDeltas.optimal
+  const cornerBrakingRows = await fetchCornerBrakingRows(con, laps, corners)
   const gg = await fetchGGData(con, laps, toSpeed)
   const trackMap = await fetchTrackMap(con, bestLap, toSpeed, 10)
 
@@ -819,7 +983,7 @@ export async function buildAnalysis(sessionGuids: string[], system: UnitSystem =
     totalDistM: trackYaml.total_dist_m ?? 0,
     segments, corners, sessions,
     laps, bestLap,
-    speedTraces, lateralTraces, longgTraces, timeDeltaTraces,
+    speedTraces, lateralTraces, longgTraces, timeDeltaTraces, optimalTimeDeltaTraces, cornerBrakingRows,
     gg, trackMap, trackGeometry, racingLines, heatmap, cornerRows,
     theoreticalBestMs, avgLapMs, coachLine,
     speedUnit,
