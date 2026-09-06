@@ -58,11 +58,22 @@ const REPO_ROOT_DEFAULT = isPackaged
   ? path.join(getUserDataDir(), 'catalyst-data')
   : findRepoRoot(__dirname)
 
-export const REPO_ROOT = process.env.CATALYST_REPO_ROOT
-  ? path.resolve(process.env.CATALYST_REPO_ROOT)
-  : REPO_ROOT_DEFAULT
+// The remote server launches one backend process per Catalyst username. Each
+// process receives an instance directory before this module is loaded, so all
+// of the existing path constants naturally point at that user's private data.
+// This keeps DuckDB, raw sessions, tokens, settings, coaching, and Garage files
+// isolated without adding user predicates to every query in the application.
+export const INSTANCE_DIR = process.env.CATALYST_INSTANCE_DIR
+  ? path.resolve(process.env.CATALYST_INSTANCE_DIR)
+  : null
 
-export const GARMIN_DIR = isPackaged
+export const REPO_ROOT = INSTANCE_DIR ?? (process.env.CATALYST_REPO_ROOT
+  ? path.resolve(process.env.CATALYST_REPO_ROOT)
+  : REPO_ROOT_DEFAULT)
+
+export const GARMIN_DIR = INSTANCE_DIR
+  ? path.join(INSTANCE_DIR, 'garmin')
+  : isPackaged
   ? path.join(getUserDataDir(), 'garmin')
   : path.join(REPO_ROOT, 'garmin')
 
@@ -82,16 +93,22 @@ export const DB_PATH = process.env.CATALYST_DB_PATH
   ? path.resolve(process.env.CATALYST_DB_PATH)
   : path.join(DATA_DIR, 'catalyst-app.duckdb')
 
-export const TRACKS_DIR = isPackaged
+export const TRACKS_DIR = INSTANCE_DIR
+  ? path.join(INSTANCE_DIR, 'tracks')
+  : isPackaged
   ? path.join(getUserDataDir(), 'tracks')
   : path.join(REPO_ROOT, 'tracks')
 
-export const COACHING_DIR = isPackaged
+export const COACHING_DIR = INSTANCE_DIR
+  ? path.join(INSTANCE_DIR, 'coaching')
+  : isPackaged
   ? path.join(getUserDataDir(), 'coaching')
   : path.join(REPO_ROOT, 'coaching')
 
 // App-data settings (active profile, etc.).
-export const SETTINGS_PATH = path.join(defaultUserDataDir(), 'settings.json')
+export const SETTINGS_PATH = INSTANCE_DIR
+  ? path.join(INSTANCE_DIR, 'settings.json')
+  : path.join(defaultUserDataDir(), 'settings.json')
 
 export function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true })
@@ -109,6 +126,66 @@ function copyWritable(src: string, dest: string): void {
 // Called once at startup in the packaged app. Safe to call repeatedly — only
 // copies files that don't already exist in userData (preserving user edits).
 export function seedUserData(): void {
+  if (INSTANCE_DIR) {
+    ensureDir(INSTANCE_DIR)
+    ensureDir(GARMIN_DIR)
+    ensureDir(DATA_DIR)
+    ensureDir(SESSIONS_DIR)
+    ensureDir(MEAN_LINES_DIR)
+    ensureDir(TRACKS_DIR)
+    ensureDir(COACHING_DIR)
+
+    // Development/headless installs can seed Garage profiles and track YAMLs
+    // from the repository. Packaged Electron supplies the resources directory.
+    const templateRoot = process.env.CATALYST_TEMPLATE_ROOT
+      ? path.resolve(process.env.CATALYST_TEMPLATE_ROOT)
+      : null
+    const resourcesRoot = process.env.CATALYST_BUNDLED_RESOURCES
+      ? path.resolve(process.env.CATALYST_BUNDLED_RESOURCES)
+      : null
+
+    const tracksSource = resourcesRoot
+      ? path.join(resourcesRoot, 'bundled-tracks')
+      : templateRoot ? path.join(templateRoot, 'tracks') : null
+    if (tracksSource && fs.existsSync(tracksSource)) {
+      for (const fn of fs.readdirSync(tracksSource)) {
+        if (!fn.toLowerCase().endsWith('.yaml')) continue
+        const dest = path.join(TRACKS_DIR, fn)
+        if (!fs.existsSync(dest)) copyWritable(path.join(tracksSource, fn), dest)
+      }
+    }
+
+    const copyProfile = (name: string, srcDir: string) => {
+      if (!fs.existsSync(path.join(srcDir, 'Car.md'))) return
+      const destDir = path.join(INSTANCE_DIR, name)
+      ensureDir(destDir)
+      for (const fn of fs.readdirSync(srcDir)) {
+        if (fn.startsWith('.')) continue
+        const src = path.join(srcDir, fn)
+        if (!fs.statSync(src).isFile()) continue
+        const dest = path.join(destDir, fn)
+        if (!fs.existsSync(dest)) copyWritable(src, dest)
+      }
+    }
+
+    if (resourcesRoot) {
+      const profilesRoot = path.join(resourcesRoot, 'bundled-profiles')
+      if (fs.existsSync(profilesRoot)) {
+        for (const name of fs.readdirSync(profilesRoot)) {
+          copyProfile(name, path.join(profilesRoot, name))
+        }
+      }
+    } else if (templateRoot && fs.existsSync(templateRoot)) {
+      for (const name of fs.readdirSync(templateRoot)) {
+        const srcDir = path.join(templateRoot, name)
+        try {
+          if (fs.statSync(srcDir).isDirectory()) copyProfile(name, srcDir)
+        } catch { /* ignore unreadable template entries */ }
+      }
+    }
+    return
+  }
+
   if (!isPackaged) return
 
   const resourcesPath = (process as any).resourcesPath as string | undefined

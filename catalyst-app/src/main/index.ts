@@ -8,6 +8,8 @@ import { seedUserData } from '../garmin/paths.js'
 import { openDb, initSchema } from '../garmin/loadToDb.js'
 import { DB_PATH } from '../garmin/paths.js'
 import fs from 'node:fs'
+import { startCatalystServer, type RunningCatalystServer } from './server.js'
+import { REPO_ROOT } from '../garmin/paths.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -17,6 +19,7 @@ const iconPath = app.isPackaged
   : path.join(__dirname, '..', '..', 'build', iconFile)
 
 let mainWindow: BrowserWindow | null = null
+let webServer: RunningCatalystServer | null = null
 
 function installAppMenu(getWin: () => BrowserWindow | null): void {
   const isMac = process.platform === 'darwin'
@@ -87,6 +90,10 @@ function createWindow(): void {
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173/')
     if (process.env.CATALYST_DEVTOOLS) mainWindow.webContents.openDevTools({ mode: 'detach' })
+  } else if (webServer) {
+    // The packaged desktop window is a client of the same server as phones and
+    // laptops, so choosing the same username exposes the same exact database.
+    mainWindow.loadURL(`${webServer.url}/?remote=1`)
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', '..', 'dist-renderer', 'index.html'))
   }
@@ -151,6 +158,18 @@ function hookConsoleToRenderer(getWin: () => BrowserWindow | null) {
 app.whenReady().then(async () => {
   seedUserData()
 
+  try {
+    webServer = await startCatalystServer({
+      staticDir: isDev ? undefined : path.join(__dirname, '..', '..', 'dist-renderer'),
+      devRendererUrl: isDev ? 'http://localhost:5173/' : undefined,
+      templateRoot: isDev ? REPO_ROOT : undefined,
+      resourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+    })
+    console.log(`[server] Catalyst Coach available at ${webServer.url} (port ${webServer.port})`)
+  } catch (error) {
+    console.error('[server] failed to start; desktop IPC remains available:', error)
+  }
+
   // Migrate the existing database schema on every startup.
   // All statements use IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so this is
   // safe to run repeatedly — it's a no-op when the schema is current.
@@ -180,3 +199,4 @@ app.whenReady().then(async () => {
 // process alive in the Dock for re-open-on-click; we override that — closing
 // the X is the way you quit this app.
 app.on('window-all-closed', () => app.quit())
+app.on('will-quit', () => { void webServer?.close() })

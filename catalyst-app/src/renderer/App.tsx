@@ -13,7 +13,7 @@ import { Modal } from './components/Modal'
 import { LoginModal } from './components/LoginModal'
 import { SignedOutGate } from './components/SignedOutGate'
 import { SignedOutBanner } from './components/SignedOutBanner'
-import { api } from './api'
+import { api, isRemote } from './api'
 import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid, upsertAccount } from './accounts'
 import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession } from '../shared/types'
 
@@ -45,7 +45,9 @@ export function App() {
   const [progress, setProgress] = useState<WorkerProgress | null>(null)
   const [busy, setBusy] = useState<'sync' | 'load' | 'coach' | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
-  const [accounts, setAccounts] = useState<AccountState>(() => loadAccounts())
+  const [accounts, setAccounts] = useState<AccountState>(() => isRemote
+    ? { accounts: [], activeLabel: null }
+    : loadAccounts())
   const [activeCoachSession, setActiveCoachSession] = useState<CoachingSession | null>(null)
   const [logLines, setLogLines] = useState<string[]>([])
   const [logsExpanded, setLogsExpanded] = useState(false)
@@ -64,9 +66,20 @@ export function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
   const refresh = useCallback(async () => {
-    const [a, s] = await Promise.all([api.getAuthState(), api.getSyncStats()])
+    const [a, s, email] = await Promise.all([
+      api.getAuthState(),
+      api.getSyncStats(),
+      isRemote ? api.getAccountEmail() : Promise.resolve(null),
+    ])
     setAuth(a)
     setStats(s)
+    if (isRemote) {
+      const label = email ?? null
+      setAccounts(label && a.tokenExpiresAt ? {
+        accounts: [{ label, token: '', expiresAt: a.tokenExpiresAt, addedAt: Date.now() }],
+        activeLabel: label,
+      } : { accounts: [], activeLabel: null })
+    }
   }, [])
 
   // Intercept renderer console → log entries
@@ -147,9 +160,9 @@ export function App() {
     setProgress({ current: 0, total: 0, label: 'Fetching session list…' })
     // Read fresh from storage so an auto-sync right after sign-in picks up the
     // token that was just persisted (React state may not have flushed yet).
-    const active = getActiveAccount()
+    const active = isRemote ? getActiveAccount(accounts) : getActiveAccount()
     try {
-      await api.startSync({
+      await api.startSync(isRemote ? undefined : {
         token: tokenValid(active) ? active!.token : undefined,
         accountLabel: active?.label,
       })
@@ -164,7 +177,9 @@ export function App() {
   }, [])
 
   // ── Auth / sign-in modal ────────────────────────────────────────────────
-  const signedIn = tokenValid(getActiveAccount(accounts))
+  const signedIn = isRemote
+    ? (!!auth?.tokenValid || tokenValid(getActiveAccount(accounts)))
+    : tokenValid(getActiveAccount(accounts))
   const activeLabel = getActiveAccount(accounts)?.label ?? null
   // Cached telemetry already in the DB. When present, feature pages stay usable
   // read-only even while signed out (a banner notes sync is unavailable); only a
@@ -176,14 +191,18 @@ export function App() {
   const openLogin = useCallback(() => setLoginOpen(true), [])
 
   const handleSignedIn = (label: string, token: string, expiresAt: number) => {
-    onAccountsChange(upsertAccount(label, token, expiresAt))
+    onAccountsChange(isRemote
+      ? { accounts: [{ label, token: '', expiresAt, addedAt: Date.now() }], activeLabel: label }
+      : upsertAccount(label, token, expiresAt))
     setLoginOpen(false)
     // Automatically pull sessions/tracks/metadata for the freshly linked account.
     void startSync()
   }
 
   const confirmSignOut = () => {
-    if (activeLabel) onAccountsChange(removeAccount(activeLabel))
+    if (activeLabel) onAccountsChange(isRemote
+      ? { accounts: [], activeLabel: null }
+      : removeAccount(activeLabel))
     setSignOutOpen(false)
     // Leave the Account page once signed out (it requires a session).
     if (page === 'account') setPage('home')

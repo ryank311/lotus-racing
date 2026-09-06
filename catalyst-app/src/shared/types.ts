@@ -292,7 +292,12 @@ export interface CatalystBridge {
     vehicleGuid: string | null,
     make: string | null,
   ): Promise<{ profile: string | null; explicit: boolean }>
-  importContextFile(profileName: string, sourcePath: string, destName: string): Promise<void>
+  importContextFile(
+    profileName: string,
+    sourcePath: string,
+    destName: string,
+    contentBase64?: string,
+  ): Promise<void>
   deleteContextFile(profileName: string, fileName: string): Promise<void>
   ensureProfile(name: string, vehicleGuid?: string): Promise<CarProfile>
 

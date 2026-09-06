@@ -52,3 +52,12 @@ export function setCredentials(email: string, password: string): void {
   cfg.auth = { ...(cfg.auth || {}), email, password }
   saveConfig(cfg)
 }
+
+export function setAccountEmail(email: string): void {
+  const cfg = loadConfig()
+  cfg.auth = { ...(cfg.auth || {}), email }
+  // Garmin credentials are submitted directly to SSO and are never retained
+  // by the remote server. Remove a legacy blank/password field if present.
+  delete cfg.auth.password
+  saveConfig(cfg)
+}

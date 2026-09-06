@@ -124,6 +124,32 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
       raw_response TEXT NOT NULL,
       parsed_result JSON
     );
+
+    CREATE TABLE IF NOT EXISTS garage_profiles (
+      name VARCHAR PRIMARY KEY,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS garage_files (
+      profile_name VARCHAR NOT NULL,
+      file_name VARCHAR NOT NULL,
+      content TEXT NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (profile_name, file_name)
+    );
+
+    CREATE TABLE IF NOT EXISTS garage_vehicle_profiles (
+      vehicle_guid VARCHAR PRIMARY KEY,
+      profile_name VARCHAR NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS garage_settings (
+      key VARCHAR PRIMARY KEY,
+      value VARCHAR NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `)
 }
 

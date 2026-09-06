@@ -64,6 +64,138 @@ body {
     repeating-linear-gradient(90deg, transparent 0px, transparent 31px, rgba(255,255,255,0.012) 32px);
 }
 
+/* Remote server account gate. This account chooses a fully isolated backend
+ * workspace; Garmin credentials remain a separate sign-in inside the app. */
+.server-login-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 50% 20%, rgba(255,94,58,0.09), transparent 35%),
+    linear-gradient(135deg, rgba(125,211,252,0.025), transparent 45%);
+}
+.server-login-card {
+  width: min(440px, 100%);
+  padding: 38px 40px 34px;
+  background: rgba(19,19,22,0.96);
+  border: 1px solid var(--border-strong);
+  border-top: 2px solid var(--signal);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.45);
+}
+.server-login-mark { margin-bottom: 26px; }
+.server-login-card h1 {
+  margin: 5px 0 12px;
+  font: 800 38px/1 var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.server-login-card h1 span { color: var(--signal); }
+.server-login-card p { color: var(--text-dim); margin: 0 0 28px; line-height: 1.65; }
+.server-login-card form { display: grid; gap: 11px; }
+.server-login-card label {
+  color: var(--text-mute);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.server-login-card input {
+  width: 100%;
+  padding: 12px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  outline: none;
+  font: 14px var(--font-mono);
+}
+.server-login-card input:focus { border-color: var(--signal); box-shadow: 0 0 0 2px var(--signal-soft); }
+.server-login-card .btn { justify-content: center; margin-top: 5px; min-height: 42px; }
+.server-login-error { color: var(--red); font-size: 12px; }
+.server-login-note {
+  margin-top: 24px;
+  padding-top: 17px;
+  border-top: 1px solid var(--border);
+  color: var(--text-mute);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.server-login-loading { height: 100%; display: grid; place-items: center; color: var(--text-mute); font-family: var(--font-mono); }
+.server-user-chip {
+  position: fixed;
+  z-index: 100;
+  top: 9px;
+  right: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(10,10,11,0.9);
+  color: var(--text-mute);
+  padding: 5px 9px;
+  font: 9px var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.server-user-chip:hover { color: var(--cyan); border-color: var(--border-strong); }
+
+@media (max-width: 720px) {
+  html, body, #root { overflow: hidden; }
+  .app-shell { display: block; height: 100dvh; padding-bottom: 65px; }
+  .main-pane { height: calc(100dvh - 65px); }
+  .sidebar {
+    position: fixed;
+    z-index: 90;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 65px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-app-region: no-drag;
+  }
+  .sidebar::before, .brand, .nav-section-label, .nav-key, .sidebar-footer { display: none; }
+  .nav {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: stretch;
+    padding: 5px 3px;
+    gap: 0;
+  }
+  .nav-item {
+    width: 61px;
+    padding: 6px 2px;
+    gap: 3px;
+    justify-content: center;
+    flex-direction: column;
+    font-size: 9px;
+  }
+  .nav-item.active::before { left: 8px; right: 8px; top: -5px; bottom: auto; width: auto; height: 2px; }
+  .nav-icon { width: 17px; height: 17px; }
+  .sidebar-account {
+    flex: 0 0 61px;
+    width: 61px;
+    margin: 5px 3px 5px 0;
+    padding: 6px 2px;
+    gap: 3px;
+    justify-content: center;
+    flex-direction: column;
+    font-size: 9px;
+  }
+  .sidebar-account-label { width: 55px; font-size: 9px; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+  .sidebar-account-sub { display: none; }
+  .page-header { padding: 18px 16px 12px; gap: 10px; }
+  .page-title { font-size: 30px; }
+  .page-eyebrow { font-size: 8px; }
+  .page-meta { display: none; }
+  .page-body { padding: 18px 14px 28px; }
+  .banner { align-items: flex-start; flex-direction: column; }
+  .stat-grid, .stat-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .server-user-chip { top: 7px; right: 8px; max-width: 48vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .server-login-card { padding: 30px 24px 26px; }
+  .server-login-card h1 { font-size: 32px; }
+  .status-bar { bottom: 0; }
+}
+
 button { font-family: inherit; cursor: pointer; }
 input, textarea, select { font-family: inherit; color: inherit; }
 

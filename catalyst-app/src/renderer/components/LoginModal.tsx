@@ -2,7 +2,7 @@
 // go straight to Garmin's SSO via the main process and are never stored.
 
 import { useState } from 'react'
-import { api } from '../api'
+import { api, isRemote } from '../api'
 import { Modal } from './Modal'
 
 interface Props {
@@ -104,7 +104,7 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
     >
       <div style={{ marginBottom: 12, color: 'var(--text-mute)', fontSize: 12 }}>
         Sign in with your Garmin Connect credentials to sync Catalyst sessions. Your
-        password is sent only to Garmin's SSO and is never stored.
+        password is {isRemote ? 'relayed by this Catalyst server to' : 'sent only to'} Garmin's SSO and is never stored.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <input

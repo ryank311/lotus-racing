@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api } from '../api'
+import { api, isRemote } from '../api'
 import type { CarProfile, VehicleSummary } from '../../shared/types'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -129,8 +129,16 @@ export function Garage() {
     const dropped = Array.from(e.dataTransfer.files)
     for (const file of dropped) {
       const src = (file as any).path as string
-      if (!src) continue
-      await api.importContextFile(profileName, src, file.name)
+      if (src && !isRemote) {
+        await api.importContextFile(profileName, src, file.name)
+      } else {
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        let binary = ''
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+        }
+        await api.importContextFile(profileName, '', file.name, btoa(binary))
+      }
     }
     await refreshFiles(profileName)
   }

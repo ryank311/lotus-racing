@@ -1,6 +1,7 @@
 // IPC handlers — bridge between renderer and the Garmin/DuckDB code.
 
-import { ipcMain, BrowserWindow, shell } from 'electron'
+import { ipcMain, shell } from 'electron'
+import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -10,9 +11,9 @@ import {
   DB_PATH,
   COACHING_DIR,
   DATA_DIR,
-  REPO_ROOT,
+  INSTANCE_DIR,
 } from '../garmin/paths.js'
-import { loadConfig, saveConfig, setCredentials } from '../garmin/config.js'
+import { loadConfig, saveConfig, setAccountEmail, setCredentials } from '../garmin/config.js'
 import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
 import { replaceSessionIds } from '../shared/sessionIdentity.js'
 import {
@@ -44,13 +45,17 @@ import { runAgent } from '../garmin/agentHarness.js'
 import { COACHING_TOOL } from '../garmin/coachingTool.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import {
-  discoverProfiles,
-  getActiveProfileName,
-  resolveVehicleProfile,
-  setActiveProfileName,
-  setVehicleProfile,
-  writeProfileMarkdown,
-} from '../garmin/profiles.js'
+  deleteGarageFile,
+  ensureGarageProfile,
+  getGarageActiveProfile,
+  listGarageFiles,
+  listGarageProfiles,
+  readGarageFile,
+  resolveGarageVehicleProfile,
+  setGarageActiveProfile,
+  setGarageVehicleProfile,
+  writeGarageFile,
+} from '../garmin/garageStore.js'
 import { randomUUID } from 'node:crypto'
 import type {
   AuthState,
@@ -137,81 +142,106 @@ function readAuthState(): AuthState {
 
 // ---- worker event broadcast --------------------------------------------
 
-function broadcast(window: BrowserWindow | null, evt: WorkerEvent): void {
+export interface BackendEventTarget {
+  isDestroyed(): boolean
+  webContents: { send(channel: string, payload: unknown): void }
+}
+
+export type ApiHandler = (event: unknown, ...args: any[]) => unknown | Promise<unknown>
+export type ApiRegistrar = (channel: string, handler: ApiHandler) => void
+
+function broadcast(window: BackendEventTarget | BrowserWindow | null, evt: WorkerEvent): void {
   if (!window || window.isDestroyed()) return
   window.webContents.send('worker:event', evt)
 }
 
+function electronWindow(target: BackendEventTarget | BrowserWindow | null): BrowserWindow | undefined {
+  return target && 'loadURL' in target ? target as BrowserWindow : undefined
+}
+
 let activeWorker: { kind: WorkerEvent['kind'] } | null = null
+
+function assertPathInside(baseDir: string, candidate: string): string {
+  const base = path.resolve(baseDir)
+  const resolved = path.resolve(candidate)
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) {
+    throw new Error('Path is outside this Catalyst workspace')
+  }
+  return resolved
+}
 
 // ---- handlers ----------------------------------------------------------
 
-export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
-  ipcMain.handle('auth:state', () => readAuthState())
-  ipcMain.handle('auth:syncStats', () => readSyncStats())
-  ipcMain.handle('auth:email', () => loadConfig().auth?.email ?? null)
-  ipcMain.handle('auth:saveCredentials', (_e, email: string, password: string) => {
-    setCredentials(email, password)
+/** Register the transport-neutral Catalyst backend API.
+ *
+ * Electron supplies ipcMain.handle; the remote server supplies an RPC map.
+ * Keeping one handler table prevents the browser version from drifting into a
+ * reduced, view-only copy of the desktop application.
+ */
+export function registerApiHandlers(
+  register: ApiRegistrar,
+  getMainWindow: () => BackendEventTarget | BrowserWindow | null,
+  revealPath: (filePath: string) => void = () => {},
+): void {
+  register('auth:state', () => readAuthState())
+  register('auth:syncStats', () => readSyncStats())
+  register('auth:email', () => loadConfig().auth?.email ?? null)
+  register('auth:saveCredentials', (_e, email: string, password: string) => {
+    if (INSTANCE_DIR) setAccountEmail(email)
+    else setCredentials(email, password)
   })
-  ipcMain.handle('auth:clearTokens', () => {
+  register('auth:clearTokens', () => {
     if (fs.existsSync(GARTH_TOKEN_DIR)) fs.rmSync(GARTH_TOKEN_DIR, { recursive: true, force: true })
     if (fs.existsSync(CATALYST_TOKEN_CACHE)) fs.rmSync(CATALYST_TOKEN_CACHE, { force: true })
   })
   // Browser-based sign-in (last-resort fallback). The default path is the
   // credentials flow below — it's the Python `garth` library's exact sequence.
-  ipcMain.handle('auth:signIn', async () => {
+  register('auth:signIn', async () => {
+    if (INSTANCE_DIR) throw new Error('Use email/password sign-in when connected to a remote server')
     const win = getMainWindow()
-    const { accessToken, expiresIn } = await loginViaBrowser(win ?? undefined)
+    const { accessToken, expiresIn } = await loginViaBrowser(electronWindow(win))
     return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
   })
 
   // Headless credentials sign-in — same wire format as garth's login().
   // Returns either a final token or `{ needsMfa: true, sessionId }` so the
   // renderer can prompt for a code and follow up with auth:signInMfa.
-  ipcMain.handle('auth:signInWithCreds', async (_e, email: string, password: string) => {
+  register('auth:signInWithCreds', async (_e, email: string, password: string) => {
     const result = await signInWithCredentials(email, password)
+    setAccountEmail(email)
     if (result.kind === 'mfa') return { needsMfa: true, sessionId: result.sessionId }
     return {
       needsMfa: false,
-      token: result.accessToken,
+      token: INSTANCE_DIR ? '' : result.accessToken,
       expiresAt: Math.floor(Date.now() / 1000) + result.expiresIn,
     }
   })
 
-  ipcMain.handle('auth:signInMfa', async (_e, sessionId: string, code: string) => {
+  register('auth:signInMfa', async (_e, sessionId: string, code: string) => {
     const { accessToken, expiresIn } = await submitMfaCode(sessionId, code)
-    return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
+    return { token: INSTANCE_DIR ? '' : accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
   })
 
-  ipcMain.handle('auth:cancelMfa', (_e, sessionId: string) => cancelMfa(sessionId))
+  register('auth:cancelMfa', (_e, sessionId: string) => cancelMfa(sessionId))
 
-  ipcMain.handle('profiles:list', (): CarProfile[] => discoverProfiles())
-  ipcMain.handle('profiles:active', () => getActiveProfileName())
-  ipcMain.handle('profiles:setActive', (_e, name: string) => setActiveProfileName(name))
-  ipcMain.handle('profiles:files', (_e, name: string) => {
-    const profile = discoverProfiles().find(p => p.name === name)
-    if (!profile) return []
-    return fs.readdirSync(profile.dir)
-      .filter(n => n.toLowerCase().endsWith('.md'))
-      .sort((a, b) => (a.toLowerCase() === 'car.md' ? -1 : b.toLowerCase() === 'car.md' ? 1 : a.localeCompare(b)))
-      .map(n => ({ name: n, path: path.join(profile.dir, n) }))
-  })
-  ipcMain.handle('profiles:readFile', (_e, filePath: string) => {
-    return fs.readFileSync(filePath, 'utf-8')
-  })
-  ipcMain.handle('profiles:writeCarMd', (_e, profileName: string, fileName: string, content: string) => {
-    const dest = writeProfileMarkdown(profileName, fileName, content)
+  register('profiles:list', (): Promise<CarProfile[]> => listGarageProfiles())
+  register('profiles:active', () => getGarageActiveProfile())
+  register('profiles:setActive', (_e, name: string) => setGarageActiveProfile(name))
+  register('profiles:files', (_e, name: string) => listGarageFiles(name))
+  register('profiles:readFile', (_e, filePath: string) => readGarageFile(filePath))
+  register('profiles:writeCarMd', async (_e, profileName: string, fileName: string, content: string) => {
+    const dest = await writeGarageFile(profileName, fileName, content)
     console.log(`[profiles] wrote ${dest} (${content.length} chars)`)
     return dest
   })
-  ipcMain.handle('profiles:readCarMd', (_e, name: string) => {
-    const profile = discoverProfiles().find(p => p.name === name)
-    if (!profile) return ''
-    return fs.readFileSync(profile.carMdPath, 'utf-8')
+  register('profiles:readCarMd', async (_e, name: string) => {
+    const files = await listGarageFiles(name)
+    const carMd = files.find(file => file.name.toLowerCase() === 'car.md')
+    return carMd ? readGarageFile(carMd.path) : ''
   })
 
-  ipcMain.handle('db:hasDb', () => fs.existsSync(DB_PATH))
-  ipcMain.handle('db:listSessions', async (_e, accountLabel?: string | null): Promise<DbSessionRow[]> => {
+  register('db:hasDb', () => fs.existsSync(DB_PATH))
+  register('db:listSessions', async (_e, accountLabel?: string | null): Promise<DbSessionRow[]> => {
     const matchesAccount = (a: string | null): boolean =>
       !accountLabel || a == null || a === accountLabel
     if (!fs.existsSync(DB_PATH)) {
@@ -278,7 +308,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     }
   })
 
-  ipcMain.handle('db:listVehicles', async (): Promise<import('../shared/types.js').VehicleSummary[]> => {
+  register('db:listVehicles', async (): Promise<import('../shared/types.js').VehicleSummary[]> => {
     if (!fs.existsSync(DB_PATH)) return []
     let rows: any[] = []
     try {
@@ -297,8 +327,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     } catch {
       return []
     }
-    return rows.map(r => {
-      const resolved = resolveVehicleProfile(r.vehicle_guid, r.make)
+    return Promise.all(rows.map(async r => {
+      const resolved = await resolveGarageVehicleProfile(r.vehicle_guid, r.make)
       return {
         vehicleGuid: r.vehicle_guid,
         make: r.make ?? null,
@@ -308,44 +338,43 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         profile: resolved.profile,
         explicit: resolved.explicit,
       }
-    })
+    }))
   })
 
-  ipcMain.handle('profiles:setVehicleProfile', (_e, vehicleGuid: string, profileName: string | null) => {
-    setVehicleProfile(vehicleGuid, profileName)
+  register('profiles:setVehicleProfile', (_e, vehicleGuid: string, profileName: string | null) => {
+    return setGarageVehicleProfile(vehicleGuid, profileName)
   })
-  ipcMain.handle('profiles:resolveForVehicle', (_e, vehicleGuid: string | null, make: string | null) => {
-    return resolveVehicleProfile(vehicleGuid, make)
+  register('profiles:resolveForVehicle', (_e, vehicleGuid: string | null, make: string | null) => {
+    return resolveGarageVehicleProfile(vehicleGuid, make)
   })
 
   // Import an external file into a profile's context directory.
   // sourcePath is the dropped file's path on disk (provided by Electron's File API).
-  ipcMain.handle('profiles:importContextFile', (_e, profileName: string, sourcePath: string, destName: string) => {
-    const profile = discoverProfiles().find(p => p.name === profileName)
-    if (!profile) throw new Error(`unknown profile '${profileName}'`)
-    const dest = path.join(profile.dir, destName)
-    fs.copyFileSync(sourcePath, dest)
+  register('profiles:importContextFile', async (
+    _e,
+    profileName: string,
+    sourcePath: string,
+    destName: string,
+    contentBase64?: string,
+  ) => {
+    const safeName = path.basename(destName)
+    if (!safeName || safeName === '.' || safeName === '..') throw new Error('invalid file name')
+    let content: string
+    if (contentBase64 != null) content = Buffer.from(contentBase64, 'base64').toString('utf8')
+    else {
+      if (INSTANCE_DIR) throw new Error('Remote imports must upload file content')
+      content = fs.readFileSync(sourcePath, 'utf8')
+    }
+    await writeGarageFile(profileName, safeName, content)
   })
 
   // Delete a context file from a profile directory. Car.md is protected.
-  ipcMain.handle('profiles:deleteContextFile', (_e, profileName: string, fileName: string) => {
-    if (fileName.toLowerCase() === 'car.md') throw new Error('Car.md cannot be deleted')
-    const profile = discoverProfiles().find(p => p.name === profileName)
-    if (!profile) throw new Error(`unknown profile '${profileName}'`)
-    fs.rmSync(path.join(profile.dir, fileName))
-  })
+  register('profiles:deleteContextFile', (_e, profileName: string, fileName: string) =>
+    deleteGarageFile(profileName, fileName))
 
   // Create a new profile directory with a blank Car.md and optionally link it to a vehicle.
-  ipcMain.handle('profiles:ensureProfile', (_e, name: string, vehicleGuid?: string) => {
-    const dir = path.join(REPO_ROOT, name)
-    fs.mkdirSync(dir, { recursive: true })
-    const carMd = path.join(dir, 'Car.md')
-    if (!fs.existsSync(carMd)) {
-      fs.writeFileSync(carMd, `# ${name}\n\n<!-- Add car specs, setup notes, and driver feedback here. -->\n`)
-    }
-    if (vehicleGuid) setVehicleProfile(vehicleGuid, name)
-    return { name, dir, carMdPath: carMd } as import('../shared/types.js').CarProfile
-  })
+  register('profiles:ensureProfile', (_e, name: string, vehicleGuid?: string) =>
+    ensureGarageProfile(name, vehicleGuid))
 
   // ── AI Settings ────────────────────────────────────────────────────────────
 
@@ -362,7 +391,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return compatible ? model : defaultModelFor(provider)
   }
 
-  ipcMain.handle('ai:getSettings', (): AiSettings => {
+  register('ai:getSettings', (): AiSettings => {
     const cfg = loadConfig()
     const provider = providerFor(cfg.ai)
     return {
@@ -373,7 +402,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     }
   })
 
-  ipcMain.handle('ai:saveSettings', (_e, s: AiSettings) => {
+  register('ai:saveSettings', (_e, s: AiSettings) => {
     const cfg = loadConfig()
     const provider = s.provider ?? 'anthropic'
     cfg.ai = {
@@ -386,7 +415,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   // ── Account / driver totals ──────────────────────────────────────────────────
-  ipcMain.handle('account:stats', async (): Promise<AccountStats> => {
+  register('account:stats', async (): Promise<AccountStats> => {
     const year = new Date().getFullYear()
     const empty: AccountStats = {
       allTime: { laps: 0, tracks: 0, sessions: 0, hours: 0 },
@@ -428,8 +457,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   })
 
   // ── Units (Metric vs Imperial) ───────────────────────────────────────────────
-  ipcMain.handle('units:get', (): UnitSystem => loadConfig().units ?? DEFAULT_UNIT_SYSTEM)
-  ipcMain.handle('units:set', (_e, system: UnitSystem) => {
+  register('units:get', (): UnitSystem => loadConfig().units ?? DEFAULT_UNIT_SYSTEM)
+  register('units:set', (_e, system: UnitSystem) => {
     const cfg = loadConfig()
     cfg.units = system
     saveConfig(cfg)
@@ -437,24 +466,24 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
 
   // ── Coach sessions ──────────────────────────────────────────────────────────
 
-  ipcMain.handle('coach:list', async (): Promise<CoachingSession[]> => {
+  register('coach:list', async (): Promise<CoachingSession[]> => {
     if (!fs.existsSync(DB_PATH)) return []
     return withDb(con => listCoachingSessions(con), DB_PATH).catch(() => [])
   })
 
-  ipcMain.handle('coach:get', async (_e, id: string): Promise<CoachingSession | null> => {
+  register('coach:get', async (_e, id: string): Promise<CoachingSession | null> => {
     if (!fs.existsSync(DB_PATH)) return null
     return withDb(con => getCoachingSession(con, id), DB_PATH).catch(() => null)
   })
 
-  ipcMain.handle('coach:delete', async (_e, id: string) => {
+  register('coach:delete', async (_e, id: string) => {
     if (!fs.existsSync(DB_PATH)) return
     await withDb(con => deleteCoachingSession(con, id))
   })
 
   // ── Run coach (streaming worker) ────────────────────────────────────────────
 
-  ipcMain.handle('coach:run', async (_e, opts: CoachOptions): Promise<{ sessionId: null }> => {
+  register('coach:run', async (_e, opts: CoachOptions): Promise<{ sessionId: null }> => {
     if (activeWorker) throw new Error('Another worker is already running')
     activeWorker = { kind: 'coach' }
     const win = getMainWindow()
@@ -604,7 +633,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
   //                            lon are filled in from the mean_line's apex_idx
   //                            so the renderer doesn't have to ship them back.
 
-  ipcMain.handle('tracks:listAll', async () => {
+  register('tracks:listAll', async () => {
     if (!fs.existsSync(DB_PATH)) return []
     const rows = await withDb(async con => {
       const reader = await con.runAndReadAll(`
@@ -638,7 +667,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return out
   })
 
-  ipcMain.handle('tracks:get', (_e, meanLineGuid: string) => {
+  register('tracks:get', (_e, meanLineGuid: string) => {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(meanLineGuid)) throw new Error('invalid mean-line id')
     const geom = buildTrackGeometry(meanLineGuid)
     if (!geom) return null
     const resolved = resolveTrackYamlPath(geom.trackName, geom.configName, meanLineGuid)
@@ -687,11 +717,13 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return Math.hypot(ux - bx, uy - by)
   }
 
-  ipcMain.handle('tracks:saveCorners', (_e, opts: {
+  register('tracks:saveCorners', (_e, opts: {
     yamlPath: string
     meanLineGuid: string
     corners: TrackCorner[]
   }) => {
+    assertPathInside(TRACKS_DIR, opts.yamlPath)
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(opts.meanLineGuid)) throw new Error('invalid mean-line id')
     const geom = buildTrackGeometry(opts.meanLineGuid)
     const maxIdx = geom ? geom.centerline.length - 1 : 0
 
@@ -717,7 +749,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return { savedTo: opts.yamlPath, cornerCount: enriched.length }
   })
 
-  ipcMain.handle('briefs:list', (): BriefFile[] => {
+  register('briefs:list', (): BriefFile[] => {
     if (!fs.existsSync(COACHING_DIR)) return []
     const files = fs.readdirSync(COACHING_DIR)
       .filter(n => n.toLowerCase().endsWith('.md'))
@@ -734,11 +766,11 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     })
     return files
   })
-  ipcMain.handle('briefs:read', (_e, p: string) => fs.readFileSync(p, 'utf-8'))
+  register('briefs:read', (_e, p: string) => fs.readFileSync(assertPathInside(COACHING_DIR, p), 'utf-8'))
 
   // Results = LLM-generated markdown saved alongside the briefs in coaching/.
   // Convention: brief prompts end with `-brief.md`; everything else is a result.
-  ipcMain.handle('results:list', (): BriefFile[] => {
+  register('results:list', (): BriefFile[] => {
     if (!fs.existsSync(COACHING_DIR)) return []
     const files = fs.readdirSync(COACHING_DIR)
       .filter(n => {
@@ -756,8 +788,8 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     files.sort((a, b) => b.mtime - a.mtime)
     return files
   })
-  ipcMain.handle('results:read', (_e, p: string) => fs.readFileSync(p, 'utf-8'))
-  ipcMain.handle('briefs:generate', async (_e, opts: BriefOptions) => {
+  register('results:read', (_e, p: string) => fs.readFileSync(assertPathInside(COACHING_DIR, p), 'utf-8'))
+  register('briefs:generate', async (_e, opts: BriefOptions) => {
     const res = await runBrief({
       scope: opts.scope,
       profile: opts.profile,
@@ -771,17 +803,17 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     return { outPath: res.outPath }
   })
 
-  ipcMain.handle('shell:reveal', (_e, p: string) => {
-    shell.showItemInFolder(p)
+  register('shell:reveal', (_e, p: string) => {
+    revealPath(p)
   })
 
-  ipcMain.handle('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) => {
+  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) => {
     return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapLimit)
   })
 
   // ---- workers ---------------------------------------------------------
 
-  ipcMain.handle('worker:startSync', async (_e, opts?: { token?: string; accountLabel?: string }) => {
+  register('worker:startSync', async (_e, opts?: { token?: string; accountLabel?: string }) => {
     if (activeWorker) throw new Error('worker already running')
     activeWorker = { kind: 'sync' }
     const win = getMainWindow()
@@ -804,7 +836,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
         let token = opts?.token || loadCatalystToken()
         if (!token) {
           log('[auth] No valid token — opening Garmin sign-in window')
-          const { accessToken } = await loginViaBrowser(win ?? undefined)
+          const { accessToken } = await loginViaBrowser(electronWindow(win))
           token = accessToken
           log('[auth] Login successful')
         } else {
@@ -910,7 +942,7 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
     })()
   })
 
-  ipcMain.handle('worker:startLoad', async () => {
+  register('worker:startLoad', async () => {
     if (activeWorker) throw new Error('worker already running')
     activeWorker = { kind: 'load' }
     const win = getMainWindow()
@@ -936,4 +968,12 @@ export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
       }
     })()
   })
+}
+
+export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
+  registerApiHandlers(
+    (channel, handler) => ipcMain.handle(channel, handler),
+    getMainWindow,
+    filePath => shell.showItemInFolder(filePath),
+  )
 }

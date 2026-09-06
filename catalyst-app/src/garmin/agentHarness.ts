@@ -21,15 +21,72 @@ export async function runAgent(
 ): Promise<string> {
   const maxTokens = config.maxTokens ?? 32000
   if (config.provider === 'openai') {
+    // OpenAI reasoning runs use background mode and short polling requests, so
+    // a dropped connection never discards several minutes of model work.
     return runOpenAI(
       prompt, config.apiKey, config.model, onChunk, maxTokens,
       config.tools, config.toolChoice, config.reasoningEffort ?? 'xhigh',
     )
   }
-  return runAnthropic(
-    prompt, config.apiKey, config.model, onChunk, maxTokens,
-    config.stream ?? true, config.tools, config.toolChoice,
+
+  const maxAttempts = 3
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await runAnthropic(
+        prompt, config.apiKey, config.model, onChunk, maxTokens,
+        config.stream ?? true, config.tools, config.toolChoice,
+      )
+    } catch (error) {
+      if (!isTransientProviderError(error) || attempt === maxAttempts) {
+        if (isTransientProviderError(error)) {
+          throw providerConnectionError(config.provider, error, attempt)
+        }
+        throw error
+      }
+
+      const delayMs = attempt === 1 ? 1200 : 3000
+      onChunk(`[status] Anthropic connection interrupted · retrying ${attempt + 1}/${maxAttempts}…\n`)
+      onChunk(`[diag] transient provider error: ${errorMessage(error)}\n`)
+      await wait(delayMs)
+    }
+  }
+
+  throw new Error('Coaching request failed unexpectedly')
+}
+
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
+  'ENETDOWN', 'ENETRESET', 'ENETUNREACH', 'EHOSTDOWN', 'EHOSTUNREACH',
+])
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export function isTransientProviderError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : ''
+  if (TRANSIENT_NETWORK_CODES.has(code)) return true
+
+  const message = errorMessage(error)
+  return /socket hang up|network socket disconnected|connection (?:closed|reset)|timed? out|fetch failed/i.test(message)
+    || /(?:OpenAI|Anthropic) API (?:408|409|429|5\d\d)\b/i.test(message)
+}
+
+function providerConnectionError(provider: HarnessConfig['provider'], error: unknown, attempts: number): Error {
+  const label = provider === 'openai' ? 'OpenAI' : 'Anthropic'
+  const detail = errorMessage(error)
+  return new Error(
+    `${label} connection failed after ${attempts} attempts (${detail}). ` +
+    `Check the internet connection, VPN/firewall, and provider status, then try again. ` +
+    `If it continues, run coaching with the Top 3 lap filter to reduce the request size.`,
   )
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 // ─── Anthropic Messages API (SSE streaming) ──────────────────────────────────
@@ -209,7 +266,7 @@ function runAnthropic(
 
 // ─── OpenAI Responses API (structured function call) ────────────────────────
 
-function runOpenAI(
+async function runOpenAI(
   prompt: string,
   apiKey: string,
   model: string,
@@ -236,6 +293,9 @@ function runOpenAI(
     input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
     reasoning: { effort: reasoningEffort },
     max_output_tokens: maxTokens,
+    // Reasoning can take several minutes. Background mode lets the provider
+    // continue the job independently while we poll over short-lived requests.
+    background: true,
     store: false,
   }
   if (openAiTools.length) {
@@ -245,98 +305,160 @@ function runOpenAI(
       : 'required'
     reqObj.parallel_tool_calls = false
   }
-  const body = JSON.stringify(reqObj)
-
   onChunk(`[status] Connecting to ${model}…\n`)
-  onChunk(`[diag] provider=openai model=${model} reasoning=${reasoningEffort} max_output_tokens=${maxTokens} prompt=${(prompt.length / 1024).toFixed(1)}KB\n`)
+  onChunk(`[diag] provider=openai mode=background model=${model} reasoning=${reasoningEffort} max_output_tokens=${maxTokens} prompt=${(prompt.length / 1024).toFixed(1)}KB\n`)
 
-  return new Promise((resolve, reject) => {
-    const requestStart = Date.now()
-    let phraseIdx = 0
-    const statusTimer = setInterval(() => {
+  const requestStart = Date.now()
+  let response = await openAiJsonRequestWithRetry(
+    'POST', '/v1/responses', apiKey, reqObj, onChunk, 'starting background analysis',
+  )
+  const responseId = typeof response.id === 'string' ? response.id : null
+
+  if ((response.status === 'queued' || response.status === 'in_progress') && !responseId) {
+    throw new Error('OpenAI started the coaching analysis but did not return a response ID')
+  }
+
+  let phraseIdx = 0
+  let nextStatusAt = 0
+  const deadline = requestStart + 15 * 60_000
+  while (response.status === 'queued' || response.status === 'in_progress') {
+    if (Date.now() >= deadline) {
+      throw new Error('OpenAI background analysis did not finish within 15 minutes')
+    }
+
+    // Poll promptly at first, then ease off for longer x-high reasoning runs.
+    const elapsedMs = Date.now() - requestStart
+    await wait(elapsedMs < 60_000 ? 2000 : 5000)
+    response = await openAiJsonRequestWithRetry(
+      'GET', `/v1/responses/${encodeURIComponent(responseId!)}`, apiKey,
+      undefined, onChunk, 'checking analysis status',
+    )
+
+    if (Date.now() >= nextStatusAt && (response.status === 'queued' || response.status === 'in_progress')) {
       onChunk(`[status] ${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
-      onChunk(`[diag] waiting for response… ${((Date.now() - requestStart) / 1000).toFixed(0)}s elapsed\n`)
+      onChunk(`[diag] background status=${response.status} elapsed=${Math.round((Date.now() - requestStart) / 1000)}s\n`)
       phraseIdx++
-    }, 4000)
+      nextStatusAt = Date.now() + 4000
+    }
+  }
+
+  if (response.status === 'failed') {
+    throw new Error(`OpenAI background analysis failed: ${response.error?.message ?? 'unknown provider error'}`)
+  }
+  if (response.status === 'cancelled') {
+    throw new Error('OpenAI background analysis was cancelled')
+  }
+  if (response.status === 'incomplete') {
+    const reason = response.incomplete_details?.reason ?? 'unknown reason'
+    throw new Error(`OpenAI response was incomplete: ${reason}`)
+  }
+
+  const functionCall = response.output?.find(
+    (item: any) => item.type === 'function_call' && (!toolChoice || item.name === toolChoice.name),
+  )
+  let full = typeof functionCall?.arguments === 'string' ? functionCall.arguments : ''
+  if (!full) {
+    full = (response.output ?? [])
+      .filter((item: any) => item.type === 'message')
+      .flatMap((item: any) => item.content ?? [])
+      .filter((item: any) => item.type === 'output_text')
+      .map((item: any) => item.text ?? '')
+      .join('')
+  }
+
+  const usage = response.usage
+  if (usage) {
+    onChunk(`[diag] input_tokens=${usage.input_tokens ?? '?'} output_tokens=${usage.output_tokens ?? '?'} reasoning_tokens=${usage.output_tokens_details?.reasoning_tokens ?? '?'}\n`)
+  }
+  if (!full) throw new Error('OpenAI response ended without a coaching report')
+
+  onChunk(`[diag] response complete: ${(full.length / 1024).toFixed(1)}KB in ${((Date.now() - requestStart) / 1000).toFixed(1)}s\n`)
+  onChunk('[status] Parsing coaching report…\n')
+  return full
+}
+
+async function openAiJsonRequestWithRetry(
+  method: 'GET' | 'POST',
+  requestPath: string,
+  apiKey: string,
+  requestBody: Record<string, unknown> | undefined,
+  onChunk: (text: string) => void,
+  operation: string,
+): Promise<any> {
+  const maxAttempts = 3
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await openAiJsonRequest(method, requestPath, apiKey, requestBody)
+    } catch (error) {
+      if (!isTransientProviderError(error) || attempt === maxAttempts) {
+        if (isTransientProviderError(error)) throw providerConnectionError('openai', error, attempt)
+        throw error
+      }
+      const delayMs = attempt === 1 ? 1200 : 3000
+      onChunk(`[status] OpenAI connection interrupted while ${operation} · retrying ${attempt + 1}/${maxAttempts}…\n`)
+      onChunk(`[diag] transient provider error: ${errorMessage(error)}\n`)
+      await wait(delayMs)
+    }
+  }
+  throw new Error(`OpenAI failed while ${operation}`)
+}
+
+function openAiJsonRequest(
+  method: 'GET' | 'POST',
+  requestPath: string,
+  apiKey: string,
+  requestBody?: Record<string, unknown>,
+): Promise<any> {
+  const body = requestBody ? JSON.stringify(requestBody) : ''
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      fn()
+    }
+    const headers: Record<string, string | number> = {
+      authorization: `Bearer ${apiKey}`,
+      accept: 'application/json',
+    }
+    if (body) {
+      headers['content-type'] = 'application/json'
+      headers['content-length'] = Buffer.byteLength(body)
+    }
 
     const req = https.request({
       hostname: 'api.openai.com',
-      path: '/v1/responses',
-      method: 'POST',
-      // xhigh analysis can be substantially slower than ordinary generation.
-      timeout: 600_000,
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(body),
-      },
+      path: requestPath,
+      method,
+      timeout: 60_000,
+      headers,
     }, (res) => {
       let rawBody = ''
       res.on('data', (chunk: Buffer) => { rawBody += chunk.toString('utf-8') })
-      res.on('end', () => {
-        clearInterval(statusTimer)
-        let response: any
-        try {
-          response = JSON.parse(rawBody)
-        } catch {
-          reject(new Error(`OpenAI API returned an unreadable response (HTTP ${res.statusCode ?? 'unknown'})`))
-          return
-        }
+      res.on('error', error => finish(() => reject(error)))
+      res.on('end', () => finish(() => {
+        let parsed: any = null
+        try { parsed = rawBody ? JSON.parse(rawBody) : null } catch { /* handled below */ }
 
         if (res.statusCode && res.statusCode >= 400) {
-          const message = response?.error?.message ?? rawBody.slice(0, 500)
-          onChunk(`[error] OpenAI HTTP ${res.statusCode}: ${message}\n`)
+          const message = parsed?.error?.message ?? (rawBody.slice(0, 500) || 'request failed')
           reject(new Error(`OpenAI API ${res.statusCode}: ${message}`))
           return
         }
-
-        const functionCall = response.output?.find(
-          (item: any) => item.type === 'function_call' && (!toolChoice || item.name === toolChoice.name),
-        )
-        let full = typeof functionCall?.arguments === 'string' ? functionCall.arguments : ''
-        if (!full) {
-          full = (response.output ?? [])
-            .filter((item: any) => item.type === 'message')
-            .flatMap((item: any) => item.content ?? [])
-            .filter((item: any) => item.type === 'output_text')
-            .map((item: any) => item.text ?? '')
-            .join('')
-        }
-
-        const usage = response.usage
-        if (usage) {
-          onChunk(`[diag] input_tokens=${usage.input_tokens ?? '?'} output_tokens=${usage.output_tokens ?? '?'} reasoning_tokens=${usage.output_tokens_details?.reasoning_tokens ?? '?'}\n`)
-        }
-        if (response.status === 'incomplete') {
-          const reason = response.incomplete_details?.reason ?? 'unknown reason'
-          reject(new Error(`OpenAI response was incomplete: ${reason}`))
+        if (!parsed) {
+          reject(new Error(`OpenAI API returned an unreadable response (HTTP ${res.statusCode ?? 'unknown'})`))
           return
         }
-        if (!full) {
-          reject(new Error('OpenAI response ended without a coaching report'))
-          return
-        }
-
-        onChunk(`[diag] response complete: ${(full.length / 1024).toFixed(1)}KB in ${((Date.now() - requestStart) / 1000).toFixed(1)}s\n`)
-        onChunk('[status] Parsing coaching report…\n')
-        resolve(full)
-      })
-      res.on('error', (err) => {
-        clearInterval(statusTimer)
-        reject(err)
-      })
+        resolve(parsed)
+      }))
     })
 
     req.on('timeout', () => {
-      clearInterval(statusTimer)
       req.destroy()
-      reject(new Error('OpenAI request timed out after 10 minutes'))
+      finish(() => reject(Object.assign(new Error('OpenAI network request timed out after 60 seconds'), { code: 'ETIMEDOUT' })))
     })
-    req.on('error', (err) => {
-      clearInterval(statusTimer)
-      reject(err)
-    })
-    req.write(body)
+    req.on('error', error => finish(() => reject(error)))
+    if (body) req.write(body)
     req.end()
   })
 }
