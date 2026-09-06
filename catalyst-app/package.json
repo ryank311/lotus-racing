@@ -23,6 +23,7 @@
     "@duckdb/node-api": "^1.2.0-alpha.14",
     "@types/plotly.js": "^3.0.10",
     "open": "^10.1.0",
+    "openai": "^6.49.0",
     "plotly.js-dist-min": "^3.5.1"
   },
   "devDependencies": {

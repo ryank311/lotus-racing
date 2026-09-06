@@ -2,6 +2,13 @@
 // structured coaching response. Main-process only — never imported in renderer.
 
 import https from 'node:https'
+import OpenAI from 'openai'
+import type {
+  FunctionTool,
+  Response,
+  ResponseCreateParamsNonStreaming,
+  ResponseFunctionToolCall,
+} from 'openai/resources/responses/responses'
 
 export interface HarnessConfig {
   provider: 'anthropic' | 'openai'
@@ -61,17 +68,31 @@ const TRANSIENT_NETWORK_CODES = new Set([
 ])
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  const message = error instanceof Error ? error.message : String(error)
+  const cause = error instanceof Error && error.cause instanceof Error
+    ? error.cause.message
+    : ''
+  return cause && cause !== message ? `${message}: ${cause}` : message
 }
 
 export function isTransientProviderError(error: unknown): boolean {
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: unknown }).code ?? '')
-    : ''
+  const errorObj = typeof error === 'object' && error !== null
+    ? error as { code?: unknown; status?: unknown; name?: unknown; cause?: unknown }
+    : null
+  const causeObj = typeof errorObj?.cause === 'object' && errorObj.cause !== null
+    ? errorObj.cause as { code?: unknown }
+    : null
+  const code = String(errorObj?.code ?? causeObj?.code ?? '')
   if (TRANSIENT_NETWORK_CODES.has(code)) return true
 
+  const status = Number(errorObj?.status)
+  if (status === 408 || status === 409 || status === 429 || status >= 500) return true
+
+  const name = String(errorObj?.name ?? '')
+  if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError') return true
+
   const message = errorMessage(error)
-  return /socket hang up|network socket disconnected|connection (?:closed|reset)|timed? out|fetch failed/i.test(message)
+  return /socket hang up|network socket disconnected|connection (?:closed|reset|error)|timed? out|fetch failed/i.test(message)
     || /(?:OpenAI|Anthropic) API (?:408|409|429|5\d\d)\b/i.test(message)
 }
 
@@ -266,6 +287,10 @@ function runAnthropic(
 
 // ─── OpenAI Responses API (structured function call) ────────────────────────
 
+const OPENAI_REQUEST_TIMEOUT_MS = 60_000
+const OPENAI_MAX_RETRIES = 2
+const OPENAI_TOTAL_ATTEMPTS = OPENAI_MAX_RETRIES + 1
+
 async function runOpenAI(
   prompt: string,
   apiKey: string,
@@ -278,7 +303,7 @@ async function runOpenAI(
 ): Promise<string> {
   // The app's canonical schema uses Anthropic's input_schema spelling. Convert
   // it at the provider boundary so both providers are constrained identically.
-  const openAiTools = (tools ?? []).map((tool: any) => ({
+  const openAiTools: FunctionTool[] = (tools ?? []).map((tool: any) => ({
     type: 'function',
     name: tool.name,
     description: tool.description,
@@ -288,7 +313,7 @@ async function runOpenAI(
     // a machine-readable arguments object.
     strict: false,
   }))
-  const reqObj: Record<string, unknown> = {
+  const reqObj: ResponseCreateParamsNonStreaming = {
     model,
     input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
     reasoning: { effort: reasoningEffort },
@@ -308,9 +333,18 @@ async function runOpenAI(
   onChunk(`[status] Connecting to ${model}…\n`)
   onChunk(`[diag] provider=openai mode=background model=${model} reasoning=${reasoningEffort} max_output_tokens=${maxTokens} prompt=${(prompt.length / 1024).toFixed(1)}KB\n`)
 
+  // The SDK owns request timeouts, transient retries, response parsing, and API
+  // errors. Background mode keeps the model job independent from any one request.
+  const client = new OpenAI({
+    apiKey,
+    timeout: OPENAI_REQUEST_TIMEOUT_MS,
+    maxRetries: OPENAI_MAX_RETRIES,
+  })
   const requestStart = Date.now()
-  let response = await openAiJsonRequestWithRetry(
-    'POST', '/v1/responses', apiKey, reqObj, onChunk, 'starting background analysis',
+  let response = await openAiSdkRequest(
+    () => client.responses.create(reqObj),
+    onChunk,
+    'starting background analysis',
   )
   const responseId = typeof response.id === 'string' ? response.id : null
 
@@ -329,9 +363,10 @@ async function runOpenAI(
     // Poll promptly at first, then ease off for longer x-high reasoning runs.
     const elapsedMs = Date.now() - requestStart
     await wait(elapsedMs < 60_000 ? 2000 : 5000)
-    response = await openAiJsonRequestWithRetry(
-      'GET', `/v1/responses/${encodeURIComponent(responseId!)}`, apiKey,
-      undefined, onChunk, 'checking analysis status',
+    response = await openAiSdkRequest(
+      () => client.responses.retrieve(responseId!),
+      onChunk,
+      'checking analysis status',
     )
 
     if (Date.now() >= nextStatusAt && (response.status === 'queued' || response.status === 'in_progress')) {
@@ -354,7 +389,8 @@ async function runOpenAI(
   }
 
   const functionCall = response.output?.find(
-    (item: any) => item.type === 'function_call' && (!toolChoice || item.name === toolChoice.name),
+    (item): item is ResponseFunctionToolCall =>
+      item.type === 'function_call' && (!toolChoice || item.name === toolChoice.name),
   )
   let full = typeof functionCall?.arguments === 'string' ? functionCall.arguments : ''
   if (!full) {
@@ -377,88 +413,18 @@ async function runOpenAI(
   return full
 }
 
-async function openAiJsonRequestWithRetry(
-  method: 'GET' | 'POST',
-  requestPath: string,
-  apiKey: string,
-  requestBody: Record<string, unknown> | undefined,
+async function openAiSdkRequest(
+  request: () => Promise<Response>,
   onChunk: (text: string) => void,
   operation: string,
-): Promise<any> {
-  const maxAttempts = 3
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await openAiJsonRequest(method, requestPath, apiKey, requestBody)
-    } catch (error) {
-      if (!isTransientProviderError(error) || attempt === maxAttempts) {
-        if (isTransientProviderError(error)) throw providerConnectionError('openai', error, attempt)
-        throw error
-      }
-      const delayMs = attempt === 1 ? 1200 : 3000
-      onChunk(`[status] OpenAI connection interrupted while ${operation} · retrying ${attempt + 1}/${maxAttempts}…\n`)
-      onChunk(`[diag] transient provider error: ${errorMessage(error)}\n`)
-      await wait(delayMs)
+): Promise<Response> {
+  try {
+    return await request()
+  } catch (error) {
+    onChunk(`[diag] OpenAI failed while ${operation}: ${errorMessage(error)}\n`)
+    if (isTransientProviderError(error)) {
+      throw providerConnectionError('openai', error, OPENAI_TOTAL_ATTEMPTS)
     }
+    throw error
   }
-  throw new Error(`OpenAI failed while ${operation}`)
-}
-
-function openAiJsonRequest(
-  method: 'GET' | 'POST',
-  requestPath: string,
-  apiKey: string,
-  requestBody?: Record<string, unknown>,
-): Promise<any> {
-  const body = requestBody ? JSON.stringify(requestBody) : ''
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const finish = (fn: () => void) => {
-      if (settled) return
-      settled = true
-      fn()
-    }
-    const headers: Record<string, string | number> = {
-      authorization: `Bearer ${apiKey}`,
-      accept: 'application/json',
-    }
-    if (body) {
-      headers['content-type'] = 'application/json'
-      headers['content-length'] = Buffer.byteLength(body)
-    }
-
-    const req = https.request({
-      hostname: 'api.openai.com',
-      path: requestPath,
-      method,
-      timeout: 60_000,
-      headers,
-    }, (res) => {
-      let rawBody = ''
-      res.on('data', (chunk: Buffer) => { rawBody += chunk.toString('utf-8') })
-      res.on('error', error => finish(() => reject(error)))
-      res.on('end', () => finish(() => {
-        let parsed: any = null
-        try { parsed = rawBody ? JSON.parse(rawBody) : null } catch { /* handled below */ }
-
-        if (res.statusCode && res.statusCode >= 400) {
-          const message = parsed?.error?.message ?? (rawBody.slice(0, 500) || 'request failed')
-          reject(new Error(`OpenAI API ${res.statusCode}: ${message}`))
-          return
-        }
-        if (!parsed) {
-          reject(new Error(`OpenAI API returned an unreadable response (HTTP ${res.statusCode ?? 'unknown'})`))
-          return
-        }
-        resolve(parsed)
-      }))
-    })
-
-    req.on('timeout', () => {
-      req.destroy()
-      finish(() => reject(Object.assign(new Error('OpenAI network request timed out after 60 seconds'), { code: 'ETIMEDOUT' })))
-    })
-    req.on('error', error => finish(() => reject(error)))
-    if (body) req.write(body)
-    req.end()
-  })
 }
