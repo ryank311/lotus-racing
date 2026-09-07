@@ -77,7 +77,9 @@ export const GARMIN_DIR = INSTANCE_DIR
   ? path.join(getUserDataDir(), 'garmin')
   : path.join(REPO_ROOT, 'garmin')
 
-export const DATA_DIR = process.env.CATALYST_DATA_DIR
+export const DATA_DIR = INSTANCE_DIR
+  ? path.join(GARMIN_DIR, 'data')
+  : process.env.CATALYST_DATA_DIR
   ? path.resolve(process.env.CATALYST_DATA_DIR)
   : path.join(GARMIN_DIR, 'data')
 
@@ -89,7 +91,9 @@ export const GARTH_TOKEN_DIR = path.join(GARMIN_DIR, '.garth')
 export const CATALYST_TOKEN_CACHE = path.join(GARMIN_DIR, '.catalyst_token.json')
 
 // DB lives in a path the Electron app owns exclusively.
-export const DB_PATH = process.env.CATALYST_DB_PATH
+export const DB_PATH = INSTANCE_DIR
+  ? path.join(DATA_DIR, 'catalyst-app.duckdb')
+  : process.env.CATALYST_DB_PATH
   ? path.resolve(process.env.CATALYST_DB_PATH)
   : path.join(DATA_DIR, 'catalyst-app.duckdb')
 

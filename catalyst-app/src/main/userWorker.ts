@@ -20,11 +20,21 @@ interface RpcRequest {
 
 const handlers = new Map<string, ApiHandler>()
 
+function send(message: unknown): void {
+  if (!process.connected) return
+  process.send?.(message as any, error => {
+    if (error) process.exit(1)
+  })
+}
+
+// Do not leave a worker holding its database lock after the server exits.
+process.on('disconnect', () => process.exit(0))
+
 const eventTarget: BackendEventTarget = {
   isDestroyed: () => false,
   webContents: {
     send(channel, payload) {
-      process.send?.({ type: 'event', channel, payload })
+      send({ type: 'event', channel, payload })
     },
   },
 }
@@ -38,7 +48,7 @@ function forwardConsole(): void {
         if (typeof value === 'string') return value
         try { return JSON.stringify(value) } catch { return String(value) }
       }).join(' ')
-      process.send?.({
+      send({
         type: 'event', channel: 'app:log',
         payload: { level, message, ts: Date.now() },
       })
@@ -60,25 +70,25 @@ async function start(): Promise<void> {
     if (!message || message.type !== 'rpc') return
     const handler = handlers.get(message.channel)
     if (!handler) {
-      process.send?.({
+      send({
         type: 'rpc-result', requestId: message.requestId,
         ok: false, error: `Unknown API method: ${message.channel}`,
       })
       return
     }
-    void Promise.resolve(handler({}, ...(message.args ?? []))).then(
-      result => process.send?.({ type: 'rpc-result', requestId: message.requestId, ok: true, result }),
-      error => process.send?.({
+    void Promise.resolve().then(() => handler({}, ...(message.args ?? []))).then(
+      result => send({ type: 'rpc-result', requestId: message.requestId, ok: true, result }),
+      error => send({
         type: 'rpc-result', requestId: message.requestId, ok: false,
         error: error instanceof Error ? error.message : String(error),
       }),
     )
   })
 
-  process.send?.({ type: 'ready' })
+  send({ type: 'ready' })
 }
 
 void start().catch(error => {
-  process.send?.({ type: 'fatal', error: error instanceof Error ? error.stack : String(error) })
-  process.exitCode = 1
+  process.send?.({ type: 'fatal', error: error instanceof Error ? error.stack : String(error) }, () => process.exit(1))
+  if (!process.connected) process.exit(1)
 })

@@ -38,6 +38,15 @@ The packaged desktop app starts this server automatically on port 3210. Its
 window is a client of the same server, so log into the same driver name on the
 desktop and phone to share live sync progress and data.
 
+When upgrading an existing desktop installation, the app copies its database,
+raw sessions, Garmin tokens, AI settings, coaching history, Garage profiles,
+track edits, and settings into a **Desktop** driver workspace. The login screen
+prefills that name; use it on other devices to open the imported data. If that
+name already exists, the app chooses **Desktop 2**, etc., without merging or
+overwriting accounts. The original desktop files are retained. The import is
+performed once, before opening the old database or starting the server; if it
+fails, the desktop falls back to its original workspace and logs the error.
+
 Environment equivalents are available for unattended services:
 
 ```bash
@@ -51,6 +60,10 @@ npm run server:start
 server` builds first. Keep this passwordless service on a trusted LAN or behind
 your own authenticated reverse proxy—do not expose it directly to the public
 internet. Back up the configured data directory to preserve every user.
+
+`CATALYST_DATA_DIR`, `CATALYST_DB_PATH`, and `CATALYST_REPO_ROOT` remain local
+desktop/CLI overrides. HTTP workers always keep data inside their driver's
+workspace; use `CATALYST_SERVER_DATA_DIR` to relocate the server's workspaces.
 
 ## CLI scripts (run individually without the GUI)
 

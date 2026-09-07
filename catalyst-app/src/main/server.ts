@@ -1,11 +1,11 @@
 /** Passwordless multi-user HTTP server for Catalyst Coach. */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { createHmac, createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
+import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
 
 export interface CatalystServerOptions {
   host?: string
@@ -42,17 +42,6 @@ interface PendingCall {
 
 const COOKIE = 'catalyst_session'
 const MAX_BODY = 25 * 1024 * 1024
-const USER_RE = /^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,39}$/u
-
-function defaultServerDataDir(): string {
-  if (process.env.CATALYST_SERVER_DATA_DIR) return path.resolve(process.env.CATALYST_SERVER_DATA_DIR)
-  if (process.env.APPDATA) return path.join(process.env.APPDATA, 'catalyst-coach', 'server')
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'catalyst-coach', 'server')
-  }
-  return path.join(os.homedir(), '.config', 'catalyst-coach', 'server')
-}
-
 function parseCookies(req: IncomingMessage): Record<string, string> {
   const out: Record<string, string> = {}
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -106,6 +95,10 @@ function mimeType(filePath: string): string {
 class UserBackend {
   private child: ChildProcess
   private ready: Promise<void>
+  private rejectReady!: (error: Error) => void
+  private closed: Promise<void>
+  private failure: Error | null = null
+  private startupTimer: ReturnType<typeof setTimeout>
   private nextId = 1
   private pending = new Map<number, PendingCall>()
   private listeners = new Set<ServerResponse>()
@@ -114,12 +107,18 @@ class UserBackend {
     readonly username: string,
     instanceDir: string,
     options: CatalystServerOptions,
+    onClosed: () => void,
   ) {
     const workerPath = path.join(__dirname, 'userWorker.js')
+    const env = { ...process.env }
+    // Legacy desktop overrides must not escape a driver's instance directory.
+    delete env.CATALYST_DATA_DIR
+    delete env.CATALYST_DB_PATH
+    delete env.CATALYST_REPO_ROOT
     this.child = fork(workerPath, [], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
       env: {
-        ...process.env,
+        ...env,
         ELECTRON_RUN_AS_NODE: '1',
         CATALYST_INSTANCE_DIR: instanceDir,
         ...(options.templateRoot ? { CATALYST_TEMPLATE_ROOT: options.templateRoot } : {}),
@@ -128,28 +127,58 @@ class UserBackend {
     })
 
     this.ready = new Promise((resolve, reject) => {
+      this.rejectReady = reject
       const onInitial = (message: WorkerReply) => {
-        if (message.type === 'ready') { this.child.off('message', onInitial); resolve() }
-        if (message.type === 'fatal') { this.child.off('message', onInitial); reject(new Error(message.error)) }
+        if (message.type === 'ready') {
+          clearTimeout(this.startupTimer)
+          this.child.off('message', onInitial)
+          resolve()
+        }
       }
       this.child.on('message', onInitial)
-      this.child.once('exit', code => reject(new Error(`Backend for ${username} exited during startup (${code})`)))
     })
+    // Startup may fail before an RPC or event subscriber awaits readiness.
+    void this.ready.catch(() => {})
+    this.startupTimer = setTimeout(() => this.fail(new Error('Backend startup timed out')), 30_000)
 
     this.child.on('message', (message: WorkerReply) => this.onMessage(message))
-    this.child.on('exit', code => {
-      for (const call of this.pending.values()) {
-        clearTimeout(call.timer)
-        call.reject(new Error(`Backend process exited (${code})`))
+    this.child.on('error', error => this.fail(error))
+    this.child.on('disconnect', () => this.fail(new Error('Backend disconnected')))
+    this.child.on('exit', code => this.fail(new Error(`Backend process exited (${code})`)))
+    this.closed = new Promise(resolve => {
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        // Only allow a replacement after the process releases its DB lock.
+        onClosed()
+        resolve()
       }
-      this.pending.clear()
-      for (const stream of this.listeners) stream.end()
-      this.listeners.clear()
+      this.child.once('exit', finish)
+      // Failed spawns emit close without an exit event.
+      this.child.once('close', finish)
     })
   }
 
+  private fail(error: Error): void {
+    if (this.failure) return
+    this.failure = error
+    clearTimeout(this.startupTimer)
+    this.rejectReady(error)
+    for (const call of this.pending.values()) {
+      clearTimeout(call.timer)
+      call.reject(error)
+    }
+    this.pending.clear()
+    for (const stream of this.listeners) stream.end()
+    this.listeners.clear()
+    this.child.kill()
+  }
+
   private onMessage(message: WorkerReply): void {
-    if (message.type === 'rpc-result' && message.requestId != null) {
+    if (message.type === 'fatal') {
+      this.fail(new Error(message.error ?? 'Backend startup failed'))
+    } else if (message.type === 'rpc-result' && message.requestId != null) {
       const call = this.pending.get(message.requestId)
       if (!call) return
       this.pending.delete(message.requestId)
@@ -162,8 +191,14 @@ class UserBackend {
     }
   }
 
-  async call(channel: string, args: unknown[]): Promise<unknown> {
+  async waitUntilReady(): Promise<void> {
     await this.ready
+    if (this.failure) throw this.failure
+    if (!this.child.connected) throw new Error('Backend disconnected')
+  }
+
+  async call(channel: string, args: unknown[]): Promise<unknown> {
+    await this.waitUntilReady()
     const requestId = this.nextId++
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -171,7 +206,13 @@ class UserBackend {
         reject(new Error(`Backend request timed out: ${channel}`))
       }, 10 * 60 * 1000)
       this.pending.set(requestId, { resolve, reject, timer })
-      this.child.send({ type: 'rpc', requestId, channel, args })
+      try {
+        this.child.send({ type: 'rpc', requestId, channel, args }, error => {
+          if (error) this.fail(error)
+        })
+      } catch (error) {
+        this.fail(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 
@@ -182,8 +223,10 @@ class UserBackend {
     res.on('close', () => { clearInterval(heartbeat); this.listeners.delete(res) })
   }
 
-  close(): void {
-    this.child.kill()
+  async close(): Promise<void> {
+    this.fail(new Error('Server is shutting down'))
+    const timer = setTimeout(() => this.child.kill('SIGKILL'), 5_000)
+    try { await this.closed } finally { clearTimeout(timer) }
   }
 }
 
@@ -202,6 +245,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   // Account names are case-insensitive to prevent two worker processes from
   // opening the same hashed database directory (for example Ryan vs ryan).
   const backends = new Map<string, UserBackend>()
+  let closing = false
 
   const sign = (username: string): string => {
     const encoded = Buffer.from(username, 'utf8').toString('base64url')
@@ -222,15 +266,18 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
     } catch { return null }
   }
   const backendFor = (username: string): UserBackend => {
-    const accountKey = username.normalize('NFKC').toLocaleLowerCase()
-    let backend = backends.get(accountKey)
+    if (closing) throw new Error('Server is shutting down')
+    const key = accountKey(username)
+    let backend = backends.get(key)
     if (!backend) {
-      const userId = createHash('sha256').update(accountKey).digest('hex').slice(0, 24)
-      const instanceDir = path.join(usersDir, userId)
+      const instanceDir = userDirectory(dataDir, username)
       fs.mkdirSync(instanceDir, { recursive: true })
-      fs.writeFileSync(path.join(instanceDir, 'account.json'), JSON.stringify({ username }, null, 2))
-      backend = new UserBackend(username, instanceDir, options)
-      backends.set(accountKey, backend)
+      const accountPath = path.join(instanceDir, 'account.json')
+      if (!fs.existsSync(accountPath)) fs.writeFileSync(accountPath, JSON.stringify({ username }, null, 2))
+      backend = new UserBackend(username, instanceDir, options, () => {
+        if (backends.get(key) === backend) backends.delete(key)
+      })
+      backends.set(key, backend)
     }
     return backend
   }
@@ -250,10 +297,16 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       return
     }
 
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-    const username = verify(parseCookies(req)[COOKIE])
-
     try {
+      let url: URL
+      try {
+        url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+        decodeURIComponent(url.pathname)
+      } catch {
+        json(res, 400, { error: 'Invalid request URL or Host header' }, origin)
+        return
+      }
+      const username = verify(parseCookies(req)[COOKIE])
       if (url.pathname === '/api/health') {
         json(res, 200, { ok: true, service: 'catalyst-coach', users: backends.size }, origin)
         return
@@ -264,12 +317,12 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       }
       if (url.pathname === '/api/login' && req.method === 'POST') {
         const body = await readJson(req)
-        const candidate = typeof body.username === 'string' ? body.username.trim().normalize('NFKC') : ''
+        const candidate = typeof body?.username === 'string' ? body.username.trim().normalize('NFKC') : ''
         if (!USER_RE.test(candidate)) {
           json(res, 400, { error: 'Use 1–40 letters, numbers, spaces, dots, dashes, or underscores.' }, origin)
           return
         }
-        backendFor(candidate)
+        await backendFor(candidate).waitUntilReady()
         res.setHeader('Set-Cookie', `${COOKIE}=${sign(candidate)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`)
         json(res, 200, { username: candidate }, origin)
         return
@@ -281,19 +334,22 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       }
       if (url.pathname === '/api/events' && req.method === 'GET') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const backend = backendFor(username)
+        await backend.waitUntilReady()
+        if (res.destroyed) return
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
           'Connection': 'keep-alive',
           ...(origin ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Vary': 'Origin' } : {}),
         })
-        backendFor(username).addEventStream(res)
+        backend.addEventStream(res)
         return
       }
       if (url.pathname === '/api/rpc' && req.method === 'POST') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         const body = await readJson(req)
-        if (typeof body.channel !== 'string' || !Array.isArray(body.args)) {
+        if (typeof body?.channel !== 'string' || !Array.isArray(body.args)) {
           json(res, 400, { error: 'Invalid RPC request' }, origin)
           return
         }
@@ -312,7 +368,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         }
         res.writeHead(200, { 'Content-Type': mimeType(filePath), 'Cache-Control': relative === 'index.html' ? 'no-cache' : 'public, max-age=3600' })
         if (req.method === 'HEAD') res.end()
-        else fs.createReadStream(filePath).pipe(res)
+        else fs.createReadStream(filePath).on('error', error => res.destroy(error)).pipe(res)
         return
       }
       if (options.devRendererUrl) {
@@ -324,7 +380,8 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       }
       json(res, 503, { error: 'Renderer build not found. Run npm run build.' })
     } catch (error) {
-      json(res, 500, { error: error instanceof Error ? error.message : String(error) }, origin)
+      if (res.headersSent) res.end()
+      else if (!res.destroyed) json(res, 500, { error: error instanceof Error ? error.message : String(error) }, origin)
     }
   })
 
@@ -337,9 +394,12 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   const publicHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
   return {
     host, port, url: `http://${publicHost}:${port}`,
-    close: () => new Promise(resolve => {
-      for (const backend of backends.values()) backend.close()
-      server.close(() => resolve())
-    }),
+    close: async () => {
+      closing = true
+      await Promise.all([
+        ...[...backends.values()].map(backend => backend.close()),
+        new Promise<void>(resolve => server.close(() => resolve())),
+      ])
+    },
   }
 }

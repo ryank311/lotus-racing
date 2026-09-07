@@ -2,14 +2,17 @@
 
 import { app, BrowserWindow, Menu } from 'electron'
 import path from 'node:path'
-import { registerIpc } from './ipc.js'
+import { registerIpc } from './electronIpc.js'
 import { loadInitialBounds, trackWindowState } from './windowState.js'
-import { seedUserData } from '../garmin/paths.js'
+import {
+  seedUserData, DB_PATH, REPO_ROOT, GARMIN_DIR, DATA_DIR,
+  TRACKS_DIR, COACHING_DIR, SETTINGS_PATH,
+} from '../garmin/paths.js'
 import { openDb, initSchema } from '../garmin/loadToDb.js'
-import { DB_PATH } from '../garmin/paths.js'
 import fs from 'node:fs'
 import { startCatalystServer, type RunningCatalystServer } from './server.js'
-import { REPO_ROOT } from '../garmin/paths.js'
+import { defaultServerDataDir } from './serverStorage.js'
+import { migrateDesktopWorkspace } from './desktopMigration.js'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -20,6 +23,7 @@ const iconPath = app.isPackaged
 
 let mainWindow: BrowserWindow | null = null
 let webServer: RunningCatalystServer | null = null
+let desktopUsername: string | null = null
 
 function installAppMenu(getWin: () => BrowserWindow | null): void {
   const isMac = process.platform === 'darwin'
@@ -93,7 +97,9 @@ function createWindow(): void {
   } else if (webServer) {
     // The packaged desktop window is a client of the same server as phones and
     // laptops, so choosing the same username exposes the same exact database.
-    mainWindow.loadURL(`${webServer.url}/?remote=1`)
+    const url = new URL(`${webServer.url}/?remote=1`)
+    if (desktopUsername) url.searchParams.set('desktopDriver', desktopUsername)
+    mainWindow.loadURL(url.toString())
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', '..', 'dist-renderer', 'index.html'))
   }
@@ -156,10 +162,16 @@ function hookConsoleToRenderer(getWin: () => BrowserWindow | null) {
 }
 
 app.whenReady().then(async () => {
-  seedUserData()
-
   try {
+    const serverDataDir = defaultServerDataDir()
+    if (app.isPackaged) {
+      desktopUsername = await migrateDesktopWorkspace(serverDataDir, {
+        repoRoot: REPO_ROOT, garminDir: GARMIN_DIR, dataDir: DATA_DIR, dbPath: DB_PATH,
+        tracksDir: TRACKS_DIR, coachingDir: COACHING_DIR, settingsPath: SETTINGS_PATH,
+      })
+    }
     webServer = await startCatalystServer({
+      dataDir: serverDataDir,
       staticDir: isDev ? undefined : path.join(__dirname, '..', '..', 'dist-renderer'),
       devRendererUrl: isDev ? 'http://localhost:5173/' : undefined,
       templateRoot: isDev ? REPO_ROOT : undefined,
@@ -170,10 +182,15 @@ app.whenReady().then(async () => {
     console.error('[server] failed to start; desktop IPC remains available:', error)
   }
 
+  // Only the IPC desktop uses the old workspace. Avoid seeding or opening it
+  // after migration; the remote worker owns the imported copy from here on.
+  const usesDesktopIpc = isDev || !webServer
+  if (usesDesktopIpc) seedUserData()
+
   // Migrate the existing database schema on every startup.
   // All statements use IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so this is
   // safe to run repeatedly — it's a no-op when the schema is current.
-  if (fs.existsSync(DB_PATH)) {
+  if (usesDesktopIpc && fs.existsSync(DB_PATH)) {
     try {
       const db = await openDb(DB_PATH)
       await initSchema(db.con)

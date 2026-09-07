@@ -1,7 +1,5 @@
 // IPC handlers — bridge between renderer and the Garmin/DuckDB code.
 
-import { ipcMain, shell } from 'electron'
-import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -71,7 +69,6 @@ import type {
   AiSettings,
   AiProvider,
 } from '../shared/types.js'
-import { loginViaBrowser } from './auth.js'
 import { signInWithCredentials, submitMfaCode, cancelMfa } from './garthLogin.js'
 
 function humaniseTimeAgo(epochSec: number | null): string {
@@ -150,13 +147,9 @@ export interface BackendEventTarget {
 export type ApiHandler = (event: unknown, ...args: any[]) => unknown | Promise<unknown>
 export type ApiRegistrar = (channel: string, handler: ApiHandler) => void
 
-function broadcast(window: BackendEventTarget | BrowserWindow | null, evt: WorkerEvent): void {
+function broadcast(window: BackendEventTarget | null, evt: WorkerEvent): void {
   if (!window || window.isDestroyed()) return
   window.webContents.send('worker:event', evt)
-}
-
-function electronWindow(target: BackendEventTarget | BrowserWindow | null): BrowserWindow | undefined {
-  return target && 'loadURL' in target ? target as BrowserWindow : undefined
 }
 
 let activeWorker: { kind: WorkerEvent['kind'] } | null = null
@@ -180,8 +173,11 @@ function assertPathInside(baseDir: string, candidate: string): string {
  */
 export function registerApiHandlers(
   register: ApiRegistrar,
-  getMainWindow: () => BackendEventTarget | BrowserWindow | null,
+  getMainWindow: () => BackendEventTarget | null,
   revealPath: (filePath: string) => void = () => {},
+  loginViaBrowser: () => Promise<{ accessToken: string; expiresIn: number }> = async () => {
+    throw new Error('Sign in with your Garmin email and password before syncing')
+  },
 ): void {
   register('auth:state', () => readAuthState())
   register('auth:syncStats', () => readSyncStats())
@@ -198,8 +194,7 @@ export function registerApiHandlers(
   // credentials flow below — it's the Python `garth` library's exact sequence.
   register('auth:signIn', async () => {
     if (INSTANCE_DIR) throw new Error('Use email/password sign-in when connected to a remote server')
-    const win = getMainWindow()
-    const { accessToken, expiresIn } = await loginViaBrowser(electronWindow(win))
+    const { accessToken, expiresIn } = await loginViaBrowser()
     return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
   })
 
@@ -836,7 +831,7 @@ export function registerApiHandlers(
         let token = opts?.token || loadCatalystToken()
         if (!token) {
           log('[auth] No valid token — opening Garmin sign-in window')
-          const { accessToken } = await loginViaBrowser(electronWindow(win))
+          const { accessToken } = await loginViaBrowser()
           token = accessToken
           log('[auth] Login successful')
         } else {
@@ -968,12 +963,4 @@ export function registerApiHandlers(
       }
     })()
   })
-}
-
-export function registerIpc(getMainWindow: () => BrowserWindow | null): void {
-  registerApiHandlers(
-    (channel, handler) => ipcMain.handle(channel, handler),
-    getMainWindow,
-    filePath => shell.showItemInFolder(filePath),
-  )
 }

@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { getServerSession, isRemote, loginToServer, logoutFromServer } from '../api'
 
+const desktopDriver = new URLSearchParams(window.location.search).get('desktopDriver')
+
 export function ServerGate({ children }: { children: JSX.Element }) {
   const [username, setUsername] = useState<string | null>(isRemote ? null : '')
   const [loading, setLoading] = useState(isRemote)
-  const [entry, setEntry] = useState('')
+  const [entry, setEntry] = useState(desktopDriver ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -40,6 +42,7 @@ export function ServerGate({ children }: { children: JSX.Element }) {
           <div className="page-eyebrow">// remote paddock</div>
           <h1>Catalyst <span>Coach</span></h1>
           <p>Enter your driver name. A private workspace will be created automatically the first time you connect.</p>
+          {desktopDriver && <p>Your existing desktop data is available as <strong>{desktopDriver}</strong>. Use this driver name on your other devices to share it.</p>}
           <form onSubmit={submit}>
             <label htmlFor="server-username">Driver name</label>
             <input
@@ -80,4 +83,3 @@ export function ServerGate({ children }: { children: JSX.Element }) {
     </>
   )
 }
-
