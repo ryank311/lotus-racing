@@ -1,6 +1,5 @@
-// Instrument-card wrapper for charts. Floating channel tag on top-left,
-// meta on top-right, corner tick marks all four corners. Children render
-// inside the body.
+// Instrument-card wrapper. The header stays in document flow so wrapped
+// labels and controls always reserve space above the chart.
 
 import { ReactNode } from 'react'
 

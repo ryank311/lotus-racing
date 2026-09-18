@@ -206,24 +206,21 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
   return (
     <>
-      <header className="page-header">
-        <div>
-          <div className="page-eyebrow">// telemetry · {data?.config?.toLowerCase() ?? '…'}</div>
-          <div className="page-title">Ana<span className="accent">lysis</span></div>
-        </div>
-        <div className="page-meta">
-          {selected.size} sessions<br />
-          <span className="muted">{data ? `${data.laps.length} ${lapFilter === 'all' ? 'driven' : 'filtered'} laps` : 'loading…'}</span>
+      <header className="analysis-toolbar">
+        <div className="analysis-context">
+          <strong title={data?.config}>{data?.config || 'Analysis'}</strong>
+          <span>{selected.size} session{selected.size === 1 ? '' : 's'} · {loading ? 'Loading…' : data ? `${data.laps.length} ${lapFilter === 'all' ? 'driven' : 'filtered'} laps` : 'Telemetry'}</span>
         </div>
 
-        <div className="analysis-lap-filter" role="group" aria-label="Laps included in analysis">
-          <span>Analyze</span>
-          {LAP_FILTERS.map(item => (
-            <button key={item.value} type="button" className={lapFilter === item.value ? 'active' : ''}
-              aria-pressed={lapFilter === item.value} disabled={loading}
-              onClick={() => setLapFilter(item.value)}>{item.label}</button>
-          ))}
+        <div className="analysis-mobile-tabs" role="group" aria-label="Analysis view">
+          <button aria-pressed={mobileView === 'charts'} onClick={() => setMobileView('charts')}>Charts</button>
+          <button aria-pressed={mobileView === 'map'} onClick={() => setMobileView('map')}>Map</button>
         </div>
+
+        <select className="analysis-lap-select" aria-label="Laps included in analysis"
+          value={lapFilter} disabled={loading} onChange={e => setLapFilter(e.target.value as LapFilter)}>
+          {LAP_FILTERS.map(item => <option key={item.value} value={item.value}>{item.label} laps</option>)}
+        </select>
 
         <div className="ask-coach-split">
           <button
@@ -254,10 +251,6 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         </div>
       </header>
 
-      <div className="analysis-mobile-tabs" role="group" aria-label="Analysis view">
-        <button aria-pressed={mobileView === 'charts'} onClick={() => setMobileView('charts')}>Charts & coaching</button>
-        <button aria-pressed={mobileView === 'map'} onClick={() => setMobileView('map')}>Track map</button>
-      </div>
       <div
         className={`analysis-split mobile-view-${mobileView}`}
         ref={containerRef}
@@ -457,27 +450,25 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
   return (
     <>
-      {/* SESSION CHIPS */}
-      <div className="session-chips">
+      <details className="analysis-session-details">
+        <summary>Session details <span>{dateRange}</span></summary>
+        <p className="muted small">{data.config} · {data.totalDistM.toFixed(0)} m · {data.sessions.length} session{data.sessions.length === 1 ? '' : 's'}</p>
+        <div className="session-chips">
         {sessionsSorted.map(s => (
           <span key={s.sg} className="chip cyan">
             {(s.start ?? '').slice(0, 16)} · {msToLap(s.bestLapMs)}
-            <span className="x" onClick={() => removeSession(s.sg)}>×</span>
+            <button className="x" aria-label={`Remove session ${s.start ?? s.sg}`} onClick={() => removeSession(s.sg)}>×</button>
           </span>
         ))}
-        {dateRange && (
-          <span className="chip" style={{ borderColor: 'var(--text-mute)' }}>{dateRange}</span>
-        )}
-      </div>
+        </div>
+      </details>
 
       {/* STAT STRIP */}
       <div className="analysis-stat-strip-container">
       <div className="analysis-stat-strip">
-        <Stat label="Best lap" value={msToLap(data.bestLap?.durationMs)} sub={data.bestLap ? `${data.bestLap.sgShort}… L${data.bestLap.lapIdx + 1}` : ''} featured />
-        <Stat label="Theoretical" value={msToLap(data.theoreticalBestMs)} sub="sum of segment PBs" />
+        <Stat label="Best lap" value={msToLap(data.bestLap?.durationMs)} sub={data.bestLap ? `Lap ${data.bestLap.lapIdx + 1}` : undefined} featured />
+        <Stat label="Theoretical" value={msToLap(data.theoreticalBestMs)} sub="Segment bests" />
         <Stat label="Average" value={msToLap(data.avgLapMs)} sub={`${data.laps.length} laps`} />
-        <Stat label="Sessions" value={String(data.sessions.length)} sub="selected" />
-        <Stat label="Track" value={data.config} sub={`${data.totalDistM.toFixed(0)} m`} />
       </div>
       </div>
 

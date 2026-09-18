@@ -189,7 +189,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         </div>
       </header>
 
-      <div className="page-body">
+      <div className={`page-body sessions-body${selected.size > 0 ? ' has-selection' : ''}`}>
         <p className="muted small">Select sessions to compare laps and get coaching. Older telemetry downloads automatically.</p>
         {downloading.size > 0 && <p className="small" role="status">Downloading details for {downloading.size} session(s)…</p>}
         {downloadError && (
@@ -334,9 +334,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         </div>
       </div>
 
-      {/* Sibling of .page-body (not a child) so it sits at the true viewport
-          bottom — sticky inside the scrolling body left a 36px gap under it
-          because of the body's bottom padding. */}
+      {/* Outside the scroll area; pinned to the viewport on mobile. */}
       {selected.size > 0 && (
         <div className="selection-bar">
           <div className="pulse" />
