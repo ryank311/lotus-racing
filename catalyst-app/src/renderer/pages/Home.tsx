@@ -11,9 +11,10 @@ interface Props {
   signedIn: boolean
   onSync: (mode?: 'recent' | 'all') => void
   onRequestSignIn: () => void
+  onSessions: () => void
 }
 
-export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn }: Props) {
+export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onSessions }: Props) {
   const [syncMenuOpen, setSyncMenuOpen] = useState(false)
   const syncMenuRef = useRef<HTMLDivElement>(null)
   const syncCaretRef = useRef<HTMLButtonElement>(null)
@@ -89,6 +90,10 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn }: P
 
         {signedIn && <p className="muted small">Sync now downloads the latest 20 sessions. Older sessions download when selected.</p>}
 
+        {(stats?.sessionCount ?? 0) > 0 && <button className="workflow-link" onClick={onSessions}>
+          <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
+        </button>}
+
         <div className="stat-grid">
           <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />
           <Tile label="Driven laps" value={(stats?.lapCount ?? 0).toLocaleString()} />
@@ -97,7 +102,7 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn }: P
         </div>
 
         <section style={{ marginTop: 32 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, alignItems: 'stretch' }}>
+          <div className="home-settings-grid">
             <AiSettingsCard />
             <SettingsCard />
           </div>

@@ -190,7 +190,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
       </header>
 
       <div className="page-body">
-        <p className="muted small">All session overviews are listed. Select older sessions to download and save their telemetry.</p>
+        <p className="muted small">Select sessions to compare laps and get coaching. Older telemetry downloads automatically.</p>
         {downloading.size > 0 && <p className="small" role="status">Downloading details for {downloading.size} session(s)…</p>}
         {downloadError && (
           <div className="session-download-error" role="alert">
@@ -201,33 +201,36 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
           </div>
         )}
         {vehicleGroups.length > 1 && (
-          <div className="row-center" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div className="row-center session-vehicle-filters" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             <span className="muted text-mono" style={{
               fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', marginRight: 4,
             }}>Vehicle:</span>
-            <span
+            <button
+              aria-pressed={vehicleFilter === null}
               className={`chip ${vehicleFilter === null ? 'signal' : ''}`}
               style={{ cursor: 'pointer' }}
               onClick={() => setVehicleFilter(null)}
             >
               All · {rows.length}
-            </span>
+            </button>
             {vehicleGroups.map(g => (
-              <span
+              <button
+                aria-pressed={vehicleFilter === g.guid}
                 key={g.guid}
                 className={`chip ${vehicleFilter === g.guid ? 'signal' : ''}`}
                 style={{ cursor: 'pointer' }}
                 onClick={() => setVehicleFilter(g.guid === vehicleFilter ? null : g.guid)}
               >
                 {g.label} · {g.count}
-              </span>
+              </button>
             ))}
           </div>
         )}
 
-        <div className="row-center" style={{ marginBottom: 16, gap: 10 }}>
+        <div className="row-center session-search" style={{ marginBottom: 16, gap: 10 }}>
           <input
-            placeholder="filter by track, config, vehicle, or guid…"
+            aria-label="Filter sessions"
+            placeholder="Search track, vehicle, or session…"
             value={filter}
             onChange={e => setFilter(e.target.value)}
             style={{
@@ -246,7 +249,32 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
           </button>
         </div>
 
-        <div className="tbl-wrap">
+        <div className="session-mobile-sort">
+          <label htmlFor="session-sort">Sort sessions</label>
+          <select id="session-sort" value={sortKey} onChange={e => onHeaderClick(e.target.value as SortKey)}>
+            <option value="date">Date</option><option value="track">Track</option><option value="config">Configuration</option><option value="vehicle">Vehicle</option><option value="best">Best lap</option><option value="laps">Lap count</option><option value="weather">Weather</option>
+          </select>
+          <button className="btn ghost" aria-label={`Sort ${sortDir === 'desc' ? 'ascending' : 'descending'}`} onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}>{sortDir === 'desc' ? '↓ Desc' : '↑ Asc'}</button>
+        </div>
+        <div className="session-cards">
+          {loading && <p className="muted" role="status">Loading sessions…</p>}
+          {!loading && !filtered.length && <p className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</p>}
+          {filtered.map(r => <label key={r.session_guid} className={`session-card ${selected.has(r.session_guid) ? 'is-selected' : ''}`}>
+            <div className="session-card-top">
+              <span className="session-card-date">{r.session_start ?? 'Date unavailable'}</span>
+              <input type="checkbox" checked={selected.has(r.session_guid)} onChange={() => toggle(r.session_guid)} aria-label={`Select ${r.track_name ?? 'session'} ${r.session_start ?? ''}`} />
+            </div>
+            <strong className="session-card-track">{r.track_name ?? 'Unknown track'}</strong>
+            <span className="session-card-config">{r.track_configuration_name || 'Default configuration'}</span>
+            <div className="session-card-stats">
+              <div><small>Best lap</small><strong>{msToLap(r.best_lap_ms)}</strong></div>
+              <div><small>Laps</small><strong>{r.lap_count || '—'}</strong></div>
+              <div><small>Vehicle</small><span>{vehicleLabel(r) || '—'}</span></div>
+            </div>
+            <div className="session-card-footer"><span>{r.weather_description || 'Weather unavailable'}</span><span>{downloading.has(r.session_guid) ? 'Downloading…' : r.details_loaded ? 'Telemetry ready' : 'Tap to download'}</span></div>
+          </label>)}
+        </div>
+        <div className="tbl-wrap sessions-table">
           <table className="tbl">
             <thead>
               <tr>
@@ -280,6 +308,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                     <td style={{ textAlign: 'center' }}>
                       <input
                         type="checkbox"
+                        aria-label={`Select ${r.track_name ?? 'session'} ${r.session_start ?? ''}`}
                         checked={on}
                         onChange={() => toggle(r.session_guid)}
                         onClick={e => e.stopPropagation()}

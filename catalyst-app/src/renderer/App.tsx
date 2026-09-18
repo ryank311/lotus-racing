@@ -280,6 +280,7 @@ export function App() {
               signedIn={signedIn}
               onSync={startSync}
               onRequestSignIn={openLogin}
+              onSessions={() => setPage('sessions')}
             />
           )}
           {page === 'sessions' && (

@@ -41,6 +41,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [mobileView, setMobileView] = useState<'charts' | 'map'>('charts')
   const [splitPct, setSplitPct] = useState(62)
   const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
   const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
@@ -253,8 +254,12 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         </div>
       </header>
 
+      <div className="analysis-mobile-tabs" role="group" aria-label="Analysis view">
+        <button aria-pressed={mobileView === 'charts'} onClick={() => setMobileView('charts')}>Charts & coaching</button>
+        <button aria-pressed={mobileView === 'map'} onClick={() => setMobileView('map')}>Track map</button>
+      </div>
       <div
-        className="analysis-split"
+        className={`analysis-split mobile-view-${mobileView}`}
         ref={containerRef}
         style={{ gridTemplateColumns: `minmax(0, ${splitPct}fr) 6px minmax(0, ${100 - splitPct}fr)` }}
       >
@@ -282,7 +287,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             )}
 
             {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} onFocusRef={setFocusedRef} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} onFocusRef={ref => { setFocusedRef(ref); if (ref) setMobileView('map') }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
             )}
           </div>
         </div>

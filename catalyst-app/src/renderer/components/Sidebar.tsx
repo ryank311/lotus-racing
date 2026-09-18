@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ServerUserSwitcher } from './ServerGate'
 
 export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
@@ -91,6 +91,42 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
   email: string | null
   onSignIn: () => void
 }) {
+  const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 800px)').matches)
+  const [open, setOpen] = useState(false)
+  const drawerRef = useRef<HTMLElement>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const navigate = (key: NavKey) => { onChange(key); setOpen(false) }
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 800px)')
+    const update = () => { setMobile(query.matches); setOpen(false) }
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  useEffect(() => { setOpen(false) }, [active])
+  useEffect(() => {
+    if (!open || !mobile) return
+    const main = document.querySelector('.main-pane')
+    main?.setAttribute('inert', '')
+    const drawer = drawerRef.current!
+    const focusables = () => Array.from(drawer.querySelectorAll<HTMLElement>('button, [href], input, select, [tabindex="0"]')).filter(el => !el.hasAttribute('disabled'))
+    focusables()[0]?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); setOpen(false) }
+      if (event.key === 'Tab') {
+        const items = focusables()
+        const first = items[0], last = items[items.length - 1]
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      main?.removeAttribute('inert')
+      document.removeEventListener('keydown', onKey)
+      toggleRef.current?.focus()
+    }
+  }, [open, mobile])
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
@@ -109,7 +145,17 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
   }, [])
 
   return (
-    <aside className="sidebar">
+    <>
+    <header className="mobile-topbar">
+      <button ref={toggleRef} className="mobile-menu-button" aria-label="Open navigation" aria-expanded={open} aria-controls="workspace-navigation" onClick={() => setOpen(true)}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+      </button>
+      <span className="brand-title">Catalyst<span className="mobile-brand-slash"> / </span><span className="mobile-page-name">{NAV.find(n => n.key === active)?.label ?? (active === 'logs' ? 'Logs' : 'Account')}</span></span>
+      <span className={`led ${connected ? '' : 'dim'}`} title={connected ? 'Connected' : 'Offline'} />
+    </header>
+    {mobile && open && <div className="mobile-nav-backdrop" onClick={() => setOpen(false)} />}
+    <aside ref={drawerRef} id="workspace-navigation" className={`sidebar ${open ? 'is-open' : ''}`} role={mobile && open ? 'dialog' : undefined} aria-modal={mobile && open ? true : undefined} aria-label="Workspace navigation">
+      <button className="mobile-nav-close" aria-label="Close navigation" onClick={() => setOpen(false)}>×</button>
       <div className="brand">
         <div className="brand-mark" />
         <div className="brand-text">
@@ -118,13 +164,15 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
         </div>
       </div>
 
-      <nav className="nav">
+      <nav className="nav" aria-label="Main navigation">
         <div className="nav-section-label">Workspace</div>
         {NAV.map(n => (
-          <div
+          <button
+            type="button"
+            aria-current={active === n.key ? 'page' : undefined}
             key={n.key}
             className={`nav-item ${active === n.key ? 'active' : ''}`}
-            onClick={() => onChange(n.key)}
+            onClick={() => navigate(n.key)}
           >
             {n.icon}
             <span>{n.label}</span>
@@ -145,13 +193,13 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
               </span>
             )}
             <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{n.k}</span>
-          </div>
+          </button>
         ))}
       </nav>
 
       <button
         className={`sidebar-account ${active === 'account' ? 'active' : ''}`}
-        onClick={() => (signedIn ? onChange('account') : onSignIn())}
+        onClick={() => { setOpen(false); signedIn ? onChange('account') : onSignIn() }}
         title={signedIn ? (email ?? 'Account') : 'Sign in'}
       >
         <UserIcon />
@@ -167,7 +215,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
           <span>{time.toTimeString().slice(0, 5)}</span>
           <button
             className={`sidebar-log-btn ${active === 'logs' ? 'active' : ''}`}
-            onClick={() => onChange('logs')}
+            onClick={() => navigate('logs')}
             title="Debug logs"
           >
             <BugIcon />
@@ -176,5 +224,6 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
       </div>
       <ServerUserSwitcher />
     </aside>
+    </>
   )
 }

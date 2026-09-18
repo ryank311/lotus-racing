@@ -148,7 +148,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
           </div>
         )}
 
-        <div className="split" style={{ flex: 1, minHeight: 400 }}>
+        <div className="split coach-history" style={{ flex: 1, minHeight: 400 }}>
           {/* Session list */}
           <div className="list-pane">
             {sessions.length === 0 && (
@@ -204,9 +204,9 @@ function SessionViewer({ session, onLoad, onDelete }: {
   )
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', padding: '20px 24px' }}>
+    <div className="coach-session-viewer" style={{ height: '100%', overflowY: 'auto', padding: '20px 24px' }}>
       {/* Header */}
-      <div style={{ marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <div className="coach-session-header" style={{ marginBottom: 20, display: 'flex', alignItems: 'flex-start', gap: 12 }}>
         <div style={{ flex: 1 }}>
           {r?.headline && (
             <div style={{

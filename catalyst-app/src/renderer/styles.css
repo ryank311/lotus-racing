@@ -169,69 +169,6 @@ body {
 .session-detail-status { display: block; margin-top: 4px; font: 9px var(--font-mono); color: var(--text-mute); }
 .session-download-error { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; color: var(--red); }
 
-@media (max-width: 720px) {
-  html, body, #root { overflow: hidden; }
-  .app-shell { display: block; height: 100dvh; padding-bottom: 65px; }
-  .main-pane { height: calc(100dvh - 65px); }
-  .sidebar {
-    position: fixed;
-    z-index: 90;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 65px;
-    border: 0;
-    border-top: 1px solid var(--border);
-    flex-direction: row;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-app-region: no-drag;
-  }
-  .sidebar::before, .brand, .nav-section-label, .nav-key, .sidebar-footer { display: none; }
-  .nav {
-    flex: 0 0 auto;
-    flex-direction: row;
-    align-items: stretch;
-    padding: 5px 3px;
-    gap: 0;
-  }
-  .nav-item {
-    width: 61px;
-    padding: 6px 2px;
-    gap: 3px;
-    justify-content: center;
-    flex-direction: column;
-    font-size: 9px;
-  }
-  .nav-item.active::before { left: 8px; right: 8px; top: -5px; bottom: auto; width: auto; height: 2px; }
-  .nav-icon { width: 17px; height: 17px; }
-  .sidebar-account {
-    flex: 0 0 61px;
-    width: 61px;
-    margin: 5px 3px 5px 0;
-    padding: 6px 2px;
-    gap: 3px;
-    justify-content: center;
-    flex-direction: column;
-    font-size: 9px;
-  }
-  .sidebar-account-label { width: 55px; font-size: 9px; text-align: center; overflow: hidden; text-overflow: ellipsis; }
-  .sidebar-account-sub { display: none; }
-  .page-header { padding: 18px 16px 12px; gap: 10px; }
-  .page-title { font-size: 30px; }
-  .page-eyebrow { font-size: 8px; }
-  .page-meta { display: none; }
-  .page-body { padding: 18px 14px 28px; }
-  .banner { align-items: flex-start; flex-direction: column; }
-  .stat-grid, .stat-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .server-user-chip { order: -1; align-self: center; margin: 0 8px; max-width: 160px; }
-  .server-login-card { padding: 30px 24px 26px; }
-  .server-login-card h1 { font-size: 32px; }
-  .banner.sync-banner { grid-template-columns: minmax(0, 1fr); }
-  .sync-dropdown { right: auto; left: 0; }
-  .status-bar { bottom: 0; }
-}
-
 button { font-family: inherit; cursor: pointer; }
 input, textarea, select { font-family: inherit; color: inherit; }
 
@@ -3940,4 +3877,214 @@ input, textarea, select { font-family: inherit; color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Responsive workspace. Keep these after component rules so desktop defaults
+   cannot override the phone layout. 800px also covers narrow desktop windows. */
+.mobile-topbar, .mobile-nav-close, .mobile-nav-backdrop,
+.session-cards, .session-mobile-sort, .analysis-mobile-tabs { display: none; }
+.nav-item { background: transparent; border: 0; text-align: left; width: 100%; }
+.main-pane, .home-settings-grid > *, .viewer-pane, .garage-detail { min-width: 0; }
+.home-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: stretch; }
+:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.workflow-link {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 18px 20px; margin-top: 20px; text-align: left;
+  color: var(--text); background: var(--panel); border: 1px solid var(--border-strong);
+  border-left: 2px solid var(--signal); border-radius: var(--radius);
+}
+.workflow-link strong { display: block; font-size: 15px; }
+.workflow-link small { display: block; margin-top: 5px; color: var(--text-dim); font-size: 12px; }
+.workflow-link > span:last-child { color: var(--signal); font-size: 24px; }
+.workflow-link:hover { background: var(--signal-soft); border-color: var(--signal); }
+.session-search input { min-width: 0; }
+
+@media (min-width: 801px) and (max-width: 1100px) {
+  .app-shell { grid-template-columns: 185px minmax(0, 1fr); }
+  .page-header { flex-wrap: wrap; gap: 12px; }
+  .page-body { padding: 24px; }
+  .garage-layout { grid-template-columns: 200px minmax(0, 1fr); }
+  .garage-detail-inner { grid-template-columns: minmax(0, 1fr); }
+  .garage-file-list { max-height: 220px; }
+}
+
+@media (max-width: 800px) {
+  :root { --text-mute: #8b8b97; }
+  html, body, #root { height: 100%; overflow: hidden; }
+  .app-shell { display: flex; flex-direction: column; height: 100dvh; }
+  .main-pane { flex: 1; min-height: 0; padding-bottom: env(safe-area-inset-bottom); }
+  .mobile-topbar {
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+    padding: calc(6px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left));
+    min-height: 58px; background: #0c0c0e; border-bottom: 1px solid var(--border);
+  }
+  .mobile-topbar .brand-title { flex: 1; font-size: 21px; }
+  .mobile-brand-slash { color: var(--signal); margin: 0 3px; }
+  .mobile-page-name { font: 11px var(--font-mono); letter-spacing: 0.04em; color: var(--text-dim); }
+  .mobile-menu-button, .mobile-nav-close {
+    display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0;
+    background: transparent; border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text); -webkit-app-region: no-drag;
+  }
+  .mobile-nav-close { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px; font-size: 26px; }
+  .mobile-nav-backdrop { display: block; position: fixed; inset: 0; z-index: 100; background: #0009; backdrop-filter: blur(3px); }
+  .sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 101; width: min(320px, calc(100vw - 48px));
+    height: 100dvh; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    overflow-y: auto; overscroll-behavior: contain; visibility: hidden; transform: translateX(-100%);
+    -webkit-app-region: no-drag;
+  }
+  .sidebar.is-open { visibility: visible; transform: translateX(0); box-shadow: 12px 0 40px #0008; }
+  .sidebar .brand { padding: 30px 22px 24px; -webkit-app-region: no-drag; }
+  .sidebar .brand-sub { font-size: 8px; letter-spacing: 0.12em; }
+  .sidebar .nav { flex: 1 0 auto; gap: 6px; }
+  .nav-item { min-height: 50px; font-size: 15px; }
+  .nav-key { display: none; }
+  .sidebar-account { min-height: 50px; }
+  .sidebar-footer { min-height: 52px; }
+  .sidebar-log-btn { min-width: 44px; min-height: 44px; }
+  .server-user-chip { min-height: 44px; padding: 10px 12px; font-size: 11px; }
+  .page-header { flex: 0 0 auto; flex-wrap: wrap; padding: 16px; gap: 12px; -webkit-app-region: no-drag; }
+  .page-title { font-size: 32px; }
+  .page-eyebrow { font-size: 9px; letter-spacing: 0.14em; margin-bottom: 4px; overflow-wrap: anywhere; }
+  .page-meta { font-size: 9px; letter-spacing: 0.05em; max-width: 48%; }
+  .page-body { padding: 20px 16px 28px; min-width: 0; overscroll-behavior-y: contain; }
+  .btn { min-height: 44px; justify-content: center; padding: 11px 14px; }
+  .btn-row { flex-wrap: wrap; }
+  input:not([type='checkbox']):not([type='radio']), select, textarea { min-width: 0; max-width: 100%; font-size: 16px !important; }
+  input:not([type='checkbox']):not([type='radio']), select { min-height: 44px; }
+  input[type='checkbox'] { width: 22px; height: 22px; accent-color: var(--signal); flex-shrink: 0; }
+  .chip { white-space: normal; overflow-wrap: anywhere; }
+  button.chip, .chip .x { min-height: 40px; }
+  .chip .x { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; }
+  .banner, .banner.sync-banner { display: flex; flex-direction: column; align-items: stretch; padding: 20px; gap: 18px; }
+  .banner-headline { font-size: 25px; line-height: 1.15; }
+  .banner-sub { line-height: 1.6; }
+  .sync-banner .btn-row, .sync-split-button { width: 100%; }
+  .sync-split-button > .btn:first-child, .sync-banner .btn-row > .btn { flex: 1; }
+  .sync-caret { min-width: 48px; }
+  .sync-dropdown { width: 100%; }
+  .stat-grid, .stat-grid.stat-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 20px; }
+  .stat-tile { padding: 18px 14px; min-width: 0; }
+  .stat-value { font-size: 30px; overflow-wrap: anywhere; }
+  .stat-label { font-size: 9px; letter-spacing: 0.12em; }
+  .home-settings-grid { grid-template-columns: minmax(0, 1fr); gap: 26px; }
+  .units-switch-opt { min-height: 48px; }
+  .small { font-size: 12px; line-height: 1.6; }
+
+  /* Session cards keep selection and lap times visible without a table pan. */
+  .sessions-table { display: none; }
+  .session-vehicle-filters { flex-wrap: nowrap !important; overflow-x: auto; padding-bottom: 6px; }
+  .session-vehicle-filters .chip { white-space: nowrap; min-height: 44px; }
+  .session-search { flex-wrap: wrap; }
+  .session-search input { flex-basis: 100% !important; }
+  .session-search .btn { width: 100%; }
+  .session-mobile-sort { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .session-mobile-sort label { font: 10px var(--font-mono); color: var(--text-mute); }
+  .session-mobile-sort select { flex: 1; background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 8px; }
+  .session-cards { display: grid; gap: 12px; }
+  .session-card { display: flex; flex-direction: column; min-width: 0; padding: 16px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); cursor: pointer; }
+  .session-card.is-selected { border-color: var(--signal); background: linear-gradient(120deg, var(--signal-soft), var(--panel) 70%); box-shadow: inset 3px 0 var(--signal); }
+  .session-card:focus-within { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .session-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .session-card-date { font: 11px var(--font-mono); color: var(--text-dim); overflow-wrap: anywhere; }
+  .session-card-track { font-size: 17px; line-height: 1.4; }
+  .session-card-config { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+  .session-card-stats { display: grid; grid-template-columns: 1.3fr .5fr 1fr; gap: 10px; margin-top: 18px; }
+  .session-card-stats > div { min-width: 0; }
+  .session-card-stats small { display: block; color: var(--text-mute); font: 9px var(--font-mono); text-transform: uppercase; letter-spacing: .1em; margin-bottom: 5px; }
+  .session-card-stats strong { font: 19px var(--font-mono); }
+  .session-card-stats > div:first-child strong { color: var(--signal); }
+  .session-card-stats span { font-size: 12px; overflow-wrap: anywhere; }
+  .session-card-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-mute); font: 10px var(--font-mono); }
+  .session-card-footer > span:last-child { color: var(--cyan); }
+  .session-download-error { flex-wrap: wrap; overflow-wrap: anywhere; }
+  .selection-bar { gap: 10px; padding: 12px 16px; }
+  .selection-bar .pulse, .selection-bar .selected-laptimes { display: none; }
+  .selection-bar > .btn.ghost { margin-left: auto; }
+  .selection-bar > .btn.primary { flex: 1; max-width: 230px; font-size: 11px; }
+  .selection-bar .count { font-size: 24px; }
+  .selection-bar .count-sub { font-size: 8px; letter-spacing: .06em; }
+
+  /* Analysis keeps full-width charts and a dedicated touch map. */
+  .analysis-lap-filter { order: 3; width: 100%; margin: 0; justify-content: space-between; }
+  .analysis-lap-filter button { min-height: 44px; flex: 1; font-size: 11px; }
+  .analysis-lap-filter > span { font-size: 9px; }
+  .ask-coach-split { margin-left: auto; }
+  .ask-coach-caret { min-width: 44px; }
+  .analysis-mobile-tabs { display: flex; gap: 4px; padding: 8px 16px; background: var(--bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .analysis-mobile-tabs button { flex: 1; min-height: 44px; border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); font: 11px var(--font-mono); }
+  .analysis-mobile-tabs button[aria-pressed='true'] { color: var(--signal); border-color: var(--signal); background: var(--signal-soft); }
+  .analysis-split { display: flex; flex-direction: column; }
+  .analysis-split-divider { display: none; }
+  .analysis-left-pane, .analysis-right-pane { flex: 1; min-height: 0; }
+  .mobile-view-charts .analysis-right-pane, .mobile-view-map .analysis-left-pane { display: none; }
+  .analysis-left-body { padding: 20px 16px 28px; }
+  .analysis-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analysis-stat-strip .analysis-stat:last-child { grid-column: span 2; }
+  .analysis-stat .value { font-size: 23px; }
+  .chart-card-header { flex-wrap: wrap; gap: 8px; padding: 12px; }
+  .chart-card-header .meta { max-width: 100%; margin-left: 0; }
+  .chart-mode-toggle button, .corner-consistency-filter button { min-height: 36px; }
+  .speed-chart-meta { flex-wrap: wrap; justify-content: flex-start; }
+  .coach-notes-body { padding: 16px; }
+  .coach-tip { padding: 14px; }
+  .coach-map-link, .coach-evidence summary, .coach-caveats summary { min-height: 44px; }
+  .layer-toggle { min-height: 36px; padding: 6px 8px; font-size: 9px; }
+  .lap-picker-item { min-height: 44px; }
+  .track-map-controls { gap: 5px; }
+  .coach-intel-panel { top: auto; bottom: 0; flex-wrap: wrap; gap: 10px; padding: 12px; }
+  .coach-intel-body { font-size: 11px; }
+  .coach-intel-hint { display: none; }
+  .coach-intel-close { min-width: 44px; min-height: 44px; }
+  .track-map-legend { right: 8px; bottom: 8px; min-width: 150px; max-width: 52%; }
+  .track-map-gmeter { left: 8px; bottom: 8px; }
+
+  /* Secondary workflows follow the same single-column reading order. */
+  .split { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .coach-history { flex: 0 0 auto !important; min-height: 0 !important; }
+  .coach-history .list-pane { max-height: 240px; }
+  .coach-session-viewer { height: auto !important; overflow: visible !important; padding: 18px !important; }
+  .coach-session-header { flex-direction: column; }
+  .list-item { min-height: 60px; }
+  .list-item .meta { overflow-wrap: anywhere; }
+  .garage-layout, .garage-detail-inner { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .garage-vehicles { max-height: 280px; padding-right: 0; }
+  .garage-detail { min-height: 420px; }
+  .garage-file-list { max-height: 240px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .garage-file-item { min-height: 48px; }
+  .garage-file-delete { opacity: 1; min-width: 44px; min-height: 44px; }
+  .garage-editor { min-height: 420px; min-width: 0; }
+  .garage-editor textarea { min-height: 320px; padding: 16px !important; }
+  .viewer-toolbar { flex-wrap: wrap; letter-spacing: .04em; }
+  .account-profile { flex-wrap: wrap; gap: 14px; }
+  .account-id { min-width: 0; }
+  .account-email { font-size: 17px; overflow-wrap: anywhere; }
+  .tracks-circuit-picker { grid-template-columns: minmax(0, 1fr); }
+  .tracks-layout-row { grid-template-columns: minmax(0, 1fr); }
+  .tracks-corner-row { grid-template-columns: 56px minmax(0, 1fr) 54px; padding: 10px; gap: 8px; }
+  .tracks-corner-apex { text-align: left; }
+  .tracks-sidebar-footer { flex-wrap: wrap; }
+  .tracks-map-hint { font-size: 9px; max-width: calc(100% - 28px); }
+  .logs-toolbar { flex-wrap: wrap; }
+  .logs-filters { flex-wrap: wrap; }
+  .logs-level-btn, .logs-action-btn { min-height: 36px; }
+  .logs-detail { width: min(100%, 340px); }
+  .tbl-wrap { overflow-x: auto; }
+  .modal-overlay { padding: 16px; overflow-y: auto; align-items: center; }
+  .modal-card { width: 100%; max-height: calc(100dvh - 32px); overflow-y: auto; padding: 24px; }
+  .modal-actions { flex-wrap: wrap; }
+  .modal-actions .btn { flex: 1; }
+  .server-login-page { height: 100dvh; min-height: 0; overflow-y: auto; padding: 20px; }
+  .server-login-card { padding: 28px 24px; margin: auto; }
+  .signed-out-banner { flex-wrap: wrap; }
+  .status-bar { display: none; }
+  .status-bar.busy { display: flex; position: relative; flex-shrink: 0; transform: none; }
+  .status-bar .tag, .sync-progress-file { display: none; }
+  .coach-toast { left: 12px; right: 12px; bottom: 16px; max-width: calc(100% - 24px); gap: 8px; padding: 12px; }
+  .coach-toast-view, .coach-toast-close { min-height: 44px; min-width: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
