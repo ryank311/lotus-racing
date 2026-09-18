@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "concurrently -k -n vite,electron -c blue,magenta \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:inspect": "concurrently -k -n vite,electron -c blue,magenta \"npm:dev:vite\" \"npm:dev:electron:inspect\"",
+    "dev:server": "concurrently -k -n vite,server -c blue,green \"vite --mode server --host 127.0.0.1\" \"npm:dev:server:watch\"",
+    "dev:server:watch": "cross-env NODE_ENV=development tsx watch --clear-screen=false --tsconfig tsconfig.main.json --include \"src/main/**/*.ts\" --include \"src/garmin/**/*.ts\" --include \"src/shared/**/*.ts\" src/main/headless.ts",
     "dev:vite": "vite",
     "dev:electron": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron .",
     "dev:electron:inspect": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron . --remote-debugging-port=9224",

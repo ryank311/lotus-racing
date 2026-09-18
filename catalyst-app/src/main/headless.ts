@@ -11,6 +11,8 @@ const host = valueAfter('--host') ?? process.env.CATALYST_SERVER_HOST ?? '0.0.0.
 const port = Number(valueAfter('--port') ?? process.env.CATALYST_SERVER_PORT ?? 3210)
 const dataDir = valueAfter('--data-dir') ?? process.env.CATALYST_SERVER_DATA_DIR
 const appRoot = path.resolve(__dirname, '..', '..')
+const isDev = process.env.NODE_ENV === 'development'
+const devRendererUrl = isDev ? 'http://127.0.0.1:5173/' : undefined
 
 let running: RunningCatalystServer | null = null
 let stopping = false
@@ -28,12 +30,13 @@ void startCatalystServer({
   host,
   port,
   dataDir,
-  staticDir: path.join(appRoot, 'dist-renderer'),
+  staticDir: isDev ? undefined : path.join(appRoot, 'dist-renderer'),
+  devRendererUrl,
   templateRoot: path.resolve(appRoot, '..'),
 }).then(server => {
   running = server
   console.log(`[catalyst] Headless server listening on ${host}:${server.port}`)
-  console.log(`[catalyst] Open ${server.url}`)
+  console.log(`[catalyst] Open ${devRendererUrl ?? server.url}`)
   if (dataDir) console.log(`[catalyst] User data: ${path.resolve(dataDir)}`)
 }).catch(error => {
   console.error('[catalyst] Server failed to start:', error)

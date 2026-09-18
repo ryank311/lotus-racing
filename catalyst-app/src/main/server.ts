@@ -109,7 +109,8 @@ class UserBackend {
     options: CatalystServerOptions,
     onClosed: () => void,
   ) {
-    const workerPath = path.join(__dirname, 'userWorker.js')
+    // tsx runs the source tree in dev; packaged/compiled servers use JavaScript.
+    const workerPath = path.join(__dirname, `userWorker${path.extname(__filename)}`)
     const env = { ...process.env }
     // Legacy desktop overrides must not escape a driver's instance directory.
     delete env.CATALYST_DATA_DIR

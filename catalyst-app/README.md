@@ -9,7 +9,20 @@ coaching briefs, and shows everything in a React-based desktop UI.
 ```bash
 npm install
 npm run dev          # launches Vite + Electron
+npm run dev:server   # launches Vite + the headless server (no Electron)
 ```
+
+For browser development, run `npm run dev:server` and open
+`http://127.0.0.1:5173`. Vite hot-reloads the React UI and proxies `/api` to the
+server on port 3210. The server runs TypeScript directly with `tsx` and restarts
+when files in `src/main`, `src/garmin`, or `src/shared` change, including code
+used by per-user workers. No separate build is needed. Ctrl+C stops both.
+
+The `CATALYST_SERVER_HOST`, `CATALYST_SERVER_PORT`, and
+`CATALYST_SERVER_DATA_DIR` environment variables also work in development;
+Vite's API proxy follows the configured server host and port. By default this
+uses the same driver workspaces as `npm run server`. Set
+`CATALYST_SERVER_DATA_DIR` to a separate directory for isolated development data.
 
 ## Remote / headless server
 
