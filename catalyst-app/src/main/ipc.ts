@@ -9,8 +9,11 @@ import {
   DB_PATH,
   COACHING_DIR,
   DATA_DIR,
+  CONFIG_PATH,
   INSTANCE_DIR,
 } from '../garmin/paths.js'
+import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
+import { configuredModelFor } from '../shared/aiModels.js'
 import { loadConfig, saveConfig, setAccountEmail, setCredentials } from '../garmin/config.js'
 import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
 import { replaceSessionIds } from '../shared/sessionIdentity.js'
@@ -178,6 +181,7 @@ export function registerApiHandlers(
   loginViaBrowser: () => Promise<{ accessToken: string; expiresIn: number }> = async () => {
     throw new Error('Sign in with your Garmin email and password before syncing')
   },
+  aiKeys: AiKeyStore = databaseAiKeyStore(DB_PATH),
 ): void {
   register('auth:state', () => readAuthState())
   register('auth:syncStats', () => readSyncStats())
@@ -190,8 +194,8 @@ export function registerApiHandlers(
     if (fs.existsSync(GARTH_TOKEN_DIR)) fs.rmSync(GARTH_TOKEN_DIR, { recursive: true, force: true })
     if (fs.existsSync(CATALYST_TOKEN_CACHE)) fs.rmSync(CATALYST_TOKEN_CACHE, { force: true })
   })
-  // Browser-based sign-in (last-resort fallback). The default path is the
-  // credentials flow below — it's the Python `garth` library's exact sequence.
+  // Hosted Garmin sign-in for the desktop IPC transport. HTTP clients use
+  // the server's one-use callback routes instead.
   register('auth:signIn', async () => {
     if (INSTANCE_DIR) throw new Error('Use email/password sign-in when connected to a remote server')
     const { accessToken, expiresIn } = await loginViaBrowser()
@@ -377,36 +381,36 @@ export function registerApiHandlers(
   const providerFor = (ai: ReturnType<typeof loadConfig>['ai']): AiProvider =>
     ai?.provider ?? (ai?.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
 
-  const defaultModelFor = (provider: AiProvider): string =>
-    provider === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5'
-
-  const configuredModelFor = (ai: ReturnType<typeof loadConfig>['ai'], provider: AiProvider): string => {
-    const model = ai?.model
-    if (!model) return defaultModelFor(provider)
-    const compatible = provider === 'openai' ? model.startsWith('gpt-') : model.startsWith('claude-')
-    return compatible ? model : defaultModelFor(provider)
+  const readAiKeys = async () => {
+    await migrateAiConfig(CONFIG_PATH, aiKeys)
+    return aiKeys.read()
   }
 
-  register('ai:getSettings', (): AiSettings => {
+  register('ai:getSettings', async (): Promise<AiSettings> => {
+    const keys = await readAiKeys()
     const cfg = loadConfig()
     const provider = providerFor(cfg.ai)
     return {
       provider,
-      anthropicApiKey: cfg.ai?.anthropic_api_key ?? cfg.ai?.api_key,
-      openAiApiKey: cfg.ai?.openai_api_key,
-      model: configuredModelFor(cfg.ai, provider),
+      hasAnthropicApiKey: !!keys.anthropic,
+      hasOpenAiApiKey: !!keys.openai,
+      keysShared: !!INSTANCE_DIR,
+      model: configuredModelFor(cfg.ai?.model, provider),
     }
   })
 
-  register('ai:saveSettings', (_e, s: AiSettings) => {
-    const cfg = loadConfig()
-    const provider = s.provider ?? 'anthropic'
-    cfg.ai = {
-      provider,
-      anthropic_api_key: s.anthropicApiKey,
-      openai_api_key: s.openAiApiKey,
-      model: s.model ?? defaultModelFor(provider),
+  register('ai:saveSettings', async (_e, s: AiSettings) => {
+    if (!s || typeof s !== 'object') throw new Error('Invalid AI settings')
+    if (s.provider !== undefined && s.provider !== 'anthropic' && s.provider !== 'openai') {
+      throw new Error('Invalid AI provider')
     }
+    if (s.model !== undefined && typeof s.model !== 'string') throw new Error('Invalid AI model')
+    await migrateAiConfig(CONFIG_PATH, aiKeys)
+    // Omitted keys are untouched; an explicit empty string removes that key.
+    await aiKeys.write({ anthropic: s.anthropicApiKey, openai: s.openAiApiKey })
+    const cfg = loadConfig()
+    const provider = s.provider ?? providerFor(cfg.ai)
+    cfg.ai = { provider, model: configuredModelFor(s.model ?? cfg.ai?.model, provider) }
     saveConfig(cfg)
   })
 
@@ -519,9 +523,7 @@ export function registerApiHandlers(
 
         const cfg = loadConfig()
         const provider = providerFor(cfg.ai)
-        const apiKey = provider === 'openai'
-          ? cfg.ai?.openai_api_key
-          : (cfg.ai?.anthropic_api_key ?? cfg.ai?.api_key)
+        const apiKey = (await readAiKeys())[provider]
         if (!apiKey) {
           const label = provider === 'openai' ? 'OpenAI' : 'Anthropic'
           throw new Error(`No ${label} API key configured. Add it under AI Coach on the Overview page.`)
@@ -529,7 +531,7 @@ export function registerApiHandlers(
         const harnessConfig: Parameters<typeof runAgent>[1] = {
           provider,
           apiKey,
-          model: configuredModelFor(cfg.ai, provider),
+          model: configuredModelFor(cfg.ai?.model, provider),
           reasoningEffort: provider === 'openai' ? 'xhigh' : undefined,
           maxTokens: provider === 'openai' ? 64000 : 32000,
           stream: provider === 'anthropic',

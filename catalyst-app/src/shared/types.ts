@@ -209,8 +209,12 @@ export type AiProvider = 'anthropic' | 'openai'
 
 export interface AiSettings {
   provider?: AiProvider
+  // Write-only: omitted preserves the saved key; empty string removes it.
   anthropicApiKey?: string
   openAiApiKey?: string
+  hasAnthropicApiKey?: boolean
+  hasOpenAiApiKey?: boolean
+  keysShared?: boolean
   model?: string
 }
 

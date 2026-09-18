@@ -24,10 +24,10 @@ export interface AppConfig {
   }
   ai?: {
     provider?: 'anthropic' | 'openai'
+    // Legacy JSON credentials, read only to migrate into DuckDB.
     anthropic_api_key?: string
     openai_api_key?: string
-    // Legacy Anthropic key location. Read for migration, but new saves use the
-    // provider-specific fields above.
+    // Original single-provider Anthropic key location.
     api_key?: string
     model?: string
   }

@@ -9,6 +9,8 @@
 !catalyst-app/vite.config.ts
 !catalyst-app/src/
 !catalyst-app/src/**
+!catalyst-app/scripts/
+!catalyst-app/scripts/**
 !tracks/
 !tracks/*.yaml
 !Lotus/

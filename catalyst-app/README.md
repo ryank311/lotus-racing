@@ -111,7 +111,22 @@ Override with the `CATALYST_DATA_DIR` env var.
 ## AI Coach providers
 
 Choose Anthropic or OpenAI in **Overview → AI Coach**, select a model, and add
-the API key for that provider. Provider keys are saved only in the local
-`garmin/config.json` (which is gitignored); no keys are bundled in the app or
-source. OpenAI supports Astra (`gpt-6-astra`), Sol (`gpt-5.6-sol`), and Terra
+the API key for that provider, then click **Save AI settings**. Keys are stored
+only in DuckDB. Server logins share one `ai_provider_keys` table in
+`<server-data-dir>/catalyst-app.duckdb`, accessed through the existing DuckDB
+helpers by the server process. Provider/model preferences remain per driver.
+The UI shows whether each key is configured without returning the saved secret;
+replacing or removing a key affects all server logins. Desktop fallback uses
+the same table in its existing workspace database.
+
+On startup, legacy keys are imported from driver `garmin/config.json` files and
+removed from those files after a successful database write. Existing database
+values take precedence; otherwise the most recently modified config with a key
+wins per provider. Back up the entire server data directory, including the root
+database, to preserve these shared keys.
+
+Anthropic offers Fable 5.1 (`claude-fable-5-1`), Opus 5 (`claude-opus-5`),
+Sonnet 5 (`claude-sonnet-5`), and Haiku 4.5 (`claude-haiku-4-5-20251001`).
+Older saved Opus/Sonnet selections are upgraded within their family.
+OpenAI supports Astra (`gpt-6-astra`), Sol (`gpt-5.6-sol`), and Terra
 (`gpt-5.6-terra`) through the Responses API with x-high reasoning.

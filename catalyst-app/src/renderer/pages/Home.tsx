@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { AI_MODELS, defaultModelFor } from '../../shared/aiModels'
 import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
 import { humaniseBytes, api } from '../api'
 import { useUnits } from '../units'
@@ -158,46 +159,50 @@ function Tile({ label, value, mono, valueClass }: { label: string; value: string
 
 function AiSettingsCard() {
   const [settings, setSettings] = useState<AiSettings | null>(null)
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>()
+  const [draftKeys, setDraftKeys] = useState<Pick<AiSettings, 'anthropicApiKey' | 'openAiApiKey'>>({})
+  const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
 
-  useEffect(() => { void api.getAiSettings().then(setSettings) }, [])
+  useEffect(() => {
+    void api.getAiSettings().then(setSettings).catch(e => setError(String(e)))
+  }, [])
 
   const updateSettings = (updater: (s: AiSettings) => AiSettings) => {
-    setSettings(prev => {
-      if (!prev) return prev
-      const next = updater(prev)
-      clearTimeout(saveTimer.current)
-      saveTimer.current = setTimeout(() => { void api.saveAiSettings(next) }, 300)
-      return next
-    })
+    setSettings(prev => prev ? updater(prev) : prev)
+    setDirty(true)
+    setMessage('')
+  }
+  const save = async () => {
+    if (!settings) return
+    setSaving(true)
+    setError('')
+    try {
+      await api.saveAiSettings({ ...settings, ...draftKeys })
+      setDraftKeys({})
+      setSettings(await api.getAiSettings())
+      setDirty(false)
+      setMessage('Saved')
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setSaving(false) }
   }
 
-  if (!settings) return null
+  if (!settings) return error ? <div className="card">{error}</div> : null
 
-  const provider = settings.provider ?? (settings.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
+  const provider = settings.provider ?? 'anthropic'
   const providerLabel = provider === 'openai' ? 'OpenAI' : 'Anthropic'
-  const selectedKey = provider === 'openai' ? settings.openAiApiKey : settings.anthropicApiKey
-  const modelOptions = provider === 'openai'
-    ? [
-        ['gpt-6-astra', 'Astra — gpt-6-astra · x-high'],
-        ['gpt-5.6-sol', 'Sol — gpt-5.6-sol · x-high'],
-        ['gpt-5.6-terra', 'Terra — gpt-5.6-terra · x-high'],
-      ]
-    : [
-        ['claude-opus-5', 'High — claude-opus-5'],
-        ['claude-opus-4-8', 'High — claude-opus-4-8'],
-        ['claude-opus-4-6', 'High — claude-opus-4-6'],
-        ['claude-sonnet-5', 'Medium — claude-sonnet-5'],
-        ['claude-sonnet-4-6', 'Medium — claude-sonnet-4-6'],
-        ['claude-haiku-4-5-20251001', 'Low — claude-haiku-4-5'],
-      ]
-
+  const keyField = provider === 'openai' ? 'openAiApiKey' : 'anthropicApiKey'
+  const selectedKey = draftKeys[keyField]
+  const hasKey = provider === 'openai' ? settings.hasOpenAiApiKey : settings.hasAnthropicApiKey
+  const modelOptions = AI_MODELS[provider]
   const changeProvider = (next: 'anthropic' | 'openai') => {
-    updateSettings(s => ({
-      ...s,
-      provider: next,
-      model: next === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5',
-    }))
+    updateSettings(s => ({ ...s, provider: next, model: defaultModelFor(next) }))
+  }
+  const changeKey = (value: string) => {
+    setDraftKeys(prev => ({ ...prev, [keyField]: value }))
+    setDirty(true)
+    setMessage('')
   }
 
   return (
@@ -209,6 +214,7 @@ function AiSettingsCard() {
         <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Provider</div>
         <select
           value={provider}
+          disabled={saving}
           onChange={e => changeProvider(e.target.value as 'anthropic' | 'openai')}
           style={{
             width: '100%', background: 'var(--bg-elev)',
@@ -226,10 +232,11 @@ function AiSettingsCard() {
         <input
           type="password"
           value={selectedKey ?? ''}
-          onChange={e => updateSettings(s => provider === 'openai'
-            ? ({ ...s, openAiApiKey: e.target.value })
-            : ({ ...s, anthropicApiKey: e.target.value }))}
-          placeholder={provider === 'openai' ? 'sk-…' : 'sk-ant-api…'}
+          onChange={e => changeKey(e.target.value)}
+          disabled={saving}
+          autoComplete="new-password"
+          aria-label={`${providerLabel} API key`}
+          placeholder={hasKey ? 'Configured — enter a replacement key' : provider === 'openai' ? 'sk-…' : 'sk-ant-api…'}
           style={{
             width: '100%', background: 'var(--bg-elev)',
             border: '1px solid var(--border)', borderRadius: 'var(--radius)',
@@ -238,10 +245,15 @@ function AiSettingsCard() {
           }}
         />
       </div>
+      <div className="muted" style={{ fontSize: 10, marginTop: 8 }}>
+        {selectedKey === '' ? 'Key will be removed when saved.' : hasKey ? 'API key configured.' : 'No API key configured.'}
+        {hasKey && <button className="btn" disabled={saving} onClick={() => changeKey('')} style={{ marginLeft: 8 }}>Remove key</button>}
+      </div>
       <div style={{ marginTop: 12 }}>
         <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
         <select
-          value={settings.model ?? (provider === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5')}
+          value={settings.model ?? defaultModelFor(provider)}
+          disabled={saving}
           onChange={e => updateSettings(s => ({ ...s, model: e.target.value }))}
           style={{
             width: '100%', background: 'var(--bg-elev)',
@@ -253,8 +265,16 @@ function AiSettingsCard() {
           {modelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <div className="muted" style={{ fontSize: 10, lineHeight: 1.5, marginTop: 8 }}>
-          Keys are stored in your local Catalyst Coach config, never in the source code. OpenAI coaching uses the Responses API with x-high reasoning.
+          {settings.keysShared
+            ? 'API keys are stored in the server database and shared by all logins. Replacing or removing a key affects everyone. Your provider and model selection apply only to your login.'
+            : 'API keys are stored only in your Catalyst Coach database.'}
+          {' '}OpenAI coaching uses the Responses API with x-high reasoning.
         </div>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save AI settings'}</button>
+        {message && <span role="status" className="muted" style={{ marginLeft: 10 }}>{message}</span>}
+        {error && <div role="alert" style={{ marginTop: 8 }}>{error}</div>}
       </div>
     </div>
   )

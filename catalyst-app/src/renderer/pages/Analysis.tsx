@@ -89,7 +89,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     // silent failure when it isn't configured.
     const settings = await api.getAiSettings()
     const provider = settings.provider ?? (settings.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
-    const hasKey = provider === 'openai' ? !!settings.openAiApiKey : !!settings.anthropicApiKey
+    const hasKey = provider === 'openai' ? !!settings.hasOpenAiApiKey : !!settings.hasAnthropicApiKey
     if (!hasKey) {
       const label = provider === 'openai' ? 'OpenAI' : 'Anthropic'
       setCoachError(`No ${label} API key configured. Open the Overview page and add it under "AI Coach" before running coaching analysis.`)

@@ -7,15 +7,38 @@
  */
 
 import fs from 'node:fs'
+import type { AiKeyStore, AiKeys } from './aiKeyStore.js'
 import { registerApiHandlers, type ApiHandler, type BackendEventTarget } from './ipc.js'
 import { DB_PATH, seedUserData } from '../garmin/paths.js'
 import { initSchema, openDb } from '../garmin/loadToDb.js'
+import { exchangeTicketForToken } from '../garmin/catalystClient.js'
 
 interface RpcRequest {
   type: 'rpc'
   requestId: number
   channel: string
   args: unknown[]
+}
+
+let keyRequestId = 0
+function keyRequest(operation: 'read' | 'write', keys?: AiKeys, onlyMissing?: boolean): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const requestId = ++keyRequestId
+    const timer = setTimeout(() => { cleanup(); reject(new Error('AI key database request timed out')) }, 30_000)
+    const listener = (message: any) => {
+      if (message?.type !== 'ai-keys-result' || message.requestId !== requestId) return
+      cleanup()
+      if (message.ok) resolve(message.result)
+      else reject(new Error(message.error))
+    }
+    const cleanup = () => { clearTimeout(timer); process.off('message', listener) }
+    process.on('message', listener)
+    send({ type: 'ai-keys', requestId, operation, keys, onlyMissing })
+  })
+}
+const aiKeys: AiKeyStore = {
+  read: () => keyRequest('read'),
+  write: (keys, onlyMissing) => keyRequest('write', keys, onlyMissing),
 }
 
 const handlers = new Map<string, ApiHandler>()
@@ -64,7 +87,11 @@ async function start(): Promise<void> {
     try { await initSchema(db.con) } finally { await db.close() }
   }
 
-  registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget)
+  registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, undefined, aiKeys)
+  handlers.set('auth:completeSso', async (_event, ticket: string, serviceUrl: string) => {
+    const { expiresIn } = await exchangeTicketForToken(ticket, serviceUrl)
+    return { token: '', expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
+  })
 
   process.on('message', (message: RpcRequest) => {
     if (!message || message.type !== 'rpc') return

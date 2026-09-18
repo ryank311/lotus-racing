@@ -38,7 +38,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
 
     const settings = await api.getAiSettings()
     const provider = settings.provider ?? (settings.model?.startsWith('gpt-') ? 'openai' : 'anthropic')
-    const hasKey = provider === 'openai' ? !!settings.openAiApiKey : !!settings.anthropicApiKey
+    const hasKey = provider === 'openai' ? !!settings.hasOpenAiApiKey : !!settings.hasAnthropicApiKey
     if (!hasKey) {
       setErr(`No ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key configured. Add it under AI Coach on the Overview page.`)
       return

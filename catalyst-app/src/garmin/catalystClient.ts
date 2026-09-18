@@ -75,6 +75,7 @@ export async function exchangeTicketForToken(
       'User-Agent': BROWSER_UA,
     },
     body,
+    signal: AbortSignal.timeout(30_000),
   })
   if (!resp.ok) throw new Error(`token exchange ${resp.status}: ${(await resp.text()).slice(0, 500)}`)
   const payload = (await resp.json()) as { access_token?: string; expires_in?: number }

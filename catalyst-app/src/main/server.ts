@@ -6,7 +6,10 @@ import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
+import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
 import { serveStaticAsset } from './staticAssets.js'
+import { GarminSsoServer } from './garminSsoServer.js'
+import type { SignInResult } from '../shared/types.js'
 
 export interface CatalystServerOptions {
   host?: string
@@ -26,13 +29,16 @@ export interface RunningCatalystServer {
 }
 
 interface WorkerReply {
-  type: 'ready' | 'fatal' | 'event' | 'rpc-result'
+  type: 'ready' | 'fatal' | 'event' | 'rpc-result' | 'ai-keys'
   requestId?: number
   ok?: boolean
   result?: unknown
   error?: string
   channel?: string
   payload?: unknown
+  operation?: 'read' | 'write'
+  keys?: AiKeys
+  onlyMissing?: boolean
 }
 
 interface PendingCall {
@@ -95,6 +101,7 @@ class UserBackend {
     instanceDir: string,
     options: CatalystServerOptions,
     onClosed: () => void,
+    private aiKeys: AiKeyStore,
   ) {
     // tsx runs the source tree in dev; packaged/compiled servers use JavaScript.
     const workerPath = path.join(__dirname, `userWorker${path.extname(__filename)}`)
@@ -164,7 +171,15 @@ class UserBackend {
   }
 
   private onMessage(message: WorkerReply): void {
-    if (message.type === 'fatal') {
+    if (message.type === 'ai-keys') {
+      const operation = message.operation === 'read' ? this.aiKeys.read()
+        : message.operation === 'write' ? this.aiKeys.write(message.keys ?? {}, message.onlyMissing)
+        : Promise.reject(new Error('Unknown key operation'))
+      void operation.then(
+        result => this.replyKeys(message.requestId, { ok: true, result }),
+        () => this.replyKeys(message.requestId, { ok: false, error: 'Could not access AI key database' }),
+      )
+    } else if (message.type === 'fatal') {
       this.fail(new Error(message.error ?? 'Backend startup failed'))
     } else if (message.type === 'rpc-result' && message.requestId != null) {
       const call = this.pending.get(message.requestId)
@@ -177,6 +192,10 @@ class UserBackend {
       const data = JSON.stringify({ channel: message.channel, payload: message.payload })
       for (const stream of this.listeners) stream.write(`data: ${data}\n\n`)
     }
+  }
+
+  private replyKeys(requestId: number | undefined, reply: object): void {
+    if (this.child.connected) this.child.send({ type: 'ai-keys-result', requestId, ...reply }, () => {})
   }
 
   async waitUntilReady(): Promise<void> {
@@ -225,6 +244,9 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   const usersDir = path.join(dataDir, 'users')
   fs.mkdirSync(usersDir, { recursive: true })
 
+  const aiKeys = databaseAiKeyStore(path.join(dataDir, 'catalyst-app.duckdb'))
+  await migrateServerAiKeys(dataDir, aiKeys)
+
   const secretPath = path.join(dataDir, '.session-secret')
   if (!fs.existsSync(secretPath)) {
     fs.writeFileSync(secretPath, randomBytes(32), { mode: 0o600, flag: 'wx' })
@@ -264,12 +286,14 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       if (!fs.existsSync(accountPath)) fs.writeFileSync(accountPath, JSON.stringify({ username }, null, 2))
       backend = new UserBackend(username, instanceDir, options, () => {
         if (backends.get(key) === backend) backends.delete(key)
-      })
+      }, aiKeys)
       backends.set(key, backend)
     }
     return backend
   }
 
+  const garminSso = new GarminSsoServer(async (username, ticket, serviceUrl) =>
+    backendFor(username).call('auth:completeSso', [ticket, serviceUrl]) as Promise<SignInResult>)
   const staticDir = options.staticDir ? path.resolve(options.staticDir) : null
   const server: Server = createServer(async (req, res) => {
     const origin = req.headers.origin
@@ -277,7 +301,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       res.writeHead(204, {
         'Access-Control-Allow-Origin': origin ?? '*',
         'Access-Control-Allow-Credentials': 'true',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, X-Catalyst-Origin',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Vary': 'Origin',
       })
@@ -295,6 +319,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         return
       }
       const username = verify(parseCookies(req)[COOKIE])
+      if (await garminSso.handle(req, res, url, username)) return
       if (url.pathname === '/api/health') {
         json(res, 200, { ok: true, service: 'catalyst-coach', users: backends.size }, origin)
         return
@@ -339,6 +364,11 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         const body = await readJson(req)
         if (typeof body?.channel !== 'string' || !Array.isArray(body.args)) {
           json(res, 400, { error: 'Invalid RPC request' }, origin)
+          return
+        }
+        // Only a validated, one-use SSO callback may invoke this worker method.
+        if (body.channel === 'auth:completeSso') {
+          json(res, 403, { error: 'Use the Garmin SSO callback to finish sign-in.' }, origin)
           return
         }
         const result = await backendFor(username).call(body.channel, body.args)

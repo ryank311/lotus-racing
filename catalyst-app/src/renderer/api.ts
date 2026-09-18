@@ -1,7 +1,7 @@
 // Renderer transport. Electron uses the preload bridge; browsers use the
 // server's JSON RPC + Server-Sent Events endpoints.
 
-import type { CatalystBridge, WorkerEvent } from '../shared/types'
+import type { CatalystBridge, WorkerEvent, SignInResult } from '../shared/types'
 import type { UnitSystem } from '../shared/units'
 
 const params = new URLSearchParams(window.location.search)
@@ -147,4 +147,38 @@ export function msToLap(ms: number | null | undefined): string {
   const m = Math.floor(s / 60)
   const remain = s - m * 60
   return `${m}:${remain.toFixed(3).padStart(6, '0')}`
+}
+
+// Open synchronously from the button click so browser popup blockers can grant
+// the window. Polling also works if Garmin severs window.opener via COOP.
+export async function signInWithGarminSso(signal: AbortSignal): Promise<SignInResult> {
+  if (!isRemote) return api.signIn()
+  const popup = window.open('about:blank', '_blank', 'popup,width=540,height=760')
+  if (!popup) throw new Error('Allow popups for Catalyst Coach, then try Garmin SSO again.')
+  popup.document.title = 'Opening Garmin sign-in…'
+  popup.document.body.textContent = 'Opening Garmin sign-in…'
+  popup.opener = null
+  let id: string | undefined
+  try {
+    const attempt = await requestJson('/api/auth/garmin/start', {
+      method: 'POST', headers: { 'X-Catalyst-Origin': new URL(remoteBaseUrl).origin }, body: '{}',
+    })
+    id = attempt.id
+    if (signal.aborted) throw new Error('Garmin sign-in cancelled.')
+    popup.location.href = attempt.url
+    const deadline = Date.now() + 10 * 60_000
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new Error('Garmin sign-in cancelled.')
+      const state = await requestJson(`/api/auth/garmin/status/${id}`)
+      if (state.status === 'complete') return state.result
+      if (state.status === 'error') throw new Error(state.error)
+      // Avoid relying on popup.closed: cross-origin isolation can report a
+      // closed handle while Garmin's window is still open. The dialog offers Cancel.
+      await new Promise<void>(resolve => setTimeout(resolve, 1000))
+    }
+    throw new Error('Garmin sign-in timed out. Try again or use email/password.')
+  } finally {
+    popup.close()
+    if (id) await requestJson(`/api/auth/garmin/cancel/${id}`, { method: 'POST', body: '{}' }).catch(() => {})
+  }
 }

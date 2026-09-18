@@ -148,7 +148,11 @@ function runAnthropic(
   }
   if (tools?.length) {
     reqObj.tools = tools
-    reqObj.tool_choice = toolChoice ?? { type: 'any' }
+    // Fable 5.1 rejects forced tool use. The coaching prompt already asks for
+    // submit_coaching_report explicitly; auto allows its adaptive thinking.
+    reqObj.tool_choice = model === 'claude-fable-5-1'
+      ? { type: 'auto', disable_parallel_tool_use: true }
+      : toolChoice ?? { type: 'any' }
   }
   const body = JSON.stringify(reqObj)
 
@@ -200,6 +204,7 @@ function runAnthropic(
           let generatingStarted = false
           let toolInputJson = ''
           let inToolUse = false
+          let completedToolInput: string | undefined
           for (const line of rawBody.split('\n')) {
             if (!line.startsWith('data: ')) continue
             const raw = line.slice(6).trim()
@@ -220,7 +225,7 @@ function runAnthropic(
             }
             if (evt.type === 'content_block_stop' && inToolUse) {
               inToolUse = false
-              full = toolInputJson  // tool input replaces text output
+              completedToolInput = toolInputJson
             }
             if (evt.type === 'message_start') {
               if (!generatingStarted) {
@@ -237,6 +242,7 @@ function runAnthropic(
               onChunk(`[diag] output_tokens=${evt.usage.output_tokens ?? '?'}\n`)
             }
           }
+          if (completedToolInput !== undefined) full = completedToolInput
         } else {
           // Non-streaming: single JSON response object
           try {

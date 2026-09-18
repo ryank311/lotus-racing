@@ -163,3 +163,105 @@ test('legacy overrides cannot share databases, profiles, or raw data between dri
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(JSON.parse(result.stdout), [path.join(instance, 'garmin/data/catalyst-app.duckdb'), path.join(instance, 'garmin/data'), instance])
 })
+
+test('AI keys are shared in DuckDB, write-only, independently updated, and survive server restart', { timeout: 25000 }, async t => {
+  const { login, rpc, server, dataDir, root } = await setup(t)
+  const alice = await login('Alice')
+  const bob = await login('Bob')
+  const settings = async cookie => (await (await rpc(cookie, 'ai:getSettings')).json()).result
+  assert.equal((await settings(bob)).hasAnthropicApiKey, false)
+  const save = async (cookie, patch) => {
+    const response = await rpc(cookie, 'ai:saveSettings', patch)
+    assert.equal(response.status, 200, await response.text())
+  }
+  await Promise.all([
+    save(alice, { provider: 'anthropic', model: 'claude-fable-5-1', anthropicApiKey: 'anthropic-fixture' }),
+    save(bob, { provider: 'openai', model: 'gpt-5.6-terra', openAiApiKey: 'openai-fixture' }),
+  ])
+  for (const cookie of [alice, bob]) {
+    const value = await settings(cookie)
+    assert.equal(value.hasAnthropicApiKey, true)
+    assert.equal(value.hasOpenAiApiKey, true)
+    assert.equal(value.keysShared, true)
+    assert.equal(value.anthropicApiKey, undefined)
+    assert.equal(value.openAiApiKey, undefined)
+    assert.ok(!JSON.stringify(value).includes('fixture'))
+  }
+  assert.equal((await settings(alice)).model, 'claude-fable-5-1')
+  assert.equal((await settings(bob)).model, 'gpt-5.6-terra')
+  // A preference-only save cannot overwrite another login's keys.
+  await save(bob, { model: 'gpt-6-astra' })
+  assert.equal((await settings(alice)).hasAnthropicApiKey, true)
+  for (const username of ['Alice', 'Bob']) {
+    const cfg = fs.readFileSync(path.join(userDirectory(dataDir, username), 'garmin/config.json'), 'utf8')
+    assert.ok(!cfg.includes('fixture'))
+    assert.ok(!cfg.includes('api_key'))
+  }
+  const { databaseAiKeyStore } = require('../dist-main/main/aiKeyStore.js')
+  const keyStore = databaseAiKeyStore(path.join(dataDir, 'catalyst-app.duckdb'))
+  assert.deepEqual(await keyStore.read(), { anthropic: 'anthropic-fixture', openai: 'openai-fixture' })
+  // Worker coaching uses this same private IPC read; no public method exposes it.
+  assert.equal((await rpc(bob, 'ai-keys', { operation: 'read' })).status, 500)
+  await save(alice, { anthropicApiKey: '' })
+  assert.equal((await settings(bob)).hasAnthropicApiKey, false)
+  assert.equal((await settings(bob)).hasOpenAiApiKey, true)
+  await save(bob, { openAiApiKey: 'replacement-fixture' })
+  assert.deepEqual(await keyStore.read(), { anthropic: '', openai: 'replacement-fixture' })
+  const bad = await rpc(alice, 'ai:saveSettings', { anthropicApiKey: 'must-rollback', openAiApiKey: 123 })
+  assert.equal(bad.status, 500)
+  assert.deepEqual(await keyStore.read(), { anthropic: '', openai: 'replacement-fixture' })
+
+  await server.close()
+  const restarted = await startCatalystServer({ host: '127.0.0.1', port: 0, dataDir, templateRoot: root })
+  t.after(() => restarted.close())
+  const response = await fetch(restarted.url + '/api/rpc', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', cookie: bob },
+    body: JSON.stringify({ channel: 'ai:getSettings', args: [] }),
+  })
+  const persisted = (await response.json()).result
+  assert.equal(persisted.hasOpenAiApiKey, true)
+  assert.equal(persisted.hasAnthropicApiKey, false)
+  assert.equal(persisted.model, 'gpt-6-astra')
+})
+
+test('startup migrates legacy AI keys once, removes JSON secrets, and upgrades old models', { timeout: 20000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-ai-migration-'))
+  const dataDir = path.join(root, 'server')
+  const configPath = username => path.join(userDirectory(dataDir, username), 'garmin/config.json')
+  for (const [username, ai] of [
+    ['Alice', { api_key: 'old-anthropic', openai_api_key: 'old-openai', model: 'claude-opus-4-8' }],
+    ['Bob', { anthropic_api_key: 'new-anthropic', model: 'claude-sonnet-4-6' }],
+  ]) {
+    fs.mkdirSync(path.dirname(configPath(username)), { recursive: true })
+    fs.writeFileSync(configPath(username), JSON.stringify({ units: 'metric', ai }))
+  }
+  fs.mkdirSync(path.dirname(configPath('Corrupt')), { recursive: true })
+  fs.writeFileSync(configPath('Corrupt'), '{invalid json')
+  fs.utimesSync(configPath('Alice'), new Date(1000), new Date(1000))
+  const server = await startCatalystServer({ host: '127.0.0.1', port: 0, dataDir, templateRoot: root })
+  t.after(async () => { await server.close(); fs.rmSync(root, { recursive: true, force: true }) })
+  const { databaseAiKeyStore, migrateAiConfig } = require('../dist-main/main/aiKeyStore.js')
+  const store = databaseAiKeyStore(path.join(dataDir, 'catalyst-app.duckdb'))
+  assert.deepEqual(await store.read(), { anthropic: 'new-anthropic', openai: 'old-openai' })
+  for (const username of ['Alice', 'Bob']) {
+    const cfg = JSON.parse(fs.readFileSync(configPath(username), 'utf8'))
+    assert.equal(cfg.units, 'metric')
+    assert.deepEqual(Object.keys(cfg.ai), ['model'])
+    const login = await fetch(server.url + '/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }),
+    })
+    const cookie = login.headers.get('set-cookie').split(';')[0]
+    const response = await fetch(server.url + '/api/rpc', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', cookie },
+      body: JSON.stringify({ channel: 'ai:getSettings', args: [] }),
+    })
+    const settings = (await response.json()).result
+    assert.equal(settings.model, username === 'Alice' ? 'claude-opus-5' : 'claude-sonnet-5')
+    assert.equal(settings.hasAnthropicApiKey, true)
+  }
+  await store.write({ anthropic: '' })
+  fs.writeFileSync(configPath('Alice'), JSON.stringify({ ai: { api_key: 'do-not-resurrect' } }))
+  await migrateAiConfig(configPath('Alice'), store)
+  assert.deepEqual(await store.read(), { anthropic: '', openai: 'old-openai' })
+  assert.deepEqual(JSON.parse(fs.readFileSync(configPath('Alice'), 'utf8')), { ai: {} })
+})

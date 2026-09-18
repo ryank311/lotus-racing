@@ -1,8 +1,7 @@
-// Garmin sign-in modal — email/password with a follow-up MFA step. Credentials
-// go straight to Garmin's SSO via the main process and are never stored.
+// Garmin sign-in: existing credentials/MFA flow or Garmin's hosted SSO UI.
 
-import { useState } from 'react'
-import { api, isRemote } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { api, isRemote, signInWithGarminSso } from '../api'
 import { Modal } from './Modal'
 
 interface Props {
@@ -12,6 +11,9 @@ interface Props {
 }
 
 export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
+  const [method, setMethod] = useState<'password' | 'sso'>('password')
+  const ssoAbort = useRef<AbortController | null>(null)
+  useEffect(() => () => ssoAbort.current?.abort(), [])
   const [email, setEmail] = useState(initialEmail)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -20,6 +22,7 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
   const [code, setCode] = useState('')
 
   const submit = async () => {
+    if (busy) return
     if (!email.trim() || !password) { setErr('Enter email and password'); return }
     setBusy(true); setErr(null)
     try {
@@ -38,6 +41,7 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
   }
 
   const submitMfa = async () => {
+    if (busy) return
     if (!mfa || !code.trim()) { setErr('Enter the MFA code'); return }
     setBusy(true); setErr(null)
     try {
@@ -50,7 +54,24 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
     }
   }
 
+  const submitSso = async () => {
+    if (busy) return
+    setBusy(true); setErr(null); setPassword('')
+    const controller = new AbortController()
+    ssoAbort.current = controller
+    try {
+      const result = await signInWithGarminSso(controller.signal)
+      if (!controller.signal.aborted) onSignedIn(email.trim(), result.token, result.expiresAt)
+    } catch (error: any) {
+      if (!controller.signal.aborted) setErr(error.message ?? String(error))
+    } finally {
+      ssoAbort.current = null
+      setBusy(false)
+    }
+  }
+
   const cancel = async () => {
+    ssoAbort.current?.abort()
     if (mfa) { try { await api.cancelMfa(mfa.sessionId) } catch { /* ignore */ } }
     onClose()
   }
@@ -96,15 +117,20 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
       onClose={cancel}
       dismissable={!busy}
       actions={<>
-        <button className="btn ghost" disabled={busy} onClick={cancel}>Cancel</button>
-        <button className="btn primary" disabled={busy || !email.trim() || !password} onClick={submit}>
-          {busy ? 'Signing in…' : 'Sign in'}
+        <button className="btn ghost" disabled={busy && !(method === 'sso' && isRemote)} onClick={cancel}>Cancel</button>
+        <button className="btn primary" disabled={busy || !email.trim() || (method === 'password' && !password)} onClick={method === 'sso' ? submitSso : submit}>
+          {busy ? (method === 'sso' ? 'Waiting for Garmin…' : 'Signing in…') : (method === 'sso' ? 'Continue with Garmin SSO' : 'Sign in')}
         </button>
       </>}
     >
+      <div role="group" aria-label="Sign-in method" style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <button className={`btn ${method === 'password' ? 'primary' : 'ghost'}`} aria-pressed={method === 'password'} disabled={busy} onClick={() => { setMethod('password'); setErr(null) }}>Email / password</button>
+        <button className={`btn ${method === 'sso' ? 'primary' : 'ghost'}`} aria-pressed={method === 'sso'} disabled={busy} onClick={() => { setMethod('sso'); setPassword(''); setErr(null) }}>Garmin SSO · experimental</button>
+      </div>
       <div style={{ marginBottom: 12, color: 'var(--text-mute)', fontSize: 12 }}>
-        Sign in with your Garmin Connect credentials to sync Catalyst sessions. Your
-        password is {isRemote ? 'relayed by this Catalyst server to' : 'sent only to'} Garmin's SSO and is never stored.
+        {method === 'sso'
+          ? 'Sign in on Garmin’s website in a separate window. Garmin handles your password and verification steps. Enter the account email below to label this connection; use the same account on Garmin.'
+          : <>Sign in with your Garmin Connect credentials to sync Catalyst sessions. Your password is {isRemote ? 'relayed by this Catalyst server to' : 'sent only to'} Garmin’s SSO and is never stored.</>}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <input
@@ -113,12 +139,12 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
           placeholder="Garmin Connect email"
           value={email}
           onChange={e => setEmail(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') void submit() }}
+          onKeyDown={e => { if (e.key === 'Enter') void (method === 'sso' ? submitSso() : submit()) }}
           disabled={busy}
           className="text-input"
           style={{ width: '100%' }}
         />
-        <input
+        {method === 'password' && <input
           type="password"
           placeholder="password"
           value={password}
@@ -127,8 +153,9 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
           disabled={busy}
           className="text-input"
           style={{ width: '100%' }}
-        />
+        />}
       </div>
+      {busy && method === 'sso' && <div role="status" style={{ marginTop: 10 }}>Complete sign-in in the Garmin window, then return here.{!isRemote && ' Close the Garmin window to cancel.'}</div>}
       {err && <div style={{ color: 'var(--red)', fontSize: 11, marginTop: 8 }}>{err}</div>}
     </Modal>
   )
