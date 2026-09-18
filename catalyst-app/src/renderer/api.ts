@@ -77,6 +77,7 @@ const remoteBridge: CatalystBridge = {
   readProfileFile: filePath => rpc('profiles:readFile', filePath),
 
   listSessions: accountLabel => rpc('db:listSessions', accountLabel),
+  ensureSessions: (guids, opts) => rpc('db:ensureSessions', guids, opts),
   hasDb: () => rpc('db:hasDb'),
   listVehicles: () => rpc('db:listVehicles'),
   setVehicleProfile: (vehicleGuid, profileName) => rpc('profiles:setVehicleProfile', vehicleGuid, profileName),

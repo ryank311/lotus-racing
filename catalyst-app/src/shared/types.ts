@@ -34,6 +34,7 @@ export interface SyncStats {
 
 export interface DbSessionRow {
   session_guid: string
+  details_loaded: boolean
   session_start: string | null
   track_name: string | null
   track_configuration_name: string | null
@@ -83,6 +84,12 @@ export interface LogLine {
 
 export type WorkerKind = 'sync' | 'load' | 'brief' | 'coach'
 
+export interface SyncOptions {
+  token?: string
+  accountLabel?: string
+  mode?: 'recent' | 'all'
+}
+
 // Structured progress for the status bar. `current/total` drive the bar; the
 // other fields populate the human-readable label. Emitted alongside `log`
 // events so existing log consumers keep working unchanged.
@@ -95,7 +102,7 @@ export interface WorkerProgress {
 
 export interface WorkerEvent {
   kind: WorkerKind
-  type: 'log' | 'done' | 'error' | 'progress'
+  type: 'log' | 'done' | 'error' | 'progress' | 'catalog'
   payload?: string
   progress?: WorkerProgress
 }
@@ -285,6 +292,7 @@ export interface CatalystBridge {
 
   // Sessions / DB
   listSessions(accountLabel?: string | null): Promise<DbSessionRow[]>
+  ensureSessions(sessionGuids: string[], opts?: SyncOptions): Promise<void>
   hasDb(): Promise<boolean>
   listVehicles(): Promise<VehicleSummary[]>
   setVehicleProfile(vehicleGuid: string, profileName: string | null): Promise<void>
@@ -310,7 +318,7 @@ export interface CatalystBridge {
   revealInFinder(path: string): Promise<void>
 
   // Long-running workers
-  startSync(opts?: { token?: string; accountLabel?: string }): Promise<void>
+  startSync(opts?: SyncOptions): Promise<void>
   startLoad(): Promise<void>
   onWorker(cb: (evt: WorkerEvent) => void): () => void
   onLog(cb: (msg: { level: string; message: string; ts: number }) => void): () => void

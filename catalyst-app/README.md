@@ -13,6 +13,9 @@ npm run dev          # launches Vite + Electron
 
 ## Remote / headless server
 
+For a persistent NAS installation and private phone access, follow the
+[Synology Docker deployment guide](deploy/README.md).
+
 Catalyst Coach can serve the complete UI to phones and other computers. Each
 driver name gets a separate workspace containing its own DuckDB database, raw
 sessions, Garmin token/config, AI coaching history, Garage profiles, track
@@ -23,6 +26,12 @@ opens Garage. From then on, Garage reads and writes the database. The `.md`
 files are kept in sync as compatibility mirrors so AI prompt generation and
 human-readable backups continue to work; if the telemetry database is rebuilt,
 those mirrors seed the Garage tables again.
+
+On login with a valid Garmin session, sync automatically refreshes all session
+overviews and downloads missing telemetry for the latest 20 sessions. Selecting
+older sessions downloads and stores their details on demand. Overview's
+**Sync now** repeats the recent sync; its caret offers **Sync All** to download
+the entire archive. Already downloaded telemetry is reused.
 
 ```bash
 npm install

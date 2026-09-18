@@ -255,6 +255,7 @@ export async function fetchAndSaveSession(
     log({ kind: 'warn', message: 'summary has no sessionGuid' })
     return
   }
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sg)) throw new Error('Invalid session ID')
   const out = path.join(dataDir, sg)
   fs.mkdirSync(out, { recursive: true })
   saveJson(path.join(out, 'summary.json'), summary)
@@ -288,11 +289,17 @@ export async function fetchAndSaveSession(
       })
     } catch (e: any) {
       log({ kind: 'warn', message: `  [WARN] ${label} failed: ${e.message ?? e}`, sessionLabel })
+      if (label === 'performance') throw e
     }
+  }
+  const performancePath = path.join(out, 'performance.pb')
+  if (!fs.existsSync(performancePath) || fs.statSync(performancePath).size === 0) {
+    throw new Error('Session telemetry is not available yet. Try syncing again later.')
   }
 
   const mlGuid = summary.meanLineGuid
   if (mlGuid) {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(mlGuid)) throw new Error('Invalid mean-line ID')
     const mlPath = path.join(meanLineDir, `${mlGuid}.pb`)
     if (!fs.existsSync(mlPath) || fs.statSync(mlPath).size === 0) {
       try {

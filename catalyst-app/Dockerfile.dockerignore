@@ -1,0 +1,17 @@
+# Allow only source code and the existing profile/track templates into the build.
+# Never send local databases, Garmin credentials, AI keys, or .git to Docker.
+**
+!catalyst-app/
+!catalyst-app/package.json
+!catalyst-app/package-lock.json
+!catalyst-app/tsconfig.json
+!catalyst-app/tsconfig.main.json
+!catalyst-app/vite.config.ts
+!catalyst-app/src/
+!catalyst-app/src/**
+!tracks/
+!tracks/*.yaml
+!Lotus/
+!Lotus/*.md
+!Vette/
+!Vette/*.md

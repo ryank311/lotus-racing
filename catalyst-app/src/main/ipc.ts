@@ -16,8 +16,6 @@ import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
 import { replaceSessionIds } from '../shared/sessionIdentity.js'
 import {
   CatalystAPI,
-  fetchAllSessions,
-  fetchAndSaveSession,
   loadCatalystToken,
   loadCatalystTokenExpiry,
 } from '../garmin/catalystClient.js'
@@ -42,6 +40,7 @@ import { parseCoachResponse } from '../garmin/coachParser.js'
 import { runAgent } from '../garmin/agentHarness.js'
 import { COACHING_TOOL } from '../garmin/coachingTool.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
+import { syncSessions, validateSessionGuids } from '../garmin/sessionSync.js'
 import {
   deleteGarageFile,
   ensureGarageProfile,
@@ -62,6 +61,7 @@ import type {
   BriefFile,
   DbSessionRow,
   SyncStats,
+  SyncOptions,
   AccountStats,
   WorkerEvent,
   CoachOptions,
@@ -258,6 +258,7 @@ export function registerApiHandlers(
             : {}
           rows.push({
             session_guid: s.sessionGuid ?? name,
+            details_loaded: false,
             session_start: s.sessionStart ?? null,
             track_name: s.trackName ?? null,
             track_configuration_name: s.trackConfigurationName ?? null,
@@ -280,10 +281,10 @@ export function registerApiHandlers(
     try {
       return await withDb(async con => {
         const reader = await con.runAndReadAll(`
-          SELECT s.session_guid,
+          SELECT s.session_guid, s.details_loaded,
             CAST(s.session_start AS VARCHAR) AS session_start,
-            COALESCE(tc.track_name, 'Unknown') AS track_name,
-            COALESCE(tc.track_configuration_name, '') AS track_configuration_name,
+            COALESCE(s.track_name, tc.track_name, 'Unknown') AS track_name,
+            COALESCE(s.track_configuration_name, tc.track_configuration_name, '') AS track_configuration_name,
             s.best_lap_ms,
             (SELECT COUNT(*) FROM laps l WHERE l.session_guid = s.session_guid) AS lap_count,
             (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
@@ -479,6 +480,7 @@ export function registerApiHandlers(
   // ── Run coach (streaming worker) ────────────────────────────────────────────
 
   register('coach:run', async (_e, opts: CoachOptions): Promise<{ sessionId: null }> => {
+    await ensureSessionDetails(opts.sessionGuids)
     if (activeWorker) throw new Error('Another worker is already running')
     activeWorker = { kind: 'coach' }
     const win = getMainWindow()
@@ -785,6 +787,7 @@ export function registerApiHandlers(
   })
   register('results:read', (_e, p: string) => fs.readFileSync(assertPathInside(COACHING_DIR, p), 'utf-8'))
   register('briefs:generate', async (_e, opts: BriefOptions) => {
+    if (opts.sessionGuids?.length) await ensureSessionDetails(opts.sessionGuids)
     const res = await runBrief({
       scope: opts.scope,
       profile: opts.profile,
@@ -803,138 +806,75 @@ export function registerApiHandlers(
   })
 
   register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) => {
+    await ensureSessionDetails(sessionGuids)
     return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapLimit)
   })
 
   // ---- workers ---------------------------------------------------------
 
-  register('worker:startSync', async (_e, opts?: { token?: string; accountLabel?: string }) => {
-    if (activeWorker) throw new Error('worker already running')
+  let syncTask: Promise<void> | null = null
+  let detailQueue: Promise<void> = Promise.resolve()
+
+  function startSyncTask(opts: SyncOptions = {}, sessionGuids?: string[]): Promise<void> {
+    if (activeWorker) throw new Error('Another worker is already running')
     activeWorker = { kind: 'sync' }
     const win = getMainWindow()
-    const accountLabel = opts?.accountLabel ?? null
-    const log = (msg: string) => broadcast(win, { kind: 'sync', type: 'log', payload: msg })
-    // Tracks the current progress state so we can incrementally update file/
-    // session labels without losing the previous fields. Emit on any change.
-    const prog: { current: number; total: number; label: string; fileName?: string } = {
-      current: 0, total: 0, label: '',
-    }
-    const sendProgress = () =>
-      broadcast(win, { kind: 'sync', type: 'progress', progress: { ...prog } })
-
-    // Smart sync: diff Garmin's session list against what's already in the DB,
-    // fetch + load only the new ones, and update the DB incrementally.
-    // No full rebuild — that's what the Rebuild DB button is for.
-    void (async () => {
-      let syncDb: Awaited<ReturnType<typeof openDb>> | null = null
-      try {
-        let token = opts?.token || loadCatalystToken()
-        if (!token) {
-          log('[auth] No valid token — opening Garmin sign-in window')
-          const { accessToken } = await loginViaBrowser()
-          token = accessToken
-          log('[auth] Login successful')
-        } else {
-          log(`[auth] Syncing as ${accountLabel ?? 'unlabeled account'}`)
-        }
-        const api = new CatalystAPI(token)
-        api.pageSize = loadConfig().api?.page_size ?? 50
-
-        // Open / initialise the DB before doing any network work so we can
-        // diff against it. Closed in finally to guarantee the Windows file lock is released.
-        syncDb = await openDb()
-        const con = syncDb.con
-        await initSchema(con)
-        const knownGuids = await existingSessionGuids(con)
-        log(`[sync] DB already contains ${knownGuids.size} session(s)`)
-
-        log('[sync] Fetching session list from Garmin...')
-        const summaries = await api.getSessions({
-          onProgress: n => log(`  [sessions] fetched ${n} summaries so far...`),
-        })
-        const newSessions = summaries.filter(s => s.sessionGuid && !knownGuids.has(s.sessionGuid))
-        const skipped = summaries.length - newSessions.length
-        log(`[sync] Garmin has ${summaries.length} session(s) — ${newSessions.length} new, ${skipped} already loaded`)
-
-        if (newSessions.length > 0) {
-          // Refresh track facilities + configurations once so new sessions' track
-          // names resolve in the DB. These are small JSON blobs.
-          try {
-            log('[sync] Refreshing track facilities + configurations...')
-            const facilities = await api.getTrackFacilities()
-            fs.writeFileSync(path.join(DATA_DIR, 'track_facilities.json'), JSON.stringify(facilities, null, 2))
-            const configsByTrack: Record<string, any[]> = {}
-            for (const fac of facilities) {
-              const cid = (fac as any).trackCartographyId
-              if (!cid) continue
-              try {
-                configsByTrack[String(cid)] = await api.getTrackConfigurations(cid)
-              } catch (e: any) {
-                log(`  [WARN] configs ${cid}: ${e.message ?? e}`)
-              }
-            }
-            fs.writeFileSync(path.join(DATA_DIR, 'track_configurations.json'), JSON.stringify(configsByTrack, null, 2))
-            const n = await loadTrackConfigs(con)
-            log(`  loaded ${n} track config rows`)
-          } catch (e: any) {
-            log(`[sync] track config refresh failed (continuing): ${e.message ?? e}`)
-          }
-
-          fs.mkdirSync(MEAN_LINES_DIR, { recursive: true })
-
-          // Fetch + load each new session in order. Fetch is the slow part
-          // (network); DB insert is fast via the Appender.
-          let loaded = 0
-          let failed = 0
-          prog.total = newSessions.length
-          sendProgress()
-          for (let i = 0; i < newSessions.length; i++) {
-            const s = newSessions[i]
-            const sg = s.sessionGuid!
-            prog.current = i + 1
-            prog.label = `${s.trackName ?? sg.slice(0, 8)} · ${(s.sessionStart ?? '').slice(0, 10)}`
-            prog.fileName = undefined
-            sendProgress()
-            log(`[${i + 1}/${newSessions.length}] ${sg.slice(0, 8)}… ${s.trackName ?? ''} ${s.bestLap ?? ''}`)
-            try {
-              await fetchAndSaveSession(api, s, SESSIONS_DIR, MEAN_LINES_DIR,
-                e => {
-                  log(`  ${e.message}`)
-                  if (e.kind === 'file' && e.fileName) {
-                    prog.fileName = e.fileName
-                    sendProgress()
-                  }
-                },
-                accountLabel,
-              )
-              const samples = await loadSession(con, path.join(SESSIONS_DIR, sg))
-              log(`  ✓ loaded ${samples.toLocaleString()} samples into DB`)
-              loaded++
-            } catch (e: any) {
-              failed++
-              log(`  ✗ FAILED: ${e.message ?? e}`)
-            }
-            // Brief courtesy pause between sessions to avoid hammering the API.
-            await new Promise(r => setTimeout(r, 300))
-          }
-
-          log(`[sync] done — ${loaded} loaded, ${failed} failed, ${skipped} skipped (already in DB)`)
-        } else {
-          log('[sync] Up to date — nothing to download.')
-        }
-
-        const dbExists = fs.existsSync(DB_PATH)
-        const dbSize = dbExists ? fs.statSync(DB_PATH).size : 0
-        log(`[sync] DB path: ${DB_PATH}`)
-        log(`[sync] DB exists: ${dbExists}, size: ${(dbSize / 1024 / 1024).toFixed(1)} MB`)
-        broadcast(win, { kind: 'sync', type: 'done' })
-      } catch (e: any) {
-        broadcast(win, { kind: 'sync', type: 'error', payload: `${e.message ?? e}` })
-      } finally {
-        await syncDb?.close()
-        activeWorker = null
+    const log = (payload: string) => broadcast(win, { kind: 'sync', type: 'log', payload })
+    broadcast(win, { kind: 'sync', type: 'progress', progress: {
+      current: 0, total: 0, label: sessionGuids ? 'Preparing selected sessions…' : 'Fetching session overviews…',
+    } })
+    const task = (async () => {
+      let token = opts.token || loadCatalystToken()
+      if (!token) {
+        log('[auth] Sign in to Garmin to download session details')
+        const { accessToken } = await loginViaBrowser()
+        token = accessToken
       }
+      const api = new CatalystAPI(token)
+      api.pageSize = loadConfig().api?.page_size ?? 50
+      await syncSessions({
+        api, accountLabel: opts.accountLabel ?? loadConfig().auth?.email ?? null,
+        mode: opts.mode, sessionGuids, log,
+        onProgress: progress => broadcast(win, { kind: 'sync', type: 'progress', progress }),
+        onCatalog: () => broadcast(win, { kind: 'sync', type: 'catalog' }),
+      })
     })()
+    // Release the worker before notifying clients, so queued selections can start immediately.
+    syncTask = task.then(() => {
+      activeWorker = null
+      syncTask = null
+      broadcast(win, { kind: 'sync', type: 'done' })
+    }, error => {
+      activeWorker = null
+      syncTask = null
+      broadcast(win, { kind: 'sync', type: 'error', payload: String(error?.message ?? error) })
+      throw error
+    })
+    return syncTask
+  }
+
+  function ensureSessionDetails(guids: string[], opts?: SyncOptions): Promise<void> {
+    validateSessionGuids(guids)
+    const task = detailQueue.then(async () => {
+      // Serialize downloads, including requests from multiple browser tabs.
+      for (;;) {
+        while (syncTask) await syncTask.catch(() => {})
+        const known = fs.existsSync(DB_PATH) ? await withDb(existingSessionGuids) : new Set<string>()
+        if (syncTask) continue
+        const missing = [...new Set(guids)].filter(guid => !known.has(guid))
+        if (missing.length) await startSyncTask(opts, missing)
+        return
+      }
+    })
+    detailQueue = task.catch(() => {})
+    return task
+  }
+
+  register('db:ensureSessions', (_e, guids: string[], opts?: SyncOptions) => ensureSessionDetails(guids, opts))
+  register('worker:startSync', (_e, opts?: SyncOptions) => {
+    if (opts?.mode && opts.mode !== 'recent' && opts.mode !== 'all') throw new Error('Invalid sync mode')
+    if (syncTask && opts?.mode !== 'all') return
+    void startSyncTask(opts).catch(() => {}) // Errors are reported through worker events.
   })
 
   register('worker:startLoad', async () => {

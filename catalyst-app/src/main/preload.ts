@@ -33,6 +33,7 @@ const bridge: CatalystBridge = {
   readProfileFile: p => ipcRenderer.invoke('profiles:readFile', p),
 
   listSessions: (accountLabel?: string | null) => ipcRenderer.invoke('db:listSessions', accountLabel),
+  ensureSessions: (guids, opts) => ipcRenderer.invoke('db:ensureSessions', guids, opts),
   hasDb: () => ipcRenderer.invoke('db:hasDb'),
   listVehicles: () => ipcRenderer.invoke('db:listVehicles'),
   setVehicleProfile: (vehicleGuid: string, profileName: string | null) =>
@@ -53,7 +54,7 @@ const bridge: CatalystBridge = {
   generateBrief: (opts: BriefOptions) => ipcRenderer.invoke('briefs:generate', opts),
   revealInFinder: p => ipcRenderer.invoke('shell:reveal', p),
 
-  startSync: (opts?: { token?: string; accountLabel?: string }) => ipcRenderer.invoke('worker:startSync', opts),
+  startSync: opts => ipcRenderer.invoke('worker:startSync', opts),
   startLoad: () => ipcRenderer.invoke('worker:startLoad'),
   onWorker: cb => {
     const handler = (_e: unknown, evt: WorkerEvent) => cb(evt)

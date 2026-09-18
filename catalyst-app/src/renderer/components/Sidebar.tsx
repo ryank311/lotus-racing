@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ServerUserSwitcher } from './ServerGate'
 
 export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
 
@@ -173,6 +174,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
           </button>
         </div>
       </div>
+      <ServerUserSwitcher />
     </aside>
   )
 }

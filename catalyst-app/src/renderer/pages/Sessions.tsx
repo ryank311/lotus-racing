@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import type { DbSessionRow } from '../../shared/types'
 
@@ -8,6 +8,7 @@ interface Props {
   setSelected: (s: Set<string>) => void
   onAnalyze: () => void
   activeAccount: string | null
+  onEnsureSessions: (guids: string[]) => Promise<void>
 }
 
 // Derive a one-line vehicle label from the DB row. We prefer `model` so the
@@ -56,7 +57,7 @@ function compareWith(key: SortKey, dir: SortDir) {
   }
 }
 
-export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount }: Props) {
+export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount, onEnsureSessions }: Props) {
   const [rows, setRows] = useState<DbSessionRow[]>([])
   const [hasDb, setHasDb] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -64,6 +65,11 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
   const [vehicleFilter, setVehicleFilter] = useState<string | null>(null) // vehicle_guid or null
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const inFlight = useRef(new Set<string>())
+  const failed = useRef(new Set<string>())
+  const [downloading, setDownloading] = useState(new Set<string>())
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [retryTick, setRetryTick] = useState(0)
 
   // First click on a new column picks that column's natural default direction;
   // clicking the active column toggles asc/desc.
@@ -78,14 +84,41 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
   }
 
   useEffect(() => {
+    let cancelled = false
     void (async () => {
       setLoading(true)
-      const [list, db] = await Promise.all([api.listSessions(activeAccount), api.hasDb()])
-      setRows(list)
-      setHasDb(db)
-      setLoading(false)
+      try {
+        const [list, db] = await Promise.all([api.listSessions(activeAccount), api.hasDb()])
+        if (!cancelled) { setRows(list); setHasDb(db) }
+      } catch (error) {
+        if (!cancelled) setDownloadError(String(error))
+      } finally { if (!cancelled) setLoading(false) }
     })()
+    return () => { cancelled = true }
   }, [refreshTick, activeAccount])
+
+  useEffect(() => {
+    const missing = rows.filter(row => selected.has(row.session_guid) && !row.details_loaded
+      && !inFlight.current.has(row.session_guid) && !failed.current.has(row.session_guid))
+      .map(row => row.session_guid)
+    if (!missing.length) return
+    // Batch rapid checkbox clicks into one request, including Select visible.
+    const timer = setTimeout(() => {
+      missing.forEach(guid => inFlight.current.add(guid))
+      setDownloading(new Set(inFlight.current))
+      void onEnsureSessions(missing).then(async () => {
+        const list = await api.listSessions(activeAccount)
+        setRows(list)
+      }).catch(error => {
+        missing.forEach(guid => failed.current.add(guid))
+        setDownloadError(error instanceof Error ? error.message : String(error))
+      }).finally(() => {
+        missing.forEach(guid => inFlight.current.delete(guid))
+        setDownloading(new Set(inFlight.current))
+      })
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [rows, selected, onEnsureSessions, activeAccount, retryTick])
 
   // One chip per distinct vehicle_guid in the current rows, with a count.
   const vehicleGroups = useMemo<VehicleGroup[]>(() => {
@@ -141,6 +174,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     () => rows.filter(r => selected.has(r.session_guid)),
     [rows, selected],
   )
+  const selectedNeedsDetails = selectedRows.some(row => !row.details_loaded || downloading.has(row.session_guid))
 
   return (
     <>
@@ -156,6 +190,16 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
       </header>
 
       <div className="page-body">
+        <p className="muted small">All session overviews are listed. Select older sessions to download and save their telemetry.</p>
+        {downloading.size > 0 && <p className="small" role="status">Downloading details for {downloading.size} session(s)…</p>}
+        {downloadError && (
+          <div className="session-download-error" role="alert">
+            <span>{downloadError}</span>
+            <button className="btn ghost" onClick={() => {
+              failed.current.clear(); setDownloadError(null); setRetryTick(t => t + 1)
+            }}>Retry selected</button>
+          </div>
+        )}
         {vehicleGroups.length > 1 && (
           <div className="row-center" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             <span className="muted text-mono" style={{
@@ -243,7 +287,11 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                       />
                     </td>
                     <td className="small">{r.session_start ?? '—'}</td>
-                    <td>{r.track_name ?? '—'}</td>
+                    <td>{r.track_name ?? '—'}
+                      {!r.details_loaded && <span className="session-detail-status">
+                        {downloading.has(r.session_guid) ? 'Downloading…' : 'Overview only'}
+                      </span>}
+                    </td>
                     <td className="muted">{r.track_configuration_name || '—'}</td>
                     <td className="small">{veh || <span className="muted">—</span>}</td>
                     <td className="num laptime">{msToLap(r.best_lap_ms)}</td>
@@ -279,8 +327,8 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
             )}
           </div>
           <button className="btn ghost" onClick={() => setSelected(new Set())}>Clear</button>
-          <button className="btn primary" onClick={onAnalyze}>
-            Analyze {selected.size} →
+          <button className="btn primary" onClick={onAnalyze} disabled={selectedNeedsDetails || loading}>
+            {selectedNeedsDetails ? 'Waiting for details…' : `Analyze ${selected.size} →`}
           </button>
         </div>
       )}

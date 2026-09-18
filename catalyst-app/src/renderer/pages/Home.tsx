@@ -9,11 +9,30 @@ interface Props {
   stats: SyncStats | null
   busy: 'sync' | 'load' | 'coach' | null
   signedIn: boolean
-  onSync: () => void
+  onSync: (mode?: 'recent' | 'all') => void
   onRequestSignIn: () => void
 }
 
 export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn }: Props) {
+  const [syncMenuOpen, setSyncMenuOpen] = useState(false)
+  const syncMenuRef = useRef<HTMLDivElement>(null)
+  const syncCaretRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!syncMenuOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!syncMenuRef.current?.contains(event.target as Node)) setSyncMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setSyncMenuOpen(false); syncCaretRef.current?.focus() }
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [syncMenuOpen])
+  useEffect(() => { if (busy) setSyncMenuOpen(false) }, [busy])
   return (
     <>
       <header className="page-header">
@@ -27,13 +46,13 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn }: P
       </header>
 
       <div className="page-body">
-        <div className="banner">
+        <div className="banner sync-banner">
           <div>
             <div className="banner-headline">
               {!signedIn
                 ? <>Sign in to sync your Garmin telemetry</>
                 : stats && stats.sessionCount > 0
-                  ? <>Telemetry archive · <span style={{ color: 'var(--signal)' }}>{stats.sessionCount}</span> sessions loaded</>
+                  ? <>Telemetry archive · <span style={{ color: 'var(--signal)' }}>{stats.sessionCount}</span> sessions indexed</>
                   : <>No telemetry yet — sync your first session</>}
             </div>
             <div className="banner-sub">
@@ -42,14 +61,33 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn }: P
           </div>
           <div className="btn-row" style={{ margin: 0 }}>
             {signedIn ? (
-              <button className="btn primary" disabled={busy === 'sync'} onClick={onSync}>
-                {busy === 'sync' ? 'Syncing…' : 'Sync now'}
-              </button>
+              <div className="sync-split-button" ref={syncMenuRef}
+                onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setSyncMenuOpen(false) }}>
+                <button className="btn primary" disabled={!!busy} title="Refresh all overviews and download details for the latest 20 sessions"
+                  onClick={() => { setSyncMenuOpen(false); onSync('recent') }}>
+                  {busy === 'sync' ? 'Syncing…' : 'Sync now'}
+                </button>
+                <button className="btn primary sync-caret" disabled={!!busy} ref={syncCaretRef}
+                  aria-label="More sync options" aria-expanded={syncMenuOpen} aria-controls="sync-options"
+                  onClick={() => setSyncMenuOpen(open => !open)}>
+                  <span aria-hidden="true">▾</span>
+                </button>
+                {syncMenuOpen && (
+                  <div className="sync-dropdown" id="sync-options">
+                    <button className="sync-all-option" onClick={() => { setSyncMenuOpen(false); onSync('all') }}>
+                      <strong>Sync All</strong>
+                      <span>Download details for every session</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             ) : (
               <button className="btn primary" onClick={onRequestSignIn}>Sign In</button>
             )}
           </div>
         </div>
+
+        {signedIn && <p className="muted small">Sync now downloads the latest 20 sessions. Older sessions download when selected.</p>}
 
         <div className="stat-grid">
           <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />

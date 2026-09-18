@@ -15,7 +15,7 @@ import { SignedOutGate } from './components/SignedOutGate'
 import { SignedOutBanner } from './components/SignedOutBanner'
 import { api, isRemote } from './api'
 import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid, upsertAccount } from './accounts'
-import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession } from '../shared/types'
+import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession, SyncOptions } from '../shared/types'
 
 function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () => void }) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -64,6 +64,7 @@ export function App() {
 
   // Selected session guids — accumulated on the Sessions tab, consumed by Analysis.
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const autoSyncedAccount = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     const [a, s, email] = await Promise.all([
@@ -117,7 +118,11 @@ export function App() {
           'worker', evt.payload,
         )
       }
-      if (evt.type === 'progress' && evt.progress) setProgress(evt.progress)
+      if (evt.type === 'progress' && evt.progress) {
+        setBusy(evt.kind === 'sync' ? 'sync' : evt.kind === 'coach' ? 'coach' : 'load')
+        setProgress(evt.progress)
+      }
+      if (evt.type === 'catalog') { void refresh(); setRefreshTick(t => t + 1) }
       if (evt.type === 'done') {
         setBusy(null)
         setLogsExpanded(false)
@@ -148,12 +153,13 @@ export function App() {
         const errMsg = `error: ${evt.payload}`
         setLogLine(errMsg)
         setLogLines(prev => [...prev.slice(-499), `✗ ${errMsg}`])
+        if (evt.kind === 'sync') { void refresh(); setRefreshTick(t => t + 1) }
       }
     })
     return () => { unsub() }
   }, [refresh])
 
-  const startSync = async () => {
+  const startSync = async (mode: SyncOptions['mode'] = 'recent') => {
     if (busy) return
     setBusy('sync')
     setLogLine('starting sync...')
@@ -161,8 +167,10 @@ export function App() {
     // Read fresh from storage so an auto-sync right after sign-in picks up the
     // token that was just persisted (React state may not have flushed yet).
     const active = isRemote ? getActiveAccount(accounts) : getActiveAccount()
+    autoSyncedAccount.current = active?.label ?? '__server__'
     try {
-      await api.startSync(isRemote ? undefined : {
+      await api.startSync(isRemote ? { mode } : {
+        mode,
         token: tokenValid(active) ? active!.token : undefined,
         accountLabel: active?.label,
       })
@@ -170,6 +178,19 @@ export function App() {
       setBusy(null); setLogLine(`error: ${e.message ?? e}`)
     }
   }
+
+  const ensureSessions = useCallback(async (guids: string[]) => {
+    const active = isRemote ? null : getActiveAccount()
+    try {
+      await api.ensureSessions(guids, isRemote ? undefined : {
+        token: tokenValid(active) ? active!.token : undefined,
+        accountLabel: active?.label,
+      })
+    } finally {
+      await refresh()
+      setRefreshTick(t => t + 1)
+    }
+  }, [refresh])
 
   const onAccountsChange = useCallback((next: AccountState) => {
     setAccounts(next)
@@ -181,6 +202,14 @@ export function App() {
     ? (!!auth?.tokenValid || tokenValid(getActiveAccount(accounts)))
     : tokenValid(getActiveAccount(accounts))
   const activeLabel = getActiveAccount(accounts)?.label ?? null
+  useEffect(() => {
+    if (!signedIn) { autoSyncedAccount.current = null; return }
+    if (!auth || busy) return
+    const account = activeLabel ?? '__server__'
+    if (autoSyncedAccount.current === account) return
+    autoSyncedAccount.current = account
+    void startSync('recent')
+  }, [signedIn, activeLabel, auth, busy])
   // Cached telemetry already in the DB. When present, feature pages stay usable
   // read-only even while signed out (a banner notes sync is unavailable); only a
   // signed-out AND empty DB shows the full sign-in gate.
@@ -195,8 +224,8 @@ export function App() {
       ? { accounts: [{ label, token: '', expiresAt, addedAt: Date.now() }], activeLabel: label }
       : upsertAccount(label, token, expiresAt))
     setLoginOpen(false)
-    // Automatically pull sessions/tracks/metadata for the freshly linked account.
-    void startSync()
+    // The sign-in effect syncs once the new account state is available.
+    void refresh()
   }
 
   const confirmSignOut = () => {
@@ -261,6 +290,7 @@ export function App() {
                 setSelected={setSelected}
                 onAnalyze={openAnalysis}
                 activeAccount={accounts.activeLabel}
+                onEnsureSessions={ensureSessions}
               />
             ) : <SignedOutGate feature="Sessions" onSignIn={openLogin} />
           )}

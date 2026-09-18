@@ -7,6 +7,7 @@ import { DuckDBInstance, DuckDBConnection } from '@duckdb/node-api'
 import { DATA_DIR, SESSIONS_DIR, DB_PATH } from './paths.js'
 import { decodePerformance } from './decodePerformance.js'
 import type { CoachingSession } from '../shared/types.js'
+import type { SessionSummary } from './catalystClient.js'
 
 export function isoDurationToMs(s: string | undefined | null): number | null {
   if (!s || typeof s !== 'string' || !s.startsWith('PT')) return null
@@ -72,6 +73,9 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_year INTEGER;
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS track_name VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS track_configuration_name VARCHAR;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS details_loaded BOOLEAN;
 
     CREATE TABLE IF NOT EXISTS laps (
       session_guid VARCHAR,
@@ -112,6 +116,11 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_samples_session_lap
       ON samples(session_guid, lap_index);
+
+    -- Only migrate legacy rows; new summary rows explicitly store false.
+    UPDATE sessions SET details_loaded = EXISTS (
+      SELECT 1 FROM laps WHERE laps.session_guid = sessions.session_guid
+    ) WHERE details_loaded IS NULL;
 
     CREATE TABLE IF NOT EXISTS coaching_sessions (
       id VARCHAR PRIMARY KEY,
@@ -188,21 +197,57 @@ export async function loadTrackConfigs(con: DuckDBConnection): Promise<number> {
   return rows.length
 }
 
+export async function loadSessionSummary(con: DuckDBConnection, summary: SessionSummary, account: string | null): Promise<void> {
+  await con.run(`
+    INSERT INTO sessions (session_guid, session_start, best_lap_ms, best_lap_normal_ms,
+      track_cartography_id, track_configuration_id, mean_line_guid, track_name,
+      track_configuration_name, account, details_loaded)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false)
+    ON CONFLICT (session_guid) DO UPDATE SET
+      session_start = excluded.session_start, best_lap_ms = excluded.best_lap_ms,
+      best_lap_normal_ms = excluded.best_lap_normal_ms,
+      track_cartography_id = excluded.track_cartography_id,
+      track_configuration_id = excluded.track_configuration_id,
+      mean_line_guid = excluded.mean_line_guid, track_name = excluded.track_name,
+      track_configuration_name = excluded.track_configuration_name,
+      account = COALESCE(excluded.account, sessions.account)
+  `, [summary.sessionGuid, summary.sessionStart ?? null, isoDurationToMs(summary.bestLap),
+    isoDurationToMs(summary.bestLapNormal), summary.trackCartographyId ?? null,
+    summary.trackConfigurationId ?? null, summary.meanLineGuid ?? null,
+    summary.trackName ?? null, summary.trackConfigurationName ?? null, account] as any)
+}
+
 export async function loadSession(con: DuckDBConnection, sessionDir: string): Promise<number> {
+  await con.run('BEGIN TRANSACTION')
+  try {
+    const count = await loadSessionData(con, sessionDir)
+    await con.run('COMMIT')
+    return count
+  } catch (error) {
+    await con.run('ROLLBACK')
+    throw error
+  }
+}
+
+async function loadSessionData(con: DuckDBConnection, sessionDir: string): Promise<number> {
   const sg = path.basename(sessionDir)
   const summaryP = path.join(sessionDir, 'summary.json')
   const metadataP = path.join(sessionDir, 'metadata.json')
   const weatherP = path.join(sessionDir, 'weather.json')
   const perfP = path.join(sessionDir, 'performance.pb')
 
-  if (!fs.existsSync(summaryP) || !fs.existsSync(perfP)) return 0
+  if (!fs.existsSync(summaryP)) return 0
 
   const summary = JSON.parse(fs.readFileSync(summaryP, 'utf-8'))
-  const metadata = fs.existsSync(metadataP) ? JSON.parse(fs.readFileSync(metadataP, 'utf-8')) : {}
-  const weather = fs.existsSync(weatherP) ? JSON.parse(fs.readFileSync(weatherP, 'utf-8')) : {}
+  const metadata = (fs.existsSync(metadataP) ? JSON.parse(fs.readFileSync(metadataP, 'utf-8')) : null) ?? {}
+  const weather = (fs.existsSync(weatherP) ? JSON.parse(fs.readFileSync(weatherP, 'utf-8')) : null) ?? {}
 
   const accountFile = path.join(sessionDir, '.account')
   const account = fs.existsSync(accountFile) ? fs.readFileSync(accountFile, 'utf-8').trim() || null : null
+
+  await loadSessionSummary(con, summary, account)
+  if (!fs.existsSync(perfP) || fs.statSync(perfP).size === 0) return 0
+  const decoded = decodePerformance(new Uint8Array(fs.readFileSync(perfP)))
 
   await con.run(
     `INSERT OR REPLACE INTO sessions
@@ -211,8 +256,9 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
         garmin_guid, unit_id, product_part_number,
         weather_description, temperature_c, humidity_pct,
         wind_speed_mps, wind_direction_deg, account,
-        vehicle_guid, vehicle_make, vehicle_model, vehicle_year, vehicle_type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        vehicle_guid, vehicle_make, vehicle_model, vehicle_year, vehicle_type,
+        track_name, track_configuration_name, details_loaded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)`,
     [
       sg,
       summary.sessionStart ?? null,
@@ -235,11 +281,13 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
       metadata.vehicleModel ?? null,
       metadata.vehicleYear ?? null,
       metadata.vehicleType ?? null,
+      summary.trackName ?? null,
+      summary.trackConfigurationName ?? null,
     ] as any,
   )
 
-  const decoded = decodePerformance(new Uint8Array(fs.readFileSync(perfP)))
   await con.run('DELETE FROM samples WHERE session_guid = ?', [sg] as any)
+  await con.run('DELETE FROM laps WHERE session_guid = ?', [sg] as any)
 
   // Laps are tiny (~10 rows/session) — per-row INSERT is fine.
   for (let lapIdx = 0; lapIdx < decoded.driven_laps.length; lapIdx++) {
@@ -297,12 +345,12 @@ export async function loadSession(con: DuckDBConnection, sessionDir: string): Pr
   return sampleCount
 }
 
-// Read the set of session_guids currently materialized in the DB. Returns an
+// Read the set of session_guids with telemetry materialized in the DB. Returns an
 // empty set if the table doesn't exist yet — used by the smart-sync worker to
 // skip what we already have without re-downloading.
 export async function existingSessionGuids(con: DuckDBConnection): Promise<Set<string>> {
   try {
-    const reader = await con.runAndReadAll('SELECT session_guid FROM sessions')
+    const reader = await con.runAndReadAll('SELECT session_guid FROM sessions WHERE details_loaded = true')
     const out = new Set<string>()
     for (const row of reader.getRowsJson()) {
       if (row[0]) out.add(String(row[0]))

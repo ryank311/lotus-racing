@@ -45,6 +45,22 @@ async function setup(t, options = {}) {
   return { root, dataDir, server, post, login, rpc }
 }
 
+test('username casing shares one workspace and backend', { timeout: 15000 }, async t => {
+  const { login, rpc, server, dataDir } = await setup(t)
+  const original = await login('Ryan')
+  assert.equal((await rpc(original, 'units:set', 'metric')).status, 200)
+  const worker = spawned.at(-1)
+
+  for (const username of ['ryan', 'RYAN', 'rYaN']) {
+    const cookie = await login(username)
+    assert.deepEqual(await (await rpc(cookie, 'units:get')).json(), { result: 'metric' })
+    assert.equal(spawned.at(-1), worker)
+  }
+
+  assert.equal((await (await fetch(server.url + '/api/health')).json()).users, 1)
+  assert.equal(fs.readdirSync(path.join(dataDir, 'users')).length, 1)
+})
+
 test('malformed URL/Host requests return 400 and the server remains healthy', { timeout: 15000 }, async t => {
   const { server, post } = await setup(t)
   const status = await new Promise((resolve, reject) => {
