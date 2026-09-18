@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ChartCard } from '../../src/renderer/components/ChartCard'
 import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart } from '../../src/renderer/components/Charts'
@@ -15,12 +15,17 @@ const data = {
   cornerRows: [{ turn: 'T1', name: 'Hairpin', lapLbl: 'Lap 1', isBest: true, entry_mph: 80, apex_mph: 50, exit_mph: 65, vmin_dist_m: 250 }],
   cornerBrakingRows: [{ turn: 'T1', name: 'Hairpin', isBest: true, onset_dist_m: 200, release_dist_m: 245, apex_dist_m: 250, peak_brake_g: 0.8 }],
 } as any
-createRoot(document.getElementById('root')!).render(<React.StrictMode><main style={{ height: '100%', overflowY: 'auto', padding: 12 }}>
-  <ChartCard channel="SPEED"><LineChart series={series} height={300} yUnit="mph" onHoverX={x => { (window as any).hoverX = x }} /></ChartCard>
+function ChartFixture() {
+  const [hover, setHover] = useState<number | null>(null)
+  return <main data-hover={hover}  style={{ height: '100%', overflowY: 'auto', padding: 12 }}>
+  <ChartCard channel="SPEED" meta="10 laps · mph" controls={<div className="chart-mode-toggle"><button className="active">Speed</button><button>Δ vs fastest</button></div>}><LineChart series={series} height={300} yUnit="mph" onHoverX={x => { (window as any).hoverX = x; setHover(x) }} /></ChartCard>
+  <ChartCard channel="CUMULATIVE TIME Δ" meta="Seconds · negative = ahead" controls={<div className="chart-mode-toggle"><button className="active">Vs fastest lap</button><button>Vs optimal lap</button></div>}><LineChart series={series} height={300} yUnit="s" /></ChartCard>
   <ChartCard channel="G-G"><GGChart gg={gg} height={300} /></ChartCard>
   <ChartCard channel="SEGMENT Δ"><HeatmapGrid hm={{ rows: ['Lap 1'], cols: ['S1', 'S2'], z: [[0, 1.2]], text: [['25.0 PB', '26.2']], zmax: 1.2 }} /></ChartCard>
   <ChartCard channel="CORNER STATS"><CornerChart data={data} height={300} /></ChartCard>
   <ChartCard channel="BRAKING"><CornerBrakingChart data={data} height={300} /></ChartCard>
   <ChartCard channel="CONSISTENCY"><CornerConsistencyChart data={data} height={300} /></ChartCard>
   <TrackMap data={{ trackGeometry, racingLines: [], sessions: [] }} height={400} />
-</main></React.StrictMode>)
+</main>
+}
+createRoot(document.getElementById('root')!).render(<React.StrictMode><ChartFixture /></React.StrictMode>)

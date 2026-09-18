@@ -17,6 +17,7 @@
     "package": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test:server": "tsc -p tsconfig.main.json && node --test tests/*.test.cjs",
+    "test:charts": "node --import tsx --test tests/chartGestures.test.ts && node tests/chartTouch.mjs",
     "fetch": "tsx src/garmin/cli/fetch.ts",
     "load": "tsx src/garmin/cli/load.ts",
     "brief": "tsx src/garmin/cli/brief.ts",

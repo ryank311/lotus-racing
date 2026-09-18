@@ -3,6 +3,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { PALETTE, LAP_PALETTE } from './chartTheme'
+import { ChartActions } from './ChartSurface'
 import { useChartTouch, TouchHint } from './useChartTouch'
 import { clampRange, pinchRange } from './chartGestures'
 import type { AnalysisData, GGData, HeatmapData } from '../../garmin/analysisData'
@@ -72,7 +73,7 @@ interface Tip {
   rows: Array<{ label: string; value: string; color: string }>
 }
 
-function ChartTooltip({ tip, cw }: { tip: Tip; cw: number }) {
+function ChartTooltip({ tip, cw, onDismiss }: { tip: Tip; cw: number; onDismiss: () => void }) {
   return (
     <div
       className="chart-tooltip"
@@ -87,6 +88,7 @@ function ChartTooltip({ tip, cw }: { tip: Tip; cw: number }) {
           : { left: Math.max(8, tip.px + 14) }),
       }}
     >
+      <button className="chart-tooltip-dismiss" aria-label="Clear readout" onClick={onDismiss}>×</button>
       {tip.header && <div className="chart-tooltip-header">{tip.header}</div>}
       {tip.rows.map((r, i) => (
         <div key={i} className="chart-tooltip-row">
@@ -118,7 +120,7 @@ interface LineChartProps {
   onHoverX?: (x: number | null) => void
 }
 
-const LP = { l: 50, r: 16, t: 24, b: 36 } as const
+const LP = { l: 36, r: 10, t: 18, b: 24 } as const
 
 export function LineChart({ series, height, yUnit = '', yRange, corners, segments, zeroLine, onHoverX }: LineChartProps) {
   const canvasRef  = useRef<HTMLCanvasElement>(null)
@@ -169,7 +171,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     // Determine x range (live pan > committed zoom > data extent)
     let xMin = Infinity, xMax = -Infinity
     for (const s of series) for (const v of s.xs) { if (v < xMin) xMin = v; if (v > xMax) xMax = v }
-    if (!isFinite(xMin)) return
+    if (!isFinite(xMin)) { ctx.clearRect(0, 0, w, h); boundsRef.current = null; return }
 
     const zoom = liveZoomRef.current ?? xZoom
     if (zoom) { [xMin, xMax] = zoom }
@@ -302,11 +304,14 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     if (corners) {
       ctx.font = '9px "JetBrains Mono", monospace'; ctx.fillStyle = PALETTE.textMute
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
-      for (const c of corners) {
+      let labelRight = LP.l - 8
+      for (const c of [...corners].sort((a, b) => a.dist_idx_start - b.dist_idx_start)) {
         if (c.dist_idx_start == null || c.dist_idx_end == null) continue
         const px = toX((c.dist_idx_start + c.dist_idx_end) / 2)
-        if (px < LP.l || px > LP.l + plotW) continue
+        const halfWidth = ctx.measureText(c.turn).width / 2
+        if (px - halfWidth < labelRight + 8 || px + halfWidth > LP.l + plotW) continue
         ctx.fillText(c.turn, px, LP.t - 2)
+        labelRight = px + halfWidth
       }
     }
 
@@ -403,7 +408,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     setTooltip(null); schedRedraw()
   }
 
-  const resetZoom = () => { setXZoom(null); liveZoomRef.current = null; schedRedraw() }
+  const resetZoom = () => { onMouseLeave(); setXZoom(null) }
 
   const touch = useChartTouch<HTMLCanvasElement>({
     inspect: onMouseMove, clear: onMouseLeave, reset: resetZoom,
@@ -426,11 +431,11 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
 
   return (
     <div ref={wrapRef} style={{ position: 'relative', userSelect: 'none' }}>
-      <div className="chart-navigation">
-        <button className="btn ghost" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>+</button>
-        <button className="btn ghost" aria-label="Zoom out" onClick={() => zoomBy(2)}>−</button>
-        <button className="btn ghost" onClick={resetZoom}>Reset zoom</button>
-      </div>
+      <ChartActions>
+        <button className="chart-tool chart-zoom-step" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>+</button>
+        <button className="chart-tool chart-zoom-step" aria-label="Zoom out" onClick={() => zoomBy(2)}>−</button>
+        {xZoom && <button className="chart-tool chart-reset" aria-label="Reset zoom" onClick={resetZoom}>Reset</button>}
+      </ChartActions>
       <canvas
         ref={canvasRef}
         style={{ width: '100%', height, display: 'block', cursor: dragRef.current?.mode === 'pan' ? 'grabbing' : xZoom ? 'grab' : 'crosshair' }}
@@ -443,7 +448,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
         onPointerUp={e => { if (e.pointerType === 'mouse') onMouseUp(e); else touch.onPointerUp(e) }}
       />
       <TouchHint zoom />
-      {tooltip && !dragRef.current && <ChartTooltip tip={tooltip} cw={cw} />}
+      {tooltip && !dragRef.current && <ChartTooltip tip={tooltip} cw={cw} onDismiss={onMouseLeave} />}
     </div>
   )
 }
@@ -460,7 +465,7 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
   // traction circle convention. Toggle to show raw sensor orientation.
   const [inverted, setInverted] = useState(false)
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
-  const resetView = () => setView({ scale: 1, x: 0, y: 0 })
+  const resetView = () => { setView({ scale: 1, x: 0, y: 0 }); hoverIdxRef.current = null; setTooltip(null); onHoverDistance?.(null) }
   useEffect(() => { resetView(); setTooltip(null); hoverIdxRef.current = null; onHoverDistance?.(null) }, [gg])
 
   const geoRef = useRef<{
@@ -487,8 +492,6 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     const sc = Math.min(plotW / 2, plotH / 2) / gMax * view.scale
     const cx = padL + plotW / 2 + view.x * plotW, cy = padT + plotH / 2 + view.y * plotH
     // Axis ranges differ per dimension so the plot fills available space
-    const xRange = plotW / 2 / sc   // max G value shown on x
-    const yRange = plotH / 2 / sc
 
     const sLat  = inverted ? 1 : -1
     const sLong = inverted ? -1 : 1
@@ -578,9 +581,9 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
     // Labels
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-    ctx.fillText('← LATERAL G →', cx, padT + plotH + 18)
+    ctx.fillText('← LATERAL G →', padL + plotW / 2, padT + plotH + 18)
     ctx.textBaseline = 'bottom'
-    ctx.fillText(`p95 ≈ ${gg.p95_g.toFixed(2)}g`, cx, padT - 2)
+    ctx.fillText(`p95 ≈ ${gg.p95_g.toFixed(2)}g`, padL + plotW / 2, padT - 2)
   }, [gg, inverted, view])
 
   useEffect(() => {
@@ -646,26 +649,17 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
   return (
     <div ref={wrapRef} style={{ position: 'relative', userSelect: 'none' }}>
-      <div className="chart-navigation">
-        <button className="btn ghost" aria-label="Zoom in" onClick={() => setView(v => ({ ...v, scale: Math.min(20, v.scale * 2) }))}>+</button>
-        <button className="btn ghost" aria-label="Zoom out" onClick={() => setView(v => { const scale = Math.max(1, v.scale / 2); const limit = (scale - 1) / 2; return { scale, x: Math.max(-limit, Math.min(limit, v.x)), y: Math.max(-limit, Math.min(limit, v.y)) } })}>−</button>
-        <button className="btn ghost" onClick={resetView}>Reset zoom</button>
-      <button
-        className={`btn tiny ghost`}
-        onClick={() => setInverted(v => !v)}
-        style={{
-          color: inverted ? 'var(--signal)' : undefined,
-          borderColor: inverted ? 'var(--signal)' : undefined,
-        }}
-      >
-        {inverted ? 'inverted' : 'invert'}
-      </button>
-      </div>
+      <ChartActions>
+        <button className="chart-tool chart-zoom-step" aria-label="Zoom in" onClick={() => setView(v => ({ ...v, scale: Math.min(20, v.scale * 2) }))}>+</button>
+        <button className="chart-tool chart-zoom-step" aria-label="Zoom out" onClick={() => setView(v => { const scale = Math.max(1, v.scale / 2); const limit = (scale - 1) / 2; return { scale, x: Math.max(-limit, Math.min(limit, v.x)), y: Math.max(-limit, Math.min(limit, v.y)) } })}>−</button>
+        {view.scale > 1 && <button className="chart-tool chart-reset" aria-label="Reset zoom" onClick={resetView}>Reset</button>}
+        <button className="chart-tool" aria-pressed={inverted} title="Invert G axes" onClick={() => setInverted(v => !v)}>Invert</button>
+      </ChartActions>
       <canvas ref={canvasRef}
         style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         className="chart-touch-canvas" {...touch} />
       <TouchHint zoom />
-      {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} onDismiss={onMouseLeave} />}
     </div>
   )
 }
@@ -901,7 +895,7 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         className="chart-touch-canvas" {...touch} />
       <TouchHint />
-      {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} onDismiss={() => setTooltip(null)} />}
     </div>
   )
 }
@@ -1046,7 +1040,7 @@ export function CornerBrakingChart({
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         className="chart-touch-canvas" {...touch} />
       <TouchHint />
-      {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} onDismiss={clearHover} />}
     </div>
   )
 }
@@ -1211,7 +1205,7 @@ export function CornerConsistencyChart({
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         className="chart-touch-canvas" {...touch} />
       <TouchHint />
-      {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} onDismiss={clearHover} />}
     </div>
   )
 }

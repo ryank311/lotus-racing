@@ -51,7 +51,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [coachedKey, setCoachedKey] = useState<string | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
   const [coachError, setCoachError] = useState<string | null>(null)
-  const [lapFilter, setLapFilter] = useState<LapFilter>('all')
+  const [lapFilter, setLapFilter] = useState<LapFilter>('top10')
   const [coachMenuOpen, setCoachMenuOpen] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
@@ -433,6 +433,11 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 }) {
   const [speedMode, setSpeedMode] = useState<'absolute' | 'delta'>('absolute')
   const [timeDeltaMode, setTimeDeltaMode] = useState<'fastest' | 'optimal'>('fastest')
+  // Hover updates the linked map through this parent. Keep the chart's data
+  // identity stable so inspecting a point does not reset its zoom window.
+  const speedPlotSeries = useMemo(() => speedMode === 'delta' ? speedDeltaSeries(data) : speedSeries(data), [data, speedMode])
+  const timePlotSeries = useMemo(() => timeDeltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data), [data, timeDeltaMode])
+  const longPlotSeries = useMemo(() => longGSeries(data), [data])
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
     [data.sessions],
@@ -491,20 +496,18 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
       <div className="analysis-charts">
         <ChartCard
           channel="SPEED"
-          meta={(
-            <div className="speed-chart-meta">
-              <span>{data.speedTraces.length} laps · {speedMode === 'delta' ? `Δ ${data.speedUnit} vs fastest` : data.speedUnit}</span>
-              <div className="chart-mode-toggle" role="group" aria-label="Speed chart display">
-                <button type="button" className={speedMode === 'absolute' ? 'active' : ''}
-                  aria-pressed={speedMode === 'absolute'} onClick={() => setSpeedMode('absolute')}>Speed</button>
-                <button type="button" className={speedMode === 'delta' ? 'active' : ''}
-                  aria-pressed={speedMode === 'delta'} onClick={() => setSpeedMode('delta')}>Δ vs fastest</button>
-              </div>
+          meta={`${data.speedTraces.length} laps · ${data.speedUnit}`}
+          controls={(
+            <div className="chart-mode-toggle" role="group" aria-label="Speed chart display">
+              <button type="button" className={speedMode === 'absolute' ? 'active' : ''}
+                aria-pressed={speedMode === 'absolute'} onClick={() => setSpeedMode('absolute')}>Speed</button>
+              <button type="button" className={speedMode === 'delta' ? 'active' : ''}
+                aria-pressed={speedMode === 'delta'} onClick={() => setSpeedMode('delta')}>Δ vs fastest</button>
             </div>
           )}
         >
           <LineChart
-            series={speedMode === 'delta' ? speedDeltaSeries(data) : speedSeries(data)}
+            series={speedPlotSeries}
             height={420}
             yUnit={data.speedUnit}
             corners={data.corners}
@@ -526,20 +529,18 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
         <ChartCard
           channel="CUMULATIVE TIME Δ"
-          meta={(
-            <div className="speed-chart-meta">
-              <span>{timeDeltaMode === 'optimal' ? 'vs stitched segment optimal' : 'vs fastest lap'} · negative = ahead</span>
-              <div className="chart-mode-toggle" role="group" aria-label="Cumulative time delta reference">
-                <button type="button" className={timeDeltaMode === 'fastest' ? 'active' : ''}
-                  aria-pressed={timeDeltaMode === 'fastest'} onClick={() => setTimeDeltaMode('fastest')}>Vs fastest</button>
-                <button type="button" className={timeDeltaMode === 'optimal' ? 'active' : ''}
-                  aria-pressed={timeDeltaMode === 'optimal'} onClick={() => setTimeDeltaMode('optimal')}>Vs optimal</button>
-              </div>
+          meta="Seconds · negative = ahead"
+          controls={(
+            <div className="chart-mode-toggle" role="group" aria-label="Cumulative time delta reference">
+              <button type="button" className={timeDeltaMode === 'fastest' ? 'active' : ''}
+                aria-pressed={timeDeltaMode === 'fastest'} onClick={() => setTimeDeltaMode('fastest')}>Vs fastest lap</button>
+              <button type="button" className={timeDeltaMode === 'optimal' ? 'active' : ''}
+                aria-pressed={timeDeltaMode === 'optimal'} onClick={() => setTimeDeltaMode('optimal')}>Vs optimal lap</button>
             </div>
           )}
         >
           <LineChart
-            series={timeDeltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data)}
+            series={timePlotSeries}
             height={320}
             yUnit="s"
             corners={data.corners}
@@ -551,7 +552,7 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
         <ChartCard channel="LONG. G" meta="braking (neg) · acceleration (pos)">
           <LineChart
-            series={longGSeries(data)}
+            series={longPlotSeries}
             height={300}
             yUnit="g"
             corners={data.corners}

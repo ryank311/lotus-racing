@@ -63,7 +63,6 @@ export function useChartTouch<T extends Element>({ inspect, clear, transform, pa
 
 export function TouchHint({ spatial = false, zoom = false }: { spatial?: boolean; zoom?: boolean }) {
   const { expanded } = useChartSurface()
-  return <div className="chart-touch-hint">{expanded
-    ? `${spatial ? 'Drag to pan · Tap to inspect' : 'Tap or drag to inspect'}${zoom ? ' · Two fingers to pan / pinch to zoom · Double-tap to reset' : ''}`
-    : 'Tap to inspect · Expand for touch controls'}</div>
+  if (!expanded) return null
+  return <div className="chart-touch-hint">{spatial ? 'Drag to pan · Tap to inspect' : 'Drag to inspect'}{zoom ? ' · Pinch to zoom · Two fingers to pan' : ''}</div>
 }

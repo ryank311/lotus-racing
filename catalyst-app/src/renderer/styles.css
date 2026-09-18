@@ -76,11 +76,12 @@ body {
     linear-gradient(135deg, rgba(125,211,252,0.025), transparent 45%);
 }
 .server-login-card {
+  position: relative;
   width: min(440px, 100%);
   padding: 38px 40px 34px;
   background: rgba(19,19,22,0.96);
   border: 1px solid var(--border-strong);
-  border-top: 2px solid var(--signal);
+  border-radius: 0;
   box-shadow: 0 30px 80px rgba(0,0,0,0.45);
 }
 .server-login-mark { margin-bottom: 26px; }
@@ -1995,12 +1996,12 @@ input, textarea, select { font-family: inherit; color: inherit; }
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   animation: modal-rise 0.18s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
-/* Keep the corner marks inside the modal's scrollable bounds. */
-.modal-card > .card-corner-marks { position: absolute; inset: 0; pointer-events: none; }
-.modal-card .card-corner-marks::before { top: 0; left: 0; }
-.modal-card .card-corner-marks::after { top: 0; right: 0; }
-.modal-card .card-corner-marks > i::before { bottom: 0; left: 0; }
-.modal-card .card-corner-marks > i::after { bottom: 0; right: 0; }
+/* Both sign-in cards keep their corner marks inside the border to avoid overflow. */
+:is(.modal-card, .server-login-card) > .card-corner-marks { position: absolute; inset: 0; pointer-events: none; }
+:is(.modal-card, .server-login-card) .card-corner-marks::before { top: 0; left: 0; }
+:is(.modal-card, .server-login-card) .card-corner-marks::after { top: 0; right: 0; }
+:is(.modal-card, .server-login-card) .card-corner-marks > i::before { bottom: 0; left: 0; }
+:is(.modal-card, .server-login-card) .card-corner-marks > i::after { bottom: 0; right: 0; }
 @keyframes modal-rise { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: translateY(0) } }
 .modal-eyebrow {
   font-family: var(--font-mono);
@@ -2609,13 +2610,92 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .chart-fullscreen .chart-card-body > div:not(.chart-heatmap) { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .chart-fullscreen .chart-touch-canvas { height: 0 !important; flex: 1; min-height: 80px; touch-action: none; }
 .chart-touch-canvas { touch-action: pan-y pinch-zoom; }
-.chart-expand { margin-left: auto; min-height: 44px; white-space: nowrap; gap: 6px; }
-.chart-expand span { font-size: 20px; }
-.chart-navigation { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
-.chart-navigation .btn, .chart-fullscreen .btn { min-height: 44px; min-width: 44px; }
+.chart-card-interactive > .chart-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 0 4px;
+}
+.chart-card-interactive > .chart-card-body { margin-top: 0; }
+.chart-card.chart-card-interactive { padding: 0 12px 8px; }
+.chart-card-heading { min-width: 0; }
+.chart-card-interactive .channel-tag {
+  display: flex;
+  width: fit-content;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .10em;
+  line-height: 1.4;
+}
+.chart-card-interactive .channel-tag::before { width: 4px; height: 4px; box-shadow: none; }
+.chart-card-interactive .chart-card-heading .meta {
+  margin: 4px 0 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0;
+  line-height: 1.5;
+  text-transform: none;
+}
+.chart-card-actions, .chart-action-slot { display: flex; align-items: center; gap: 4px; }
+.chart-action-slot:empty { display: none; }
+.chart-card-options { grid-column: 1 / -1; min-width: 0; }
+.chart-card-options .chart-mode-toggle {
+  display: flex;
+  flex-wrap: nowrap;
+  width: 100%;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.chart-card-options .chart-mode-toggle button {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 2px;
+  font: 11px var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-dim);
+}
+.chart-card-options .chart-mode-toggle button.active { color: var(--signal); background: var(--signal-soft); }
+.btn.chart-expand, .chart-tool {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font: 10px var(--font-mono);
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.btn.chart-expand { width: 32px; padding: 0; }
+.chart-expand svg { flex: none; }
+.chart-tool:hover, .btn.chart-expand:hover { color: var(--text); background: var(--bg); }
+.chart-tool[aria-pressed='true'] { color: var(--signal); background: var(--signal-soft); }
+.chart-reset { color: var(--signal); }
 .chart-touch-hint { color: var(--text-dim); font: 10px/1.6 var(--font-mono); padding: 6px 4px; }
 .chart-tooltip { max-height: 45%; overflow: auto; min-width: 0; white-space: normal; }
 .chart-tooltip-row span { overflow-wrap: anywhere; }
+.chart-tooltip-dismiss { display: none; }
 .heatmap-cell { background: transparent; border: 0; color: inherit; font: inherit; min-height: 44px; min-width: 44px; width: 100%; cursor: pointer; }
 .heatmap-readout { position: sticky; left: 0; top: 0; z-index: 1; background: var(--panel); padding: 12px 8px; font: 11px/1.6 var(--font-mono); }
 .chart-heatmap { flex: 1; min-height: 0; }
@@ -2623,8 +2703,19 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .chart-fullscreen .track-map { height: 100% !important; flex: 1; }
 .chart-fullscreen .track-map-controls .btn { min-height: 44px; min-width: 44px; }
 @media (pointer: coarse) {
-  .chart-tooltip { left: 8px !important; right: 8px !important; bottom: 42px !important; width: fit-content; pointer-events: auto !important; }
+  .btn.chart-expand { width: 44px; height: 44px; min-height: 44px; flex-basis: 44px; }
+  .chart-tool { min-height: 44px; height: 44px; }
+  .chart-card-options .chart-mode-toggle button { min-height: 40px; }
+  .chart-tooltip { left: 8px !important; right: 8px !important; bottom: 42px !important; width: fit-content; padding-right: 48px; pointer-events: auto !important; }
+  .chart-tooltip-dismiss { display: block; position: absolute; top: 0; right: 0; min-width: 44px; min-height: 44px; background: none; border: 0; color: var(--text-dim); font-size: 22px; }
   .track-map-controls .btn { min-height: 44px; min-width: 44px; }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .chart-zoom-step { display: none !important; }
+}
+@media (max-width: 760px) {
+  .chart-card.chart-card-interactive { padding: 0 8px 8px; }
 }
 
 .chart-grid-2 {

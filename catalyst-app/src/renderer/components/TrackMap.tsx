@@ -187,6 +187,7 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
   const svgRef = useRef<SVGSVGElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const dragStateRef = useRef<{ x: number; y: number; vb: ViewBox } | null>(null)
+  const touchedTurnRef = useRef<string | null>(null)
 
   const fitBox = useMemo<ViewBox | null>(() => {
     if (!geom) return null
@@ -426,7 +427,8 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
     inspect: e => {
       dragStateRef.current = null
       onPointerMove(e)
-      if (edit) { moveSinceDownRef.current = 0; onPointerUp(e) }
+      if (edit && touchedTurnRef.current) edit.onSelectTurn(touchedTurnRef.current)
+      else if (edit) { moveSinceDownRef.current = 0; onPointerUp(e) }
     },
     clear: onPointerLeave,
     reset: fitToTrack,
@@ -680,8 +682,8 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
         )}
         <span className="spacer" />
         <ChartExpandButton title="Track map" />
-        <button className="btn tiny ghost" title="Zoom in"   onClick={() => zoomCenter(0.8)}>+</button>
-        <button className="btn tiny ghost" title="Zoom out"  onClick={() => zoomCenter(1.25)}>−</button>
+        <button className="btn tiny ghost chart-zoom-step" title="Zoom in"   onClick={() => zoomCenter(0.8)}>+</button>
+        <button className="btn tiny ghost chart-zoom-step" title="Zoom out"  onClick={() => zoomCenter(1.25)}>−</button>
         <button className="btn tiny ghost" title="Fit to track" onClick={fitToTrack}>Fit</button>
       </div>
 
@@ -690,7 +692,13 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
         viewBox={vb ? `${vb.x} ${vb.y} ${vb.w} ${vb.h}` : undefined}
         preserveAspectRatio="xMidYMid meet"
         {...touch}
-        onPointerDown={e => { if (e.pointerType === 'mouse') onPointerDown(e); else touch.onPointerDown(e) }}
+        onPointerDown={e => {
+          if (e.pointerType === 'mouse') onPointerDown(e)
+          else {
+            touchedTurnRef.current = (e.target as Element).closest('[data-turn]')?.getAttribute('data-turn') ?? null
+            touch.onPointerDown(e)
+          }
+        }}
         onPointerMove={e => { if (e.pointerType === 'mouse') onPointerMove(e); else touch.onPointerMove(e) }}
         onPointerUp={e => { if (e.pointerType === 'mouse') onPointerUp(e); else touch.onPointerUp(e) }}
         onPointerCancel={e => { dragStateRef.current = null; touch.onPointerCancel() }}
@@ -880,8 +888,8 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
           return (
             <g
               key={`apex-${idx}-${c.turn}`}
+              data-turn={c.turn}
               onPointerDown={e => { if (e.pointerType === 'mouse') { e.stopPropagation(); edit.onSelectTurn(c.turn) } }}
-              onClick={e => { if (e.detail === 0) edit.onSelectTurn(c.turn) }}
               style={{ cursor: 'pointer' }}
             >
               <circle

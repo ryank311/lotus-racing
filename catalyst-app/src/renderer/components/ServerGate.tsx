@@ -77,6 +77,7 @@ export function ServerGate({ children }: { children: JSX.Element }) {
     return (
       <main className="server-login-page">
         <div className="server-login-card">
+          <div className="card-corner-marks" aria-hidden="true"><i /></div>
           <div className="brand-mark server-login-mark" />
           <div className="page-eyebrow">// remote paddock</div>
           <h1>Catalyst <span>Coach</span></h1>
