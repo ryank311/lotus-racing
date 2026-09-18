@@ -81,7 +81,7 @@ export function App() {
     setAuth(a)
     setStats(s)
     if (isRemote) {
-      const label = email ?? null
+      const label = email ?? 'Garmin SSO'
       setAccounts(label && a.tokenExpiresAt ? {
         accounts: [{ label, token: '', expiresAt: a.tokenExpiresAt, addedAt: Date.now() }],
         activeLabel: label,
@@ -346,7 +346,7 @@ export function App() {
         {/* Global sign-in modal */}
         {loginOpen && (
           <LoginModal
-            initialEmail={activeLabel ?? ''}
+            initialEmail={activeLabel?.includes('@') ? activeLabel : ''}
             onClose={() => setLoginOpen(false)}
             onSignedIn={handleSignedIn}
           />

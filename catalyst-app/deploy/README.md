@@ -190,9 +190,10 @@ URL on your phone with Wi-Fi and VPN off, sign in with your approved email code,
 then sign into the app and Garmin. Ctrl+C removes the test containers but keeps
 their data. Rerun and use the same driver name to reopen the saved workspace.
 
-Test data stays in the previous helper's `deploy/data/tailscale-mac/` folder
-(gitignored), separate from normal desktop data. Keep the Mac's lid open during
-the test. Use `--help` for port and data-directory overrides.
+Test data stays in `deploy/data/cloudflare-mac/` (gitignored), separate from
+normal desktop data. The script automatically moves the previous helper's data
+folder there on first run, preserving existing workspaces. Keep the Mac's lid
+open during the test. Use `--help` for port and data-directory overrides.
 
 ## Local image build (optional)
 

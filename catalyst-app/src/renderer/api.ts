@@ -159,8 +159,9 @@ export async function signInWithGarminSso(signal: AbortSignal): Promise<SignInRe
   popup.document.body.textContent = 'Opening Garmin sign-in…'
   popup.opener = null
   let id: string | undefined
+  const ssoRequest = (path: string, init?: RequestInit) => requestJson(path, { ...init, signal: AbortSignal.timeout(15_000) })
   try {
-    const attempt = await requestJson('/api/auth/garmin/start', {
+    const attempt = await ssoRequest('/api/auth/garmin/start', {
       method: 'POST', headers: { 'X-Catalyst-Origin': new URL(remoteBaseUrl).origin }, body: '{}',
     })
     id = attempt.id
@@ -168,8 +169,12 @@ export async function signInWithGarminSso(signal: AbortSignal): Promise<SignInRe
     popup.location.href = attempt.url
     const deadline = Date.now() + 10 * 60_000
     while (Date.now() < deadline) {
-      if (signal.aborted) throw new Error('Garmin sign-in cancelled.')
-      const state = await requestJson(`/api/auth/garmin/status/${id}`)
+      if (signal.aborted) {
+        const cancellation = await ssoRequest(`/api/auth/garmin/cancel/${id}`, { method: 'POST', body: '{}' })
+        if (cancellation.cancelled) throw new Error('Garmin sign-in cancelled.')
+        // A callback already exchanging its ticket must finish atomically.
+      }
+      const state = await ssoRequest(`/api/auth/garmin/status/${id}`)
       if (state.status === 'complete') return state.result
       if (state.status === 'error') throw new Error(state.error)
       // Avoid relying on popup.closed: cross-origin isolation can report a
@@ -179,6 +184,6 @@ export async function signInWithGarminSso(signal: AbortSignal): Promise<SignInRe
     throw new Error('Garmin sign-in timed out. Try again or use email/password.')
   } finally {
     popup.close()
-    if (id) await requestJson(`/api/auth/garmin/cancel/${id}`, { method: 'POST', body: '{}' }).catch(() => {})
+    if (id) await ssoRequest(`/api/auth/garmin/cancel/${id}`, { method: 'POST', body: '{}' }).catch(() => {})
   }
 }

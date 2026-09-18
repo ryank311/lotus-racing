@@ -21,6 +21,12 @@ HELP
 fi
 [[ $# -eq 0 ]] || { echo 'Use --help for usage.' >&2; exit 1; }
 [[ "$(uname -s)" == Darwin ]] || { echo 'This helper is for macOS.' >&2; exit 1; }
+# Include Desktop's credential helpers even when only docker was linked into PATH.
+for desktop_bin in /Applications/Docker.app/Contents/Resources/bin "$HOME/Applications/Docker.app/Contents/Resources/bin"; do
+  if [[ -d "$desktop_bin" ]]; then
+    export PATH="$PATH:$desktop_bin"
+  fi
+done
 command -v docker >/dev/null && docker compose version >/dev/null 2>&1 || {
   echo 'Install Docker Desktop (including Docker Compose), then open it and rerun.' >&2; exit 1;
 }
@@ -33,8 +39,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 HTTP_PORT="${CATALYST_TEST_PORT:-3211}"
-# Keep the same data folder as the previous Mac helper, so saved tests are retained.
-DATA_DIR="${CATALYST_TEST_DATA_DIR:-$DEPLOY_DIR/data/tailscale-mac}"
+DATA_DIR="${CATALYST_TEST_DATA_DIR:-$DEPLOY_DIR/data/cloudflare-mac}"
 [[ "$DATA_DIR" == /* && "$DATA_DIR" != / ]] || { echo 'Use an absolute test data directory, not /.' >&2; exit 1; }
 [[ "$HTTP_PORT" =~ ^[1-9][0-9]{3,4}$ ]] && (( HTTP_PORT >= 1024 && HTTP_PORT <= 65535 )) || {
   echo 'CATALYST_TEST_PORT must be between 1024 and 65535.' >&2; exit 1;
@@ -58,6 +63,17 @@ fi
 echo "Pulling $IMAGE and the Cloudflare connector..."
 compose pull --policy always
 umask 077
+# Migrate the complete old workspace only after confirming the test is stopped.
+# Never merge or overwrite two existing workspaces, or move a custom data path.
+OLD_DATA_DIR="$DEPLOY_DIR/data/tailscale-mac"
+if [[ -z "${CATALYST_TEST_DATA_DIR:-}" && -d "$OLD_DATA_DIR" ]]; then
+  if [[ -e "$DATA_DIR" ]]; then
+    echo 'Both old and new test data folders exist. Set CATALYST_TEST_DATA_DIR to the one you want to use.' >&2
+    exit 1
+  fi
+  mv "$OLD_DATA_DIR" "$DATA_DIR"
+  echo "Moved existing test data to: $DATA_DIR"
+fi
 mkdir -p "$DATA_DIR"
 # Match the NAS image's UID/GID, including files created by the old Node helper.
 docker run --rm --pull=never --platform linux/amd64 --network none --user 0 \

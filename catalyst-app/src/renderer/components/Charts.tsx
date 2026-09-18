@@ -3,6 +3,8 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { PALETTE, LAP_PALETTE } from './chartTheme'
+import { useChartTouch, TouchHint } from './useChartTouch'
+import { clampRange, pinchRange } from './chartGestures'
 import type { AnalysisData, GGData, HeatmapData } from '../../garmin/analysisData'
 import type { TrackCorner, TrackSegment } from '../../garmin/trackYaml'
 
@@ -76,12 +78,13 @@ function ChartTooltip({ tip, cw }: { tip: Tip; cw: number }) {
       className="chart-tooltip"
       style={{
         position: 'absolute',
-        top: Math.max(4, tip.py - 10),
+        bottom: 36,
+        maxWidth: 'calc(100% - 16px)',
         pointerEvents: 'none',
         zIndex: 20,
         ...(tip.px > cw * 0.55
-          ? { right: cw - tip.px + 14 }
-          : { left: tip.px + 14 }),
+          ? { right: Math.max(8, cw - tip.px + 14) }
+          : { left: Math.max(8, tip.px + 14) }),
       }}
     >
       {tip.header && <div className="chart-tooltip-header">{tip.header}</div>}
@@ -129,6 +132,13 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
   const [tooltip, setTooltip] = useState<Tip | null>(null)
 
   // drag state
+  const extent: [number, number] = React.useMemo(() => {
+    let lo = Infinity, hi = -Infinity
+    for (const s of series) for (const x of s.xs) { lo = Math.min(lo, x); hi = Math.max(hi, x) }
+    return Number.isFinite(lo) ? [lo, Math.max(lo + 1, hi)] : [0, 1]
+  }, [series])
+  useEffect(() => { setXZoom(null); liveZoomRef.current = null; hoverXRef.current = null; setTooltip(null); onHoverX?.(null) }, [series])
+
   const dragRef = useRef<{
     mode: 'select' | 'pan'
     startPx: number
@@ -342,7 +352,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
         const [z0, z1] = d.panBase
         const deltaPx = mx - d.startPx
         const deltaData = -deltaPx / b.plotW * (z1 - z0)
-        liveZoomRef.current = [z0 + deltaData, z1 + deltaData]
+        liveZoomRef.current = clampRange([z0 + deltaData, z1 + deltaData], extent)
         schedRedraw()
       } else if (d.mode === 'select') {
         const clamp = Math.max(LP.l, Math.min(LP.l + b.plotW, mx))
@@ -361,7 +371,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     hoverXRef.current = dx; onHoverX?.(dx)
 
     const dec = yUnit === 'g' ? 2 : 1
-    const rows = series.map(s => ({
+    const rows = series.filter(s => s.xs.length && s.ys.length).map(s => ({
       label: s.label,
       value: `${s.ys[nearestIdx(s.xs, dx)].toFixed(dec)}${yUnit ? ' ' + yUnit : ''}`,
       color: s.color,
@@ -380,7 +390,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
       const dist = Math.abs(d.selEnd - d.startPx)
       if (dist > 8) {
         const lo = Math.min(d.startPx, d.selEnd), hi = Math.max(d.startPx, d.selEnd)
-        setXZoom([b.fromPx(lo), b.fromPx(hi)])
+        setXZoom(clampRange([b.fromPx(lo), b.fromPx(hi)], extent))
       }
     }
     dragRef.current = null
@@ -395,27 +405,44 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
 
   const resetZoom = () => { setXZoom(null); liveZoomRef.current = null; schedRedraw() }
 
+  const touch = useChartTouch<HTMLCanvasElement>({
+    inspect: onMouseMove, clear: onMouseLeave, reset: resetZoom,
+    transform: (before, after) => {
+      const b = boundsRef.current, rect = canvasRef.current?.getBoundingClientRect()
+      if (!b || !rect) return
+      const next = pinchRange(liveZoomRef.current ?? xZoom ?? extent, extent, before, after, rect.left + LP.l, b.plotW)
+      liveZoomRef.current = next
+      setXZoom(next)
+      schedRedraw()
+    },
+  })
+  const zoomBy = (factor: number) => {
+    const [lo, hi] = liveZoomRef.current ?? xZoom ?? extent
+    const mid = (lo + hi) / 2, half = (hi - lo) * factor / 2
+    liveZoomRef.current = clampRange([mid - half, mid + half], extent)
+    setXZoom(liveZoomRef.current); onHoverX?.(null); hoverXRef.current = null; setTooltip(null); schedRedraw()
+  }
   const cw = wrapRef.current?.clientWidth ?? 600
 
   return (
     <div ref={wrapRef} style={{ position: 'relative', userSelect: 'none' }}>
-      {xZoom && (
-        <button
-          className="btn tiny ghost"
-          onClick={resetZoom}
-          style={{ position: 'absolute', top: 4, right: LP.r + 2, zIndex: 10, fontSize: 9, padding: '2px 7px' }}
-        >
-          Reset zoom
-        </button>
-      )}
+      <div className="chart-navigation">
+        <button className="btn ghost" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>+</button>
+        <button className="btn ghost" aria-label="Zoom out" onClick={() => zoomBy(2)}>−</button>
+        <button className="btn ghost" onClick={resetZoom}>Reset zoom</button>
+      </div>
       <canvas
         ref={canvasRef}
         style={{ width: '100%', height, display: 'block', cursor: dragRef.current?.mode === 'pan' ? 'grabbing' : xZoom ? 'grab' : 'crosshair' }}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseLeave}
+        className="chart-touch-canvas"
+        {...touch}
+        onPointerDown={e => {
+          if (e.pointerType === 'mouse') { e.currentTarget.setPointerCapture(e.pointerId); onMouseDown(e) }
+          else touch.onPointerDown(e)
+        }}
+        onPointerUp={e => { if (e.pointerType === 'mouse') onMouseUp(e); else touch.onPointerUp(e) }}
       />
+      <TouchHint zoom />
       {tooltip && !dragRef.current && <ChartTooltip tip={tooltip} cw={cw} />}
     </div>
   )
@@ -432,6 +459,9 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
   // When inverted = false (default): lat G negated (left = positive) to match
   // traction circle convention. Toggle to show raw sensor orientation.
   const [inverted, setInverted] = useState(false)
+  const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
+  const resetView = () => setView({ scale: 1, x: 0, y: 0 })
+  useEffect(() => { resetView(); setTooltip(null); hoverIdxRef.current = null; onHoverDistance?.(null) }, [gg])
 
   const geoRef = useRef<{
     cx: number; cy: number; sc: number
@@ -448,14 +478,14 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
     ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
 
-    const gMax = gg.p95_g * 1.35
+    const gMax = Math.max(0.1, gg.p95_g * 1.35)
     // Asymmetric padding so the plot fills the full canvas.
     // Scale is determined by the tighter dimension; the wider dimension just
     // shows more of the axis range — the circle stays circular.
     const padL = 38, padR = 16, padT = 20, padB = 28
     const plotW = w - padL - padR, plotH = h - padT - padB
-    const sc = Math.min(plotW / 2, plotH / 2) / gMax
-    const cx = padL + plotW / 2, cy = padT + plotH / 2
+    const sc = Math.min(plotW / 2, plotH / 2) / gMax * view.scale
+    const cx = padL + plotW / 2 + view.x * plotW, cy = padT + plotH / 2 + view.y * plotH
     // Axis ranges differ per dimension so the plot fills available space
     const xRange = plotW / 2 / sc   // max G value shown on x
     const yRange = plotH / 2 / sc
@@ -468,8 +498,8 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
     // Grid — ticks across the full axis range (may differ x vs y)
     ctx.font = '9px "JetBrains Mono", monospace'
-    const xTicks = niceTicks(-xRange, xRange, 6).filter(t => t !== 0)
-    const yTicks = niceTicks(-yRange, yRange, 6).filter(t => t !== 0)
+    const xTicks = niceTicks(Math.min((padL - cx) / sc / sLat, (padL + plotW - cx) / sc / sLat), Math.max((padL - cx) / sc / sLat, (padL + plotW - cx) / sc / sLat), 6).filter(t => t !== 0)
+    const yTicks = niceTicks(Math.min((padT - cy) / sc / sLong, (padT + plotH - cy) / sc / sLong), Math.max((padT - cy) / sc / sLong, (padT + plotH - cy) / sc / sLong), 6).filter(t => t !== 0)
     const xStep = xTicks.length > 1 ? Math.abs(xTicks[1] - xTicks[0]) : 1
     const yStep = yTicks.length > 1 ? Math.abs(yTicks[1] - yTicks[0]) : 1
 
@@ -551,7 +581,7 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     ctx.fillText('← LATERAL G →', cx, padT + plotH + 18)
     ctx.textBaseline = 'bottom'
     ctx.fillText(`p95 ≈ ${gg.p95_g.toFixed(2)}g`, cx, padT - 2)
-  }, [gg, inverted])
+  }, [gg, inverted, view])
 
   useEffect(() => {
     draw()
@@ -563,7 +593,7 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
   const schedRedraw = () => { cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(draw) }
 
   const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const geo = geoRef.current; if (!geo) return
+    const geo = geoRef.current; if (!geo || !gg.lat_g.length) return
     const rect = canvasRef.current!.getBoundingClientRect()
     const mx = e.clientX - rect.left, my = e.clientY - rect.top
     const { cx, cy, sc, ox, oy, plotW, plotH, sLat, sLong } = geo
@@ -595,23 +625,46 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     hoverIdxRef.current = null; onHoverDistance?.(null); setTooltip(null); schedRedraw()
   }
 
+  const touch = useChartTouch<HTMLCanvasElement>({
+    inspect: onMouseMove, clear: onMouseLeave, reset: resetView,
+    transform: (before, after) => {
+      const geo = geoRef.current, rect = canvasRef.current?.getBoundingClientRect()
+      if (!geo || !rect) return
+      setView(v => {
+        const scale = Math.max(1, Math.min(20, v.scale * after.distance / before.distance))
+        const ratio = scale / v.scale
+        const x = (after.center.x - rect.left - geo.ox - geo.plotW / 2) / geo.plotW
+          - ((before.center.x - rect.left - geo.ox - geo.plotW / 2) / geo.plotW - v.x) * ratio
+        const y = (after.center.y - rect.top - geo.oy - geo.plotH / 2) / geo.plotH
+          - ((before.center.y - rect.top - geo.oy - geo.plotH / 2) / geo.plotH - v.y) * ratio
+        const limit = (scale - 1) / 2
+        return { scale, x: Math.max(-limit, Math.min(limit, x)), y: Math.max(-limit, Math.min(limit, y)) }
+      })
+    },
+  })
   const cw = wrapRef.current?.clientWidth ?? 600
 
   return (
     <div ref={wrapRef} style={{ position: 'relative', userSelect: 'none' }}>
+      <div className="chart-navigation">
+        <button className="btn ghost" aria-label="Zoom in" onClick={() => setView(v => ({ ...v, scale: Math.min(20, v.scale * 2) }))}>+</button>
+        <button className="btn ghost" aria-label="Zoom out" onClick={() => setView(v => { const scale = Math.max(1, v.scale / 2); const limit = (scale - 1) / 2; return { scale, x: Math.max(-limit, Math.min(limit, v.x)), y: Math.max(-limit, Math.min(limit, v.y)) } })}>−</button>
+        <button className="btn ghost" onClick={resetView}>Reset zoom</button>
       <button
         className={`btn tiny ghost`}
         onClick={() => setInverted(v => !v)}
-        style={{ position: 'absolute', top: 4, right: 4, zIndex: 10, fontSize: 9, padding: '2px 7px',
+        style={{
           color: inverted ? 'var(--signal)' : undefined,
           borderColor: inverted ? 'var(--signal)' : undefined,
         }}
       >
         {inverted ? 'inverted' : 'invert'}
       </button>
+      </div>
       <canvas ref={canvasRef}
         style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
-        onMouseMove={onMouseMove} onMouseLeave={onMouseLeave} />
+        className="chart-touch-canvas" {...touch} />
+      <TouchHint zoom />
       {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
     </div>
   )
@@ -630,8 +683,11 @@ function cellColor(val: number | null, zmax: number): string {
 }
 
 export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSegment?: (ref: string | null) => void }) {
+  const [selected, setSelected] = useState<string | null>(null)
+  useEffect(() => { setSelected(null); onHoverSegment?.(null) }, [hm])
   return (
-    <div style={{ overflowX: 'auto', padding: '4px 0' }}>
+    <div className="chart-heatmap" style={{ overflow: 'auto', padding: '4px 0' }}>
+      <div className="heatmap-readout" aria-live="polite">{selected ?? 'Tap a cell for lap and segment details · Swipe to scroll'}</div>
       <table style={{ borderCollapse: 'collapse', fontFamily: 'var(--font-mono)', fontSize: 10, width: '100%' }}>
         <thead>
           <tr>
@@ -672,7 +728,11 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
                     border: '1px solid rgba(255,255,255,0.03)',
                     cursor: 'crosshair',
                   }}>
-                    {display}
+                    <button className="heatmap-cell" aria-label={`${row} · ${col}: ${rawText || 'No data'}`}
+                      onFocus={() => onHoverSegment?.(col)} onBlur={() => onHoverSegment?.(null)}
+                      onClick={() => { setSelected(`${row} · ${col}: ${rawText || 'No data'}`); onHoverSegment?.(col) }}>
+                      {display || '—'}
+                    </button>
                   </td>
                 )
               })}
@@ -833,12 +893,14 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
     })
   }
 
+  const touch = useChartTouch<HTMLCanvasElement>({ inspect: onMouseMove, clear: () => setTooltip(null) })
   const cw = wrapRef.current?.clientWidth ?? 600
 
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
-        onMouseMove={onMouseMove} onMouseLeave={() => setTooltip(null)} />
+        className="chart-touch-canvas" {...touch} />
+      <TouchHint />
       {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
     </div>
   )
@@ -977,11 +1039,13 @@ export function CornerBrakingChart({
   const clearHover = () => {
     hoveredTurnRef.current = null; onHoverCorner?.(null); setTooltip(null)
   }
+  const touch = useChartTouch<HTMLCanvasElement>({ inspect: onMouseMove, clear: clearHover })
   const cw = wrapRef.current?.clientWidth ?? 600
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
-        onMouseMove={onMouseMove} onMouseLeave={clearHover} />
+        className="chart-touch-canvas" {...touch} />
+      <TouchHint />
       {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
     </div>
   )
@@ -1140,11 +1204,13 @@ export function CornerConsistencyChart({
     onHoverCorner?.(null)
     setTooltip(null)
   }
+  const touch = useChartTouch<HTMLCanvasElement>({ inspect: onMouseMove, clear: clearHover })
   const cw = wrapRef.current?.clientWidth ?? 600
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
-        onMouseMove={onMouseMove} onMouseLeave={clearHover} />
+        className="chart-touch-canvas" {...touch} />
+      <TouchHint />
       {tooltip && <ChartTooltip tip={tooltip} cw={cw} />}
     </div>
   )

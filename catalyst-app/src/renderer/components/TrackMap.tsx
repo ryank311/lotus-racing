@@ -15,6 +15,8 @@ import type { AnalysisData, RacingLineLap, TrackGeometryPayload, CoachLinePoint 
 import type { CoachAnnotation } from '../../shared/types'
 import { useUnits } from '../units'
 import { LAP_PALETTE } from './chartTheme'
+import { ChartSurface, ChartExpandButton, useChartSurface } from './ChartSurface'
+import { useChartTouch, TouchHint } from './useChartTouch'
 
 // Structural subset of AnalysisData that this component actually needs. Both
 // the Analysis page (passes its full AnalysisData) and the Tracks editor
@@ -173,7 +175,12 @@ function HeatmapPath({ lap, values, vmin, vmax }: {
   return <g>{segments}</g>
 }
 
-export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner, hoverRef, focusAnnotation, coachLine, aiCoachLine }: Props) {
+export function TrackMap(props: Props) {
+  return <ChartSurface title="Track map" className="chart-map-surface"><TrackMapContent {...props} /></ChartSurface>
+}
+
+function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coachAnnotations, focusCorner, hoverRef, focusAnnotation, coachLine, aiCoachLine }: Props) {
+  const { expanded } = useChartSurface()
   const { trackGeometry: geom, racingLines } = data
   // Speed values in `data` are already in the active display unit; this labels them.
   const speedUnit = (data as AnalysisData).speedUnit ?? 'mph'
@@ -298,6 +305,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
     if (!vb) return
     const focus = screenToWorld(clientX, clientY)
     if (!focus) return
+    if (fitBox) factor = Math.max(fitBox.w / 40, Math.min(fitBox.w * 2, vb.w * factor)) / vb.w
     setVb({
       x: focus.x - (focus.x - vb.x) * factor,
       y: focus.y - (focus.y - vb.y) * factor,
@@ -413,6 +421,43 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
     }
   }
   function fitToTrack() { setVb(fitBox) }
+
+  const touch = useChartTouch<SVGSVGElement>({
+    inspect: e => {
+      dragStateRef.current = null
+      onPointerMove(e)
+      if (edit) { moveSinceDownRef.current = 0; onPointerUp(e) }
+    },
+    clear: onPointerLeave,
+    reset: fitToTrack,
+    pan: (before, after) => {
+      const rect = svgRef.current?.getBoundingClientRect()
+      if (!rect) return
+      setVb(current => {
+        if (!current) return current
+        const scale = Math.min(rect.width / current.w, rect.height / current.h)
+        return { ...current, x: current.x - (after.x - before.x) / scale, y: current.y - (after.y - before.y) / scale }
+      })
+    },
+    transform: (before, after) => {
+      const rect = svgRef.current?.getBoundingClientRect()
+      if (!rect || !fitBox) return
+      setVb(current => {
+        if (!current) return current
+        const width = Math.max(fitBox.w / 40, Math.min(fitBox.w * 2, current.w * before.distance / after.distance))
+        const factor = width / current.w
+        const scale = Math.min(rect.width / current.w, rect.height / current.h)
+        const x = current.x + current.w / 2 + (before.center.x - rect.left - rect.width / 2) / scale
+        const y = current.y + current.h / 2 + (before.center.y - rect.top - rect.height / 2) / scale
+        return {
+          x: x - width / 2 - (after.center.x - rect.left - rect.width / 2) / scale * factor,
+          y: y - current.h * factor / 2 - (after.center.y - rect.top - rect.height / 2) / scale * factor,
+          w: width, h: current.h * factor,
+        }
+      })
+    },
+  })
+
 
   // Hover crosshair — look up the best-lap sample whose cumulative distance
   // is closest to the hovered chart x value. Best-lap samples are at 5 m
@@ -634,6 +679,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           />
         )}
         <span className="spacer" />
+        <ChartExpandButton title="Track map" />
         <button className="btn tiny ghost" title="Zoom in"   onClick={() => zoomCenter(0.8)}>+</button>
         <button className="btn tiny ghost" title="Zoom out"  onClick={() => zoomCenter(1.25)}>−</button>
         <button className="btn tiny ghost" title="Fit to track" onClick={fitToTrack}>Fit</button>
@@ -643,13 +689,16 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
         ref={svgRef}
         viewBox={vb ? `${vb.x} ${vb.y} ${vb.w} ${vb.h}` : undefined}
         preserveAspectRatio="xMidYMid meet"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerLeave={onPointerLeave}
+        {...touch}
+        onPointerDown={e => { if (e.pointerType === 'mouse') onPointerDown(e); else touch.onPointerDown(e) }}
+        onPointerMove={e => { if (e.pointerType === 'mouse') onPointerMove(e); else touch.onPointerMove(e) }}
+        onPointerUp={e => { if (e.pointerType === 'mouse') onPointerUp(e); else touch.onPointerUp(e) }}
+        onPointerCancel={e => { dragStateRef.current = null; touch.onPointerCancel() }}
+        onLostPointerCapture={e => { dragStateRef.current = null; touch.onLostPointerCapture(e) }}
         onDoubleClick={(e) => zoomAt(e.clientX, e.clientY, 0.45)}
         style={{
           width: '100%',
+          touchAction: expanded ? 'none' : 'pan-y pinch-zoom',
           flex: 1,
           minHeight: 0,
           cursor: dragStateRef.current
@@ -753,7 +802,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
                 style={{ cursor: 'help' }}
                 onMouseEnter={setHover}
                 onMouseMove={setHover}
-                onPointerMove={e => e.stopPropagation()}
+                onPointerMove={e => { if (e.pointerType === 'mouse' && !dragStateRef.current) e.stopPropagation() }}
                 onMouseLeave={() => setVminHover(null)}
               >
                 <circle cx={vminPoint.x} cy={-vminPoint.y} r={6.5}
@@ -831,7 +880,8 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           return (
             <g
               key={`apex-${idx}-${c.turn}`}
-              onPointerDown={e => { e.stopPropagation(); edit.onSelectTurn(c.turn) }}
+              onPointerDown={e => { if (e.pointerType === 'mouse') { e.stopPropagation(); edit.onSelectTurn(c.turn) } }}
+              onClick={e => { if (e.detail === 0) edit.onSelectTurn(c.turn) }}
               style={{ cursor: 'pointer' }}
             >
               <circle
@@ -1040,6 +1090,7 @@ export function TrackMap({ data, height = 560, hoverDistanceM = null, edit, coac
           })
         })()}
       </svg>
+      <TouchHint spatial zoom />
 
       <div className="track-map-legend">
         <div className="track-map-legend-bar">

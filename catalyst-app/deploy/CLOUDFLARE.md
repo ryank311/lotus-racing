@@ -74,10 +74,11 @@ workspace and Garmin, then try syncing and editing Garage data. Keep the Mac's
 lid open. Ctrl+C stops and removes the test containers. Run it again and choose
 the same driver to see that the data survived.
 
-The helper retains the previous helper's `deploy/data/tailscale-mac/` folder so
-existing test data is preserved. Despite its name, that folder is now used by
-the Docker test. Use `CATALYST_TEST_DATA_DIR=/absolute/path` for a different test
-workspace. The data is gitignored and is never included in the container image.
+The helper stores data in `deploy/data/cloudflare-mac/`. On first run, it moves
+the previous helper's data folder there if present, preserving all workspaces.
+It never merges or overwrites two existing folders. Use
+`CATALYST_TEST_DATA_DIR=/absolute/path` for a different test workspace. The data
+is gitignored and is never included in the container image.
 
 ## Run on the NAS
 

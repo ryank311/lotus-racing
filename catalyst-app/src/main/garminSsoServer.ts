@@ -71,9 +71,9 @@ export class GarminSsoServer {
       reply(200, { status: attempt.status, result: attempt.result, error: attempt.error }); return true
     }
     if (operation === 'cancel' && req.method === 'POST') {
-      if (attempt.status === 'exchanging') { reply(409, { error: 'Garmin sign-in is finishing. Please wait.' }); return true }
+      if (attempt.status === 'exchanging' || attempt.status === 'complete') { reply(200, { cancelled: false }); return true }
       this.attempts.delete(id)
-      reply(200, { ok: true }); return true
+      reply(200, { cancelled: true }); return true
     }
     if (operation === 'callback' && req.method === 'GET') {
       const ticket = garminTicketFromUrl(`${new URL(attempt.serviceUrl).origin}${url.pathname}${url.search}`, attempt.serviceUrl)

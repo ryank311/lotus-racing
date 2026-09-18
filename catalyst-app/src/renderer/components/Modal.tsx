@@ -24,7 +24,7 @@ export function Modal({
   return (
     <div className="modal-overlay" onClick={dismissable ? onClose : undefined}>
       <div className="modal-card" onClick={e => e.stopPropagation()}>
-        <div className="card-corner-marks"><i /></div>
+        <div className="card-corner-marks" aria-hidden="true"><i /></div>
         {eyebrow && <div className="modal-eyebrow">{eyebrow}</div>}
         <div className="modal-title">{title}</div>
         {children && <div className="modal-body">{children}</div>}

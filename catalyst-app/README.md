@@ -24,6 +24,29 @@ Vite's API proxy follows the configured server host and port. By default this
 uses the same driver workspaces as `npm run server`. Set
 `CATALYST_SERVER_DATA_DIR` to a separate directory for isolated development data.
 
+## Test Garmin SSO
+
+The Garmin sign-in dialog offers **Email / password** (the existing flow) and
+**Garmin SSO** (experimental). Select that tab, then choose **Continue with
+Garmin**. No email or password is required in the Catalyst dialog; choose your
+account and complete any verification on Garmin's own page in the new window.
+The connection uses a generic **Garmin SSO** label. A successful return closes
+the dialog and starts the usual recent-session sync.
+
+SSO works through a browser popup in web/server mode, including the packaged
+desktop app, or an isolated Garmin window in desktop development mode. Allow
+popups for Catalyst Coach. In web mode, use Cancel in the Catalyst dialog to
+abandon an attempt; in desktop development, close the Garmin window. Pending
+attempts expire after ten minutes. If a ticket is already being exchanged,
+cancellation waits for that exchange to finish. Server restarts invalidate
+pending attempts. The callback uses the same public API origin you opened, so
+reverse proxies must forward `/api/auth/garmin/*` along with the other API paths.
+
+This uses Garmin's hosted Catalyst-compatible SSO widget and existing Catalyst
+ticket grant. Garmin still controls which challenges or existing sessions it
+accepts; actual account authentication and ticket issuance require a manual
+test. If it fails, the original email/password option remains available.
+
 ## Remote / headless server
 
 For a persistent NAS installation and private phone access, follow the

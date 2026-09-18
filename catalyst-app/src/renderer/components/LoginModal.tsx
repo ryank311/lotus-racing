@@ -1,6 +1,6 @@
 // Garmin sign-in: existing credentials/MFA flow or Garmin's hosted SSO UI.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { api, isRemote, signInWithGarminSso } from '../api'
 import { Modal } from './Modal'
 
@@ -11,6 +11,7 @@ interface Props {
 }
 
 export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
+  const tabsId = useId()
   const [method, setMethod] = useState<'password' | 'sso'>('password')
   const ssoAbort = useRef<AbortController | null>(null)
   useEffect(() => () => ssoAbort.current?.abort(), [])
@@ -61,9 +62,10 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
     ssoAbort.current = controller
     try {
       const result = await signInWithGarminSso(controller.signal)
-      if (!controller.signal.aborted) onSignedIn(email.trim(), result.token, result.expiresAt)
+      onSignedIn('Garmin SSO', result.token, result.expiresAt)
     } catch (error: any) {
-      if (!controller.signal.aborted) setErr(error.message ?? String(error))
+      if (controller.signal.aborted) onClose()
+      else setErr(error.message ?? String(error))
     } finally {
       ssoAbort.current = null
       setBusy(false)
@@ -71,7 +73,7 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
   }
 
   const cancel = async () => {
-    ssoAbort.current?.abort()
+    if (ssoAbort.current) { ssoAbort.current.abort(); return }
     if (mfa) { try { await api.cancelMfa(mfa.sessionId) } catch { /* ignore */ } }
     onClose()
   }
@@ -118,42 +120,65 @@ export function LoginModal({ initialEmail = '', onClose, onSignedIn }: Props) {
       dismissable={!busy}
       actions={<>
         <button className="btn ghost" disabled={busy && !(method === 'sso' && isRemote)} onClick={cancel}>Cancel</button>
-        <button className="btn primary" disabled={busy || !email.trim() || (method === 'password' && !password)} onClick={method === 'sso' ? submitSso : submit}>
-          {busy ? (method === 'sso' ? 'Waiting for Garmin…' : 'Signing in…') : (method === 'sso' ? 'Continue with Garmin SSO' : 'Sign in')}
+        <button className="btn primary" disabled={busy || (method === 'password' && (!email.trim() || !password))} onClick={method === 'sso' ? submitSso : submit}>
+          {busy ? (method === 'sso' ? 'Waiting for Garmin…' : 'Signing in…') : (method === 'sso' ? 'Continue with Garmin' : 'Sign in')}
         </button>
       </>}
     >
-      <div role="group" aria-label="Sign-in method" style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <button className={`btn ${method === 'password' ? 'primary' : 'ghost'}`} aria-pressed={method === 'password'} disabled={busy} onClick={() => { setMethod('password'); setErr(null) }}>Email / password</button>
-        <button className={`btn ${method === 'sso' ? 'primary' : 'ghost'}`} aria-pressed={method === 'sso'} disabled={busy} onClick={() => { setMethod('sso'); setPassword(''); setErr(null) }}>Garmin SSO · experimental</button>
+      <div className="login-tabs" role="tablist" aria-label="Sign-in method">
+        {(['password', 'sso'] as const).map((value, index) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            id={`${tabsId}-${value}`}
+            aria-selected={method === value}
+            aria-controls={`${tabsId}-panel`}
+            tabIndex={method === value ? 0 : -1}
+            disabled={busy}
+            onClick={() => { setMethod(value); setErr(null); if (value === 'sso') setPassword('') }}
+            onKeyDown={event => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+              event.preventDefault()
+              const next = event.key === 'Home' ? 0 : event.key === 'End' ? 1 : 1 - index
+              setMethod(next === 0 ? 'password' : 'sso'); setErr(null)
+              if (next === 1) setPassword('')
+              const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+              tabs?.[next].focus()
+            }}
+          >
+            {value === 'password' ? 'Email / password' : 'Garmin SSO'}
+          </button>
+        ))}
       </div>
-      <div style={{ marginBottom: 12, color: 'var(--text-mute)', fontSize: 12 }}>
-        {method === 'sso'
-          ? 'Sign in on Garmin’s website in a separate window. Garmin handles your password and verification steps. Enter the account email below to label this connection; use the same account on Garmin.'
-          : <>Sign in with your Garmin Connect credentials to sync Catalyst sessions. Your password is {isRemote ? 'relayed by this Catalyst server to' : 'sent only to'} Garmin’s SSO and is never stored.</>}
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <input
-          autoFocus
-          type="email"
-          placeholder="Garmin Connect email"
-          value={email}
-          onChange={e => setEmail(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') void (method === 'sso' ? submitSso() : submit()) }}
-          disabled={busy}
-          className="text-input"
-          style={{ width: '100%' }}
-        />
-        {method === 'password' && <input
-          type="password"
-          placeholder="password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') void submit() }}
-          disabled={busy}
-          className="text-input"
-          style={{ width: '100%' }}
-        />}
+      <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${method}`}>
+        <div className="login-description">
+          {method === 'sso'
+            ? <>Sign in securely on Garmin’s website in a separate window. Garmin handles your credentials and verification.<span className="login-experimental">Experimental sign-in option</span></>
+            : <>Sign in with your Garmin Connect credentials to sync Catalyst sessions. Your password is {isRemote ? 'relayed by this Catalyst server to' : 'sent only to'} Garmin’s SSO and is never stored.</>}
+        </div>
+        {method === 'password' && <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <input
+            type="email"
+            placeholder="Garmin Connect email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') void submit() }}
+            disabled={busy}
+            className="text-input"
+            style={{ width: '100%' }}
+          />
+          <input
+            type="password"
+            placeholder="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') void submit() }}
+            disabled={busy}
+            className="text-input"
+            style={{ width: '100%' }}
+          />
+        </div>}
       </div>
       {busy && method === 'sso' && <div role="status" style={{ marginTop: 10 }}>Complete sign-in in the Garmin window, then return here.{!isRemote && ' Close the Garmin window to cancel.'}</div>}
       {err && <div style={{ color: 'var(--red)', fontSize: 11, marginTop: 8 }}>{err}</div>}

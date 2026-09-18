@@ -265,3 +265,18 @@ test('startup migrates legacy AI keys once, removes JSON secrets, and upgrades o
   assert.deepEqual(await store.read(), { anthropic: '', openai: 'old-openai' })
   assert.deepEqual(JSON.parse(fs.readFileSync(configPath('Alice'), 'utf8')), { ai: {} })
 })
+
+test('SSO starts via HTTP and its internal exchange method cannot be invoked via public RPC', { timeout: 15000 }, async t => {
+  const { login, rpc, server } = await setup(t)
+  const cookie = await login('SsoTest')
+  assert.equal((await rpc(cookie, 'auth:completeSso', 'ST-forged', 'https://evil.test')).status, 403)
+  const response = await fetch(server.url + '/api/auth/garmin/start', {
+    method: 'POST', headers: { cookie, 'X-Catalyst-Origin': server.url },
+  })
+  assert.equal(response.status, 200)
+  const attempt = await response.json()
+  const callback = new URL(attempt.url).searchParams.get('service')
+  assert.ok(callback.startsWith(server.url + '/api/auth/garmin/callback/'))
+  const cancelled = await fetch(server.url + '/api/auth/garmin/cancel/' + attempt.id, { method: 'POST', headers: { cookie } })
+  assert.equal(cancelled.status, 200)
+})
