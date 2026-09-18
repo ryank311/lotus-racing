@@ -219,7 +219,9 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     for (const t of xTicks) {
       const px = toX(t)
       if (px < LP.l || px > LP.l + plotW) continue
-      ctx.fillText(String(Math.round(t)), px, LP.t + plotH + 5)
+      const label = String(Math.round(t))
+      ctx.textAlign = px + ctx.measureText(label).width / 2 > w - 2 ? 'right' : 'center'
+      ctx.fillText(label, px, LP.t + plotH + 5)
     }
 
     ctx.save()

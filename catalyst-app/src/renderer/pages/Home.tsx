@@ -161,7 +161,7 @@ function AiSettingsCard() {
   const [settings, setSettings] = useState<AiSettings | null>(null)
   const [draftKeys, setDraftKeys] = useState<Pick<AiSettings, 'anthropicApiKey' | 'openAiApiKey'>>({})
   const [saving, setSaving] = useState(false)
-  const [dirty, setDirty] = useState(false)
+  const [editingKey, setEditingKey] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
@@ -169,10 +169,18 @@ function AiSettingsCard() {
     void api.getAiSettings().then(setSettings).catch(e => setError(String(e)))
   }, [])
 
-  const updateSettings = (updater: (s: AiSettings) => AiSettings) => {
-    setSettings(prev => prev ? updater(prev) : prev)
-    setDirty(true)
+  const savePreferences = async (next: AiSettings) => {
+    const previous = settings
+    setSettings(next)
+    setSaving(true)
     setMessage('')
+    setError('')
+    try {
+      await api.saveAiSettings(next)
+    } catch (e) {
+      setSettings(previous)
+      setError(e instanceof Error ? e.message : String(e))
+    } finally { setSaving(false) }
   }
   const save = async () => {
     if (!settings) return
@@ -180,9 +188,9 @@ function AiSettingsCard() {
     setError('')
     try {
       await api.saveAiSettings({ ...settings, ...draftKeys })
-      setDraftKeys({})
       setSettings(await api.getAiSettings())
-      setDirty(false)
+      setDraftKeys({})
+      setEditingKey(false)
       setMessage('Saved')
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
     finally { setSaving(false) }
@@ -196,12 +204,15 @@ function AiSettingsCard() {
   const selectedKey = draftKeys[keyField]
   const hasKey = provider === 'openai' ? settings.hasOpenAiApiKey : settings.hasAnthropicApiKey
   const modelOptions = AI_MODELS[provider]
+  const showKeyEditor = !hasKey || editingKey
   const changeProvider = (next: 'anthropic' | 'openai') => {
-    updateSettings(s => ({ ...s, provider: next, model: defaultModelFor(next) }))
+    setEditingKey(false)
+    setDraftKeys({})
+    setError('')
+    void savePreferences({ ...settings, provider: next, model: defaultModelFor(next) })
   }
   const changeKey = (value: string) => {
     setDraftKeys(prev => ({ ...prev, [keyField]: value }))
-    setDirty(true)
     setMessage('')
   }
 
@@ -213,6 +224,7 @@ function AiSettingsCard() {
       <div style={{ marginTop: 14 }}>
         <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Provider</div>
         <select
+          aria-label="AI provider"
           value={provider}
           disabled={saving}
           onChange={e => changeProvider(e.target.value as 'anthropic' | 'openai')}
@@ -228,33 +240,12 @@ function AiSettingsCard() {
         </select>
       </div>
       <div style={{ marginTop: 12 }}>
-        <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>{providerLabel} API Key</div>
-        <input
-          type="password"
-          value={selectedKey ?? ''}
-          onChange={e => changeKey(e.target.value)}
-          disabled={saving}
-          autoComplete="new-password"
-          aria-label={`${providerLabel} API key`}
-          placeholder={hasKey ? 'Configured — enter a replacement key' : provider === 'openai' ? 'sk-…' : 'sk-ant-api…'}
-          style={{
-            width: '100%', background: 'var(--bg-elev)',
-            border: '1px solid var(--border)', borderRadius: 'var(--radius)',
-            padding: '8px 12px', color: 'var(--text)',
-            fontFamily: 'var(--font-mono)', fontSize: 11,
-          }}
-        />
-      </div>
-      <div className="muted" style={{ fontSize: 10, marginTop: 8 }}>
-        {selectedKey === '' ? 'Key will be removed when saved.' : hasKey ? 'API key configured.' : 'No API key configured.'}
-        {hasKey && <button className="btn" disabled={saving} onClick={() => changeKey('')} style={{ marginLeft: 8 }}>Remove key</button>}
-      </div>
-      <div style={{ marginTop: 12 }}>
         <div className="muted small" style={{ marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>Model</div>
         <select
+          aria-label="AI model"
           value={settings.model ?? defaultModelFor(provider)}
           disabled={saving}
-          onChange={e => updateSettings(s => ({ ...s, model: e.target.value }))}
+          onChange={e => void savePreferences({ ...settings, model: e.target.value })}
           style={{
             width: '100%', background: 'var(--bg-elev)',
             border: '1px solid var(--border)', borderRadius: 'var(--radius)',
@@ -264,18 +255,52 @@ function AiSettingsCard() {
         >
           {modelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <div className="muted" style={{ fontSize: 10, lineHeight: 1.5, marginTop: 8 }}>
-          {settings.keysShared
-            ? 'API keys are stored in the server database and shared by all logins. Replacing or removing a key affects everyone. Your provider and model selection apply only to your login.'
-            : 'API keys are stored only in your Catalyst Coach database.'}
-          {' '}OpenAI coaching uses the Responses API with x-high reasoning.
+      </div>
+      {showKeyEditor && (
+        <div id="ai-key-editor" style={{ marginTop: 16 }}>
+          <label htmlFor="ai-api-key" className="muted small" style={{ display: 'block', marginBottom: 6, letterSpacing: '0.12em', textTransform: 'uppercase', fontSize: 9 }}>{providerLabel} API key</label>
+          <input
+            id="ai-api-key"
+            type="password"
+            value={selectedKey ?? ''}
+            onChange={e => changeKey(e.target.value)}
+            disabled={saving}
+            autoComplete="new-password"
+            autoFocus={editingKey}
+            aria-describedby="ai-key-help"
+            placeholder={hasKey ? 'Enter a new key, or leave blank to clear' : provider === 'openai' ? 'sk-…' : 'sk-ant-api…'}
+            style={{
+              width: '100%', background: 'var(--bg-elev)',
+              border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+              padding: '8px 12px', color: 'var(--text)',
+              fontFamily: 'var(--font-mono)', fontSize: 11,
+            }}
+          />
+          <div id="ai-key-help" className="muted" style={{ fontSize: 10, lineHeight: 1.5, marginTop: 8 }}>
+            {hasKey ? 'Enter a replacement key, or save an empty field to clear the existing key. ' : 'Add an API key to enable coaching. '}
+            {settings.keysShared
+              ? 'This key is shared by all logins. Changes affect everyone.'
+              : 'Keys are stored in your Catalyst Coach database.'}
+          </div>
         </div>
+      )}
+      <div className="btn-row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
+        {showKeyEditor && <button className="btn primary" disabled={saving || selectedKey === undefined} onClick={() => void save()}>{saving ? 'Saving…' : 'Save'}</button>}
+        {hasKey && (editingKey ? (
+          <button className="btn ghost" disabled={saving} onClick={() => {
+            setEditingKey(false)
+            setDraftKeys({})
+            setError('')
+          }}>Cancel</button>
+        ) : (
+          <button className="btn ghost" disabled={saving} aria-controls="ai-key-editor" aria-expanded={false} onClick={() => {
+            setEditingKey(true)
+            changeKey('')
+          }}>Edit API key</button>
+        ))}
+        {message && <span role="status" className="muted">{message}</span>}
       </div>
-      <div style={{ marginTop: 12 }}>
-        <button className="btn" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save AI settings'}</button>
-        {message && <span role="status" className="muted" style={{ marginLeft: 10 }}>{message}</span>}
-        {error && <div role="alert" style={{ marginTop: 8 }}>{error}</div>}
-      </div>
+      {error && <div role="alert" style={{ marginTop: 8 }}>{error}</div>}
     </div>
   )
 }

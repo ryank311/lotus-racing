@@ -16,7 +16,7 @@ export const AI_MODELS: Record<AiProvider, readonly (readonly [string, string])[
   ],
 }
 export const defaultModelFor = (provider: AiProvider): string =>
-  provider === 'openai' ? 'gpt-5.6-terra' : 'claude-sonnet-5'
+  provider === 'openai' ? 'gpt-6-astra' : 'claude-fable-5-1'
 
 export function configuredModelFor(model: string | undefined, provider: AiProvider): string {
   if (provider === 'anthropic') {
