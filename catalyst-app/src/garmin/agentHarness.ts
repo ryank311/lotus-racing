@@ -2,6 +2,8 @@
 // structured coaching response. Main-process only — never imported in renderer.
 
 import https from 'node:https'
+import { StringDecoder } from 'node:string_decoder'
+import { AnthropicStream, checkAnthropicStopReason } from './anthropicStream.js'
 import OpenAI from 'openai'
 import type {
   FunctionTool,
@@ -37,12 +39,14 @@ export async function runAgent(
   }
 
   const maxAttempts = 3
+  const deadline = Date.now() + 15 * 60_000
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (Date.now() >= deadline) throw new Error('Anthropic analysis exceeded the 15-minute total limit, including retries')
     try {
       return await runAnthropic(
         prompt, config.apiKey, config.model, onChunk, maxTokens,
-        config.stream ?? true, config.tools, config.toolChoice,
+        config.stream ?? true, deadline, config.tools, config.toolChoice,
       )
     } catch (error) {
       if (!isTransientProviderError(error) || attempt === maxAttempts) {
@@ -77,8 +81,9 @@ function errorMessage(error: unknown): string {
 
 export function isTransientProviderError(error: unknown): boolean {
   const errorObj = typeof error === 'object' && error !== null
-    ? error as { code?: unknown; status?: unknown; name?: unknown; cause?: unknown }
+    ? error as { code?: unknown; status?: unknown; name?: unknown; cause?: unknown; retryable?: boolean }
     : null
+  if (errorObj?.retryable === false) return false
   const causeObj = typeof errorObj?.cause === 'object' && errorObj.cause !== null
     ? errorObj.cause as { code?: unknown }
     : null
@@ -137,157 +142,177 @@ function runAnthropic(
   onChunk: (text: string) => void,
   maxTokens: number,
   stream: boolean,
+  deadline: number,
   tools?: object[],
   toolChoice?: { type: 'tool'; name: string },
 ): Promise<string> {
   const reqObj: Record<string, unknown> = {
-    model,
-    max_tokens: maxTokens,
-    stream,
+    model, max_tokens: maxTokens, stream,
     messages: [{ role: 'user', content: prompt }],
   }
   if (tools?.length) {
     reqObj.tools = tools
-    // Fable 5.1 rejects forced tool use. The coaching prompt already asks for
-    // submit_coaching_report explicitly; auto allows its adaptive thinking.
+    // Fable 5.1 rejects forced tool use; auto allows its adaptive thinking.
     reqObj.tool_choice = model === 'claude-fable-5-1'
       ? { type: 'auto', disable_parallel_tool_use: true }
       : toolChoice ?? { type: 'any' }
   }
   const body = JSON.stringify(reqObj)
-
-  onChunk(`[status] Connecting to ${model}…\n`)
-  onChunk(`[diag] model=${model} max_tokens=${maxTokens} stream=${stream} prompt=${(prompt.length/1024).toFixed(1)}KB\n`)
+  onChunk(`[diag] model=${model} max_tokens=${maxTokens} stream=${stream} prompt=${(Buffer.byteLength(prompt) / 1024).toFixed(1)}KB\n`)
 
   return new Promise((resolve, reject) => {
     const requestStart = Date.now()
-    let phraseIdx = 0
-    const statusTimer = setInterval(() => {
-      onChunk(`[status] ${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
-      const elapsed = ((Date.now() - requestStart) / 1000).toFixed(0)
-      onChunk(`[diag] waiting for response… ${elapsed}s elapsed\n`)
-      phraseIdx++
-    }, 4000)
-
-    const req = https.request({
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
-      method: 'POST',
-      // 5-minute overall timeout — surfaced as an error if the server goes silent
-      timeout: 300_000,
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(body),
-      },
-    }, (res) => {
-      if (res.statusCode && res.statusCode >= 400) {
-        clearInterval(statusTimer)
-        let errBody = ''
-        res.on('data', (c: Buffer) => { errBody += c.toString() })
-        res.on('end', () => {
-          onChunk(`[error] HTTP ${res.statusCode}: ${errBody}\n`)
-          reject(new Error(`Anthropic API ${res.statusCode}: ${errBody.slice(0, 500)}`))
-        })
-        return
+    let settled = false
+    let phase = 'Connecting to Anthropic'
+    let receivedBytes = 0
+    let lastActivityAt = requestStart
+    let responseReceived = false
+    let requestId = ''
+    let firstDelta = false
+    let res: import('node:http').IncomingMessage | undefined
+    let req: import('node:http').ClientRequest | undefined
+    let idleTimer: ReturnType<typeof setTimeout>
+    let statusTimer: ReturnType<typeof setInterval>
+    let deadlineTimer: ReturnType<typeof setTimeout>
+    const elapsed = () => ((Date.now() - requestStart) / 1000).toFixed(1)
+    const parser = new AnthropicStream(toolChoice?.name, event => {
+      if (parser.events === 1) onChunk(`[diag] first stream event: ${elapsed()}s\n`)
+      if (event.type === 'message_start') {
+        setPhase('Request accepted; waiting for model output')
+        onChunk(`[diag] message_id=${event.message?.id ?? '?'} input_tokens=${event.message?.usage?.input_tokens ?? '?'}\n`)
       }
+      if (event.type === 'content_block_start') {
+        const type = event.content_block?.type
+        if (type === 'thinking' || type === 'redacted_thinking') setPhase('Model is thinking')
+        else if (type === 'tool_use') setPhase('Receiving coaching report')
+        else if (type === 'text') setPhase('Receiving model response')
+      }
+      if (event.type === 'content_block_delta' && !firstDelta) {
+        firstDelta = true
+        onChunk(`[diag] first content delta: ${elapsed()}s\n`)
+      }
+      if (event.type === 'message_delta') {
+        onChunk(`[diag] output_tokens=${event.usage?.output_tokens ?? '?'} stop_reason=${event.delta?.stop_reason ?? '?'}\n`)
+      }
+    })
+    function progress(): void {
+      if (settled) return
+      const idle = ((Date.now() - lastActivityAt) / 1000).toFixed(0)
+      const report = parser.reportChars ? ` · ${parser.reportChars.toLocaleString()} report chars` : ''
+      onChunk(`[status] ${phase} · ${elapsed()}s${report}\n`)
+      onChunk(`[diag] phase=${phase} elapsed=${elapsed()}s received=${(receivedBytes / 1024).toFixed(1)}KB events=${parser.events} last_event=${parser.lastEvent} idle=${idle}s report_chars=${parser.reportChars} thinking_chars=${parser.thinkingChars}\n`)
+    }
+    function setPhase(next: string): void {
+      if (phase === next || settled) return
+      phase = next
+      progress()
+    }
+    function cleanup(): void {
+      clearTimeout(idleTimer)
+      clearTimeout(deadlineTimer)
+      clearInterval(statusTimer)
+    }
+    function fail(error: Error): void {
+      if (settled) return
+      progress()
+      settled = true
+      cleanup()
+      onChunk(`[error] ${error.message}${requestId ? ` (request_id=${requestId})` : ''}\n`)
+      reject(error)
+      res?.destroy()
+      req?.destroy()
+    }
+    function resetIdle(): void {
+      lastActivityAt = Date.now()
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => fail(Object.assign(new Error(
+        `Anthropic received no data for 5 minutes while ${phase.toLowerCase()} (${elapsed()}s elapsed)`,
+      ), { code: 'ETIMEDOUT' })), 300_000)
+    }
+    function succeed(full: string): void {
+      if (settled) return
+      settled = true
+      cleanup()
+      onChunk(`[diag] response complete: ${(Buffer.byteLength(full) / 1024).toFixed(1)}KB in ${elapsed()}s\n`)
+      onChunk('[status] Parsing coaching report…\n')
+      resolve(full)
+      // message_stop completes SSE even if the HTTP connection stays open.
+      res?.destroy()
+      req?.destroy()
+    }
+    resetIdle()
+    statusTimer = setInterval(progress, 4000)
+    deadlineTimer = setTimeout(() => fail(Object.assign(new Error(
+      'Anthropic analysis exceeded the 15-minute total limit, including retries. Try the Top 3 lap filter to reduce the analysis size.',
+    ), { retryable: false })), Math.max(0, deadline - Date.now()))
+    progress()
 
-      let rawBody = ''
-      res.on('data', (chunk: Buffer) => { rawBody += chunk.toString('utf-8') })
-      res.on('end', () => {
-        clearInterval(statusTimer)
-
-        let full = ''
-        if (stream) {
-          // Parse SSE — each line is "data: {...}"
-          let generatingStarted = false
-          let toolInputJson = ''
-          let inToolUse = false
-          let completedToolInput: string | undefined
-          for (const line of rawBody.split('\n')) {
-            if (!line.startsWith('data: ')) continue
-            const raw = line.slice(6).trim()
-            if (raw === '[DONE]') continue
-            let evt: any
-            try { evt = JSON.parse(raw) } catch { continue }
-            // Text response
-            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-              full += evt.delta.text ?? ''
-            }
-            // Tool use — collect JSON fragments
-            if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
-              inToolUse = true
-              toolInputJson = ''
-            }
-            if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta') {
-              toolInputJson += evt.delta.partial_json ?? ''
-            }
-            if (evt.type === 'content_block_stop' && inToolUse) {
-              inToolUse = false
-              completedToolInput = toolInputJson
-            }
-            if (evt.type === 'message_start') {
-              if (!generatingStarted) {
-                generatingStarted = true
-                onChunk('[status] Generating response…\n')
-                onChunk(`[diag] first-token latency: ${((Date.now() - requestStart) / 1000).toFixed(1)}s\n`)
-              }
-              if (evt.message?.usage) {
-                const u = evt.message.usage
-                onChunk(`[diag] input_tokens=${u.input_tokens ?? '?'}\n`)
-              }
-            }
-            if (evt.type === 'message_delta' && evt.usage) {
-              onChunk(`[diag] output_tokens=${evt.usage.output_tokens ?? '?'}\n`)
-            }
-          }
-          if (completedToolInput !== undefined) full = completedToolInput
-        } else {
-          // Non-streaming: single JSON response object
+    try {
+      req = https.request({
+        hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+        headers: {
+          'x-api-key': apiKey, 'anthropic-version': '2023-06-01',
+          'content-type': 'application/json', 'content-length': Buffer.byteLength(body),
+          accept: stream ? 'text/event-stream' : 'application/json',
+        },
+      }, response => {
+        res = response
+        if (settled) { res.destroy(); return }
+        responseReceived = true
+        resetIdle()
+        requestId = String(res.headers['request-id'] ?? '')
+        const status = res.statusCode ?? 0
+        const contentType = String(res.headers['content-type'] ?? '')
+        onChunk(`[diag] HTTP ${status} headers after ${elapsed()}s${requestId ? ` request_id=${requestId}` : ''}\n`)
+        setPhase('Connected; waiting for model output')
+        const httpError = status < 200 || status >= 300
+        let rawBody = ''
+        const decoder = new StringDecoder('utf8')
+        res.on('error', fail)
+        res.on('aborted', () => fail(Object.assign(new Error('Anthropic response was aborted before completion'), { code: 'ECONNRESET' })))
+        res.on('close', () => {
+          if (!settled) fail(Object.assign(new Error('Anthropic connection closed before completion'), { code: 'ECONNRESET' }))
+        })
+        res.on('data', (chunk: Buffer) => {
+          if (settled) return
+          receivedBytes += chunk.length
+          resetIdle()
           try {
-            const resp = JSON.parse(rawBody)
-            // Tool use response
-            const toolBlock = resp.content?.find((b: any) => b.type === 'tool_use')
-            if (toolBlock?.input) {
-              full = JSON.stringify(toolBlock.input)
-            } else {
-              full = resp.content?.find((b: any) => b.type === 'text')?.text ?? ''
+            if (httpError) rawBody = (rawBody + decoder.write(chunk)).slice(0, 16_384)
+            else if (stream) {
+              parser.push(chunk)
+              if (parser.done) succeed(parser.finish())
+            } else rawBody += decoder.write(chunk)
+          } catch (error) { fail(error as Error) }
+        })
+        res.on('end', () => {
+          if (settled) return
+          try {
+            if (httpError) {
+              throw Object.assign(new Error(`Anthropic API ${status}: ${rawBody.slice(0, 500)}`), { status })
             }
-          } catch {
-            onChunk('[error] Failed to parse non-streaming response\n')
-          }
+            if (stream) { succeed(parser.finish()); return }
+            let result: any
+            try { result = JSON.parse(rawBody + decoder.end()) } catch {
+              throw new Error('Anthropic returned an invalid JSON response')
+            }
+            if (result.error) throw new Error(`Anthropic error: ${result.error.message ?? result.error.type}`)
+            checkAnthropicStopReason(result.stop_reason)
+            const tool = result.content?.find((block: any) => block.type === 'tool_use' && (!toolChoice || block.name === toolChoice.name))
+            const full = tool?.input ? JSON.stringify(tool.input) : (result.content ?? [])
+              .filter((block: any) => block.type === 'text').map((block: any) => block.text ?? '').join('')
+            if (!full.trim()) throw new Error('Anthropic response ended without a coaching report')
+            succeed(full)
+          } catch (error) { fail(error as Error) }
+        })
+        if (!httpError && stream && !contentType.includes('text/event-stream')) {
+          fail(new Error(`Anthropic returned ${contentType || 'no content type'} instead of an event stream`))
         }
-
-        if (!full) {
-          onChunk('[error] Response ended with no content\n')
-        } else {
-          const elapsed = ((Date.now() - requestStart) / 1000).toFixed(1)
-          onChunk(`[diag] response complete: ${(full.length / 1024).toFixed(1)}KB in ${elapsed}s\n`)
-          onChunk('[status] Parsing coaching report…\n')
-        }
-        resolve(full)
       })
-      res.on('error', (err) => {
-        clearInterval(statusTimer)
-        onChunk(`[error] ${err.message}\n`)
-        reject(err)
-      })
-    })
-
-    req.on('timeout', () => {
-      clearInterval(statusTimer)
-      onChunk('[error] Request timed out (5 min)\n')
-      req.destroy()
-      reject(new Error('Request timed out after 5 minutes'))
-    })
-    req.on('error', (err) => {
-      clearInterval(statusTimer)
-      onChunk(`[error] ${err.message}\n`)
-      reject(err)
-    })
-    req.write(body)
-    req.end()
+      req.on('finish', () => { if (!responseReceived) setPhase('Request sent; waiting for response headers') })
+      req.on('error', fail)
+      req.end(body)
+    } catch (error) { fail(error as Error) }
   })
 }
 

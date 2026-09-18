@@ -491,6 +491,7 @@ export function registerApiHandlers(
 
     void (async () => {
       let builtPrompt = ''
+      let receivedResponse = ''
       let resolvedProfileName = opts.profile
       let sessionAliases: Record<string, string> = {}
       const collectedLogs: string[] = []
@@ -557,7 +558,12 @@ export function registerApiHandlers(
         // Keep GUIDs available to the model as analysis keys, then remove them
         // before any response text is persisted or rendered to the driver.
         const safeResponse = replaceSessionIds(rawResponse, sessionAliases)
+        receivedResponse = safeResponse
         const parsed = parseCoachResponse(safeResponse)
+        if (!parsed) {
+          throw new Error('The model returned a response, but it could not be read as a coaching report. The response is saved in AI Coach for inspection.')
+        }
+        log(`[coach] Parsed ${parsed.tips.length} tips and ${parsed.annotations.length} annotations`)
         const modelUsed = harnessConfig.model
         const title = parsed?.headline
           ?? `Coach · ${resolvedProfile} · ${new Date().toISOString().slice(0, 10)}`
@@ -587,7 +593,6 @@ export function registerApiHandlers(
       } catch (e: any) {
         const errMsg = replaceSessionIds(String(e.message ?? e), sessionAliases)
         log(`[coach] ✗ ${errMsg}`)
-        broadcast(win, { kind: 'coach', type: 'error', payload: errMsg })
 
         // Always save a failed session — create the DB/schema if needed.
         const errorId = randomUUID()
@@ -602,7 +607,8 @@ export function registerApiHandlers(
               model_used: 'error',
               title: `⚠ Failed · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} · ${errMsg.slice(0, 60)}`,
               prompt: builtPrompt,
-              raw_response: replaceSessionIds(collectedLogs.join('') + '\n\nERROR: ' + errMsg, sessionAliases),
+              raw_response: replaceSessionIds(collectedLogs.join('') + '\n\nERROR: ' + errMsg +
+                (receivedResponse ? '\n\nMODEL RESPONSE:\n' + receivedResponse : ''), sessionAliases),
               parsed_result: null,
             }
             await insertCoachingSession(con, errorSession)
@@ -610,8 +616,9 @@ export function registerApiHandlers(
         } catch (saveErr: any) {
           log(`[coach] (could not save error session: ${saveErr.message})`)
         }
-        // Always fire done so the UI unlocks and the AI Coach tab can refresh.
-        broadcast(win, { kind: 'coach', type: 'done', payload: errorId })
+        // Error is terminal too. A subsequent done event would replace the
+        // failure with a success toast and try loading an empty report.
+        broadcast(win, { kind: 'coach', type: 'error', payload: errMsg })
       } finally {
         activeWorker = null
       }

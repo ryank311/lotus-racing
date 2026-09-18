@@ -7,6 +7,7 @@ import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
 import { humanSessionLabel, sanitizeCoachingResult } from '../../shared/sessionIdentity'
+import { coachingLapFilter, type LapFilter } from '../../shared/coachingScope'
 import type { AnalysisData } from '../../garmin/analysisData'
 import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
@@ -27,7 +28,6 @@ function guidKey(guids: Iterable<string>): string {
   return [...guids].sort().join(',')
 }
 
-type LapFilter = 'all' | 'top3' | 'top5' | 'top10'
 const LAP_FILTERS: Array<{ value: LapFilter; label: string; limit: 3 | 5 | 10 | null }> = [
   { value: 'all', label: 'All', limit: null },
   { value: 'top3', label: 'Top 3', limit: 3 },
@@ -58,19 +58,26 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [focusedAnnotation, setFocusedAnnotation] = useState<CoachAnnotation | null | undefined>(undefined)
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const loadedCoachId = useRef<string | null>(null)
 
-  // When a coaching session is loaded from the AI Coach tab, apply its result
-  // and record the session set it was generated for.
+  // Restore the report's actual scope before checking for stale coaching. Keep
+  // these in one effect so loading a report cannot clear it using the previous
+  // render's filter/result (including when switching between saved reports).
   useEffect(() => {
-    if (activeCoachSession) {
+    if (activeCoachSession && loadedCoachId.current !== activeCoachSession.id) {
+      loadedCoachId.current = activeCoachSession.id
+      const filter = coachingLapFilter(activeCoachSession)
+      setLapFilter(filter)
       setCoachResult(activeCoachSession.parsed_result)
-      setCoachedKey(`${guidKey(activeCoachSession.session_guids)}|all`)
+      setCoachedKey(`${guidKey(activeCoachSession.session_guids)}|${filter}`)
+      setFocusedRef(null)
+      setHoveredRef(null)
+      setFocusedAnnotation(undefined)
+      return
     }
-  }, [activeCoachSession])
+    if (!activeCoachSession) loadedCoachId.current = null
 
-  // Clear stale coaching when the selected sessions no longer match the set the
-  // coaching was generated for — the advice wouldn't correspond to the analysis.
-  useEffect(() => {
+    // User changes to sessions or lap filter still invalidate the report.
     if (!coachResult || coachedKey == null) return
     if (`${guidKey(selected)}|${lapFilter}` !== coachedKey) {
       setCoachResult(null)
@@ -80,7 +87,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       setFocusedAnnotation(undefined)
       onClearCoachSession?.()
     }
-  }, [selected, lapFilter, coachResult, coachedKey, onClearCoachSession])
+  }, [activeCoachSession, selected, lapFilter, coachResult, coachedKey, onClearCoachSession])
 
   const askCoach = async (coachFilter: LapFilter = lapFilter) => {
     if (!data || coachRunning || busy) return
@@ -111,6 +118,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         if (evt.payload) {
           void api.getCoachSession(evt.payload).then(s => {
             if (s) {
+              setLapFilter(coachFilter)
               setCoachResult(s.parsed_result)
               setCoachedKey(submittedKey)
             }

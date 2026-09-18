@@ -141,7 +141,7 @@ export function App() {
           // flush before navigation (avoids React batching edge cases with async events).
           const sessionId = evt.payload
           void api.getCoachSession(sessionId).then(session => {
-            if (!session) return
+            if (!session?.parsed_result) return
             setTimeout(() => {
               loadCoachSession(session)
               setCoachToast({ sessionId })
@@ -159,7 +159,8 @@ export function App() {
         const errMsg = `error: ${evt.payload}`
         setLogLine(errMsg)
         setLogLines(prev => [...prev.slice(-499), `✗ ${errMsg}`])
-        if (evt.kind === 'sync') { void refresh(); setRefreshTick(t => t + 1) }
+        if (evt.kind === 'sync') void refresh()
+        setRefreshTick(t => t + 1)
       }
     })
     return () => { unsub() }
