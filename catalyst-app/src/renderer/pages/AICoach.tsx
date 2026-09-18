@@ -256,7 +256,7 @@ function SessionViewer({ session, onLoad, onDelete }: {
 
       {r?.strengths && r.strengths.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div className="card-label" style={{ marginBottom: 10 }}>Keep doing</div>
+          <h3 className="coach-section-title">Keep doing</h3>
           <div style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 14px' }}>
             {r.strengths.map((item, i) => <div key={i} style={{ fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.55 }}>✓ {item}</div>)}
           </div>
@@ -266,7 +266,7 @@ function SessionViewer({ session, onLoad, onDelete }: {
       {/* Tips */}
       {r?.tips && r.tips.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div className="card-label" style={{ marginBottom: 10 }}>Tips</div>
+          <h3 className="coach-section-title">Tips</h3>
           {r.tips.map((tip, i) => (
             <div key={i} style={{
               background: 'var(--panel)', border: '1px solid var(--border)',
@@ -288,7 +288,7 @@ function SessionViewer({ session, onLoad, onDelete }: {
 
       {r?.next_session_plan && r.next_session_plan.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div className="card-label" style={{ marginBottom: 10 }}>Next session plan</div>
+          <h3 className="coach-section-title">Next session plan</h3>
           {r.next_session_plan.map((step, i) => (
             <div key={i} style={{ background: 'var(--panel)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '10px 12px', marginBottom: 7 }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--cyan)' }}>{step.run}</div>
@@ -302,7 +302,7 @@ function SessionViewer({ session, onLoad, onDelete }: {
       {/* Drills */}
       {r?.drills && r.drills.length > 0 && (
         <div style={{ marginBottom: 20 }}>
-          <div className="card-label" style={{ marginBottom: 10 }}>Drills</div>
+          <h3 className="coach-section-title">Drills</h3>
           <div style={{
             background: 'var(--panel)', border: '1px solid var(--border)',
             borderRadius: 'var(--radius)', padding: '12px 14px',

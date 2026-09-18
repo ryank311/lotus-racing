@@ -152,7 +152,7 @@ body {
 button { font-family: inherit; cursor: pointer; }
 a { color: inherit; }
 a.btn, a.nav-item, a.sidebar-account, a.sidebar-log-btn, a.list-item,
-a.garage-vehicle-name, a.garage-file-name, a.tracks-circuit-card, a.chip { text-decoration: none; }
+a.garage-vehicle-name, a.garage-file-name, a.tracks-circuit-card, a.chip, a.workflow-link { text-decoration: none; }
 a.btn { display: inline-flex; align-items: center; justify-content: center; }
 .navigation-error { position: fixed; bottom: 16px; left: 16px; right: 16px; z-index: 200; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; background: var(--panel); border: 1px solid var(--red); }
 input, textarea, select { font-family: inherit; color: inherit; }
@@ -1766,6 +1766,14 @@ input, textarea, select { font-family: inherit; color: inherit; }
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.coach-section-title {
+  margin: 0 0 10px;
+  font: 9px var(--font-mono);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
 }
 
 .viewer-toolbar {

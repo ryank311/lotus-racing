@@ -63,7 +63,9 @@ export function ServerGate({ children }: { children: JSX.Element }) {
       setLoading(true)
       void logoutFromServer().then(() => {
         clearWorkspace(); setUsername(null); go('/sign-in', { replace: true, state: { switchWorkspace: false } })
-      }).catch(e => setError(String(e))).finally(() => setLoading(false))
+      }).catch(e => {
+        setError(String(e)); go('/account', { replace: true, state: { switchWorkspace: false } })
+      }).finally(() => setLoading(false))
     } else if (isRemote && !username && page !== 'sign-in') {
       go(routeUrl('/sign-in', { returnTo: location.pathname + location.search }), { replace: true })
     } else if (page === 'sign-in' && (!isRemote || username)) {

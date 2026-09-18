@@ -4,6 +4,7 @@ import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
 import { humaniseBytes, api } from '../api'
 import { useUnits } from '../units'
 import type { UnitSystem } from '../../shared/units'
+import { NavLink, useNavigation } from '../navigation'
 
 interface Props {
   auth: AuthState | null
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onSessions }: Props) {
+  const { lastSessions } = useNavigation()
   const [syncMenuOpen, setSyncMenuOpen] = useState(false)
   const syncMenuRef = useRef<HTMLDivElement>(null)
   const syncCaretRef = useRef<HTMLButtonElement>(null)
@@ -89,9 +91,9 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
           </div>
         </div>
 
-        {(stats?.sessionCount ?? 0) > 0 && <button className="workflow-link" onClick={onSessions}>
+        {(stats?.sessionCount ?? 0) > 0 && <NavLink className="workflow-link" to={lastSessions()}>
           <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
-        </button>}
+        </NavLink>}
 
         <div className="stat-grid">
           <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />

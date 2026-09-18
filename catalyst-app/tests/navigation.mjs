@@ -71,6 +71,10 @@ try {
   await wait('!!document.querySelector(".list-item.active")')
   assert.equal(await js('getComputedStyle(document.querySelector(".list-item")).display'), 'block')
   for (const selector of ['.nav-item', '.list-item', '.viewer-pane .btn.primary']) assert.equal(await js(`getComputedStyle(document.querySelector('${selector}')).textDecorationLine`), 'none', 'links retain original appearance')
+  assert.ok(await js(`(() => {
+    const report = document.querySelector('.coach-session-viewer').getBoundingClientRect();
+    return [...document.querySelectorAll('.coach-section-title')].every(el => getComputedStyle(el).position === 'static' && el.getBoundingClientRect().top >= report.top);
+  })()`), 'report headings stay inside the report flow, below the page header')
   fs.writeFileSync('/tmp/catalyst-routing-coach.png', Buffer.from((await cdp('Page.captureScreenshot', { format: 'png' })).data, 'base64'))
   await click('.viewer-pane .btn.primary')
   await wait('location.pathname === "/analysis"')

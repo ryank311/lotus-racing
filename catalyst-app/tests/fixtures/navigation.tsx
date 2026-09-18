@@ -1,5 +1,9 @@
 // Deterministic app data: navigation tests never touch a driver's database.
-const report = { id: 'report-1', title: 'Brake earlier at Oak Tree', profile_name: 'Lotus', model_used: 'test', created_at: '2026-09-18', session_guids: ['s1'], prompt: 'Test\n_Laps: Top 3 fastest across selected sessions_', raw_response: '', parsed_result: null }
+const report = { id: 'report-1', title: 'Brake earlier at Oak Tree', profile_name: 'Lotus', model_used: 'test', created_at: '2026-09-18', session_guids: ['s1'], prompt: 'Test\n_Laps: Top 3 fastest across selected sessions_', raw_response: '', parsed_result: {
+  headline: 'Brake earlier at Oak Tree', strengths: ['Consistent exits through the esses'],
+  tips: Array.from({ length: 8 }, (_, i) => ({ section: `T${i + 1}`, body: 'Brake smoothly and release pressure as you turn. Keep your eyes on the exit.', priority: 1 })),
+  next_session_plan: [{ run: 'Run 1', focus: 'Practice consistent braking', success_metric: 'Repeat within two metres' }], drills: ['Repeat the braking marker for three laps'],
+} }
 const rows = Array.from({ length: 35 }, (_, i) => ({ session_guid: `s${i + 1}`, session_start: `2026-09-${String(30 - i % 28).padStart(2, '0')}`, track_name: 'VIR', vehicle_guid: 'v1', vehicle_make: 'Lotus', lap_count: 10, best_lap_ms: 90000, details_loaded: true }))
 let documentText = 'Original vehicle notes'
 let worker: ((event: unknown) => void) | undefined
