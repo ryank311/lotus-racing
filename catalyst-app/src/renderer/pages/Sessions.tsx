@@ -75,7 +75,6 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
   const failed = useRef(new Set<string>())
   const [downloading, setDownloading] = useState(new Set<string>())
   const [downloadError, setDownloadError] = useState<string | null>(null)
-  const [retryTick, setRetryTick] = useState(0)
 
   // First click on a new column picks that column's natural default direction;
   // clicking the active column toggles asc/desc.
@@ -273,7 +272,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
               <div><small>Laps</small><strong>{r.lap_count || '—'}</strong></div>
               <div><small>Vehicle</small><span>{vehicleLabel(r) || '—'}</span></div>
             </div>
-            <div className="session-card-footer"><span>{r.weather_description || 'Weather unavailable'}</span><span>{downloading.has(r.session_guid) ? 'Downloading…' : r.details_loaded ? 'Telemetry ready' : 'Tap to download'}</span></div>
+            <div className="session-card-footer"><span>{r.weather_description || 'Weather unavailable'}</span><span>{downloading.has(r.session_guid) ? 'Downloading…' : r.details_loaded ? 'Telemetry ready' : 'Details needed'}</span></div>
           </label>)}
         </div>
         <div className="tbl-wrap sessions-table">

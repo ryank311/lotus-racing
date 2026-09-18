@@ -1,6 +1,23 @@
 # URL navigation and history plan
 
-Status: proposed design; routing is not implemented by this document.
+Status: implemented. Actual Android Firefox toolbar/keyboard behavior still
+requires device verification.
+
+## Implementation notes
+
+- React Router supplies browser/hash history and navigation blocking. The shared
+  navigation provider owns query updates, scroll/focus restoration, and overlays.
+- Browser assets use root URLs. The build also emits `dist-renderer/desktop` with
+  relative assets for Electron's `file:` fallback. HTTP deployment is rooted at `/`.
+- Links are limited to 16,000 characters. Oversized selection updates are rejected
+  visibly without truncation; persisted large comparisons are not enabled.
+- Track browser starts with the circuit picker; choosing a layout pushes its URL.
+- Visiting a URL does not auto-sync or download telemetry. Sessions exposes an
+  explicit Download selected telemetry action for older sessions.
+- Report headings stay in normal document flow, routed links retain their control
+  styles, and navigation context identity survives Vite hot updates.
+- New browser regression suites were removed at the user's request. Existing tests
+  remain; the browser checks performed during implementation are not added to CI.
 
 ## Goals and current constraints
 
@@ -8,8 +25,8 @@ Every page and meaningful detail view must have a reproducible URL. Back and
 Forward must restore the previous view, selection, and scroll position. Refresh
 and direct links must work without first visiting Overview.
 
-Currently `App.tsx` keeps the page, selected session IDs, and active coaching
-report only in React state. Garage, Tracks, and AI Coach also keep their selected
+Before this change, `App.tsx` kept the page, selected session IDs, and active coaching
+report only in React state. Garage, Tracks, and AI Coach also kept their selected
 details locally. The desktop app can load from `file:`, while the browser app
 loads from the HTTP server. The server already serves the app for extensionless
 paths, but Vite's relative asset base needs changing for nested HTTP routes.

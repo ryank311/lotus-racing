@@ -18,7 +18,6 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test:server": "tsc -p tsconfig.main.json && node --test tests/*.test.cjs",
     "test:charts": "node --import tsx --test tests/chartGestures.test.ts && node tests/chartTouch.mjs",
-    "test:layout": "node tests/mobileLayout.mjs",
     "test:analysis": "node tests/analysisRecovery.mjs",
     "fetch": "tsx src/garmin/cli/fetch.ts",
     "load": "tsx src/garmin/cli/load.ts",

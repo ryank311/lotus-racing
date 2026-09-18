@@ -124,7 +124,6 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         if (evt.payload) {
           void api.getCoachSession(evt.payload).then(s => {
             if (s) {
-              setLapFilter(coachFilter)
               setCoachResult(s.parsed_result)
               setCoachedKey(submittedKey)
             }

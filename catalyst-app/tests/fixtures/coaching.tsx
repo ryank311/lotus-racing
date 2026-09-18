@@ -2,6 +2,8 @@
 // rooted at tests/fixtures. All API calls stay in memory; no provider requests.
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
+import { NavigationProvider, useNavigation } from '../../src/renderer/navigation'
 import type { CoachingSession, WorkerEvent } from '../../src/shared/types'
 import '../../src/renderer/styles.css'
 
@@ -20,6 +22,7 @@ const makeReport = (limit: number | null, id = `report-${limit}`): CoachingSessi
 })
 ;(window as any).catalyst = {
   getUnits: async () => 'imperial',
+  listSessions: async () => [{ session_guid: 'fixture-session', details_loaded: true }, { session_guid: 'another-session', details_loaded: true }],
   getAiSettings: async () => ({ provider: 'anthropic', hasAnthropicApiKey: true }),
   getActiveProfile: async () => 'Test',
   onWorker: (callback: (event: WorkerEvent) => void) => { listeners.add(callback); return () => listeners.delete(callback) },
@@ -41,6 +44,7 @@ const makeReport = (limit: number | null, id = `report-${limit}`): CoachingSessi
 const { Analysis } = await import('../../src/renderer/pages/Analysis')
 const { UnitsProvider } = await import('../../src/renderer/units')
 function Fixture() {
+  const { query } = useNavigation()
   const [selected, setSelected] = useState(new Set(['fixture-session']))
   const [session, setSession] = useState<CoachingSession | null>(null)
   const [cleared, setCleared] = useState(0)
@@ -55,7 +59,7 @@ function Fixture() {
   return <UnitsProvider>
     <div style={{ padding: 12 }}>
       {[10, 3, 5, null].map(limit => <button key={limit ?? 'all'} className="btn" onClick={() => {
-        setSelected(new Set(['fixture-session'])); setSession(makeReport(limit))
+        query({ laps: limit ? `top${limit}` : 'all' }); setSelected(new Set(['fixture-session'])); setSession(makeReport(limit))
       }}>Load {limit ? `Top ${limit}` : 'All'} report</button>)}
       <button className="btn" onClick={() => setSelected(new Set(['another-session']))}>Change sessions</button>
       <p role="status">Report invalidations: {cleared}</p>
@@ -65,4 +69,6 @@ function Fixture() {
       onClearCoachSession={() => { setSession(null); setCleared(count => count + 1) }} />
   </UnitsProvider>
 }
-createRoot(document.getElementById('root')!).render(<React.StrictMode><Fixture /></React.StrictMode>)
+createRoot(document.getElementById('root')!).render(<React.StrictMode><RouterProvider router={createMemoryRouter([
+  { path: '*', element: <NavigationProvider><Fixture /></NavigationProvider> },
+], { initialEntries: ['/analysis'] })} /></React.StrictMode>)

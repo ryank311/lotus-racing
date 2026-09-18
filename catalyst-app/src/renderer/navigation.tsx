@@ -84,7 +84,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
           <button className="btn ghost" disabled={saving} onClick={() => blocker.proceed()}>Discard</button>
           <button className="btn primary" disabled={saving} onClick={async () => {
             setSaving(true)
-            try { if (await guard.current?.save()) blocker.proceed() }
+            try { if (await guard.current?.save()) blocker.proceed(); else setError('Could not save. Your changes are still here; cancel to review the error or try again.') }
             catch (e) { setError(String(e)) }
             finally { setSaving(false) }
           }}>{saving ? 'Saving…' : 'Save'}</button>
