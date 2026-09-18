@@ -45,7 +45,6 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
-  const stopWaiting = useRef<() => void>(() => {})
   const mobileView = params.get('view') === 'map' ? 'map' : 'charts'
   const setMobileView = (view: 'charts' | 'map') => query({ view })
   const [splitPct, setSplitPct] = useState(62)
@@ -181,7 +180,6 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       setLoading(false)
     }
     const timeout = setTimeout(() => fail('Analysis took too long to load. Check your connection and try again.'), 120_000)
-    stopWaiting.current = () => fail('Stopped waiting for analysis. You can retry when ready.')
     void (async () => {
       try {
         const sessions = await api.listSessions(null)
@@ -199,7 +197,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         if (!cancelled) setLoading(false)
       }
     })()
-    return () => { cancelled = true; clearTimeout(timeout); stopWaiting.current = () => {} }
+    return () => { cancelled = true; clearTimeout(timeout) }
   }, [selected, system, lapFilter, loadAttempt])
 
   const displayCoachResult = useMemo(() => {
@@ -296,7 +294,6 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
                 <div>
                   <div className="spinner" style={{ width: 32, height: 32, borderWidth: 2, margin: '0 auto 18px' }} />
                   <div className="sub">Reading samples · computing splits · building figures</div>
-                  <button className="btn ghost" style={{ marginTop: 18 }} onClick={() => stopWaiting.current()}>Stop waiting</button>
                 </div>
               </div>
             )}

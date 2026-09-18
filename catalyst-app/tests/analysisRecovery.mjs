@@ -41,7 +41,7 @@ async function main() {
   await send('session.new', { capabilities: {} })
   const { context } = await send('browsingContext.create', { type: 'tab' })
   const js = async expression => {
-    const result = await send('script.evaluate', { expression: `JSON.stringify(${expression})`, target: { context }, awaitPromise: true })
+    const result = await send('script.evaluate', { expression: `JSON.stringify((${expression}) ?? null)`, target: { context }, awaitPromise: true })
     if (result.type === 'exception') throw new Error(JSON.stringify(result))
     return JSON.parse(result.result.value)
   }
@@ -74,10 +74,6 @@ async function main() {
   await js('window.expireAnalysis() ?? true')
   await expectError('too long')
   console.log('PASS stalled response times out')
-  await retry('hold')
-  await js(`(() => { [...document.querySelectorAll('button')].find(b => b.textContent === 'Stop waiting').click(); return true })()`)
-  await expectError('Stopped waiting')
-  console.log('PASS stop waiting allows retry')
   await retry('success')
   await waitFor(`document.querySelector('.analysis-context strong')?.textContent === 'Recovered analysis' && !!document.querySelector('.analysis-stat-strip')`)
   assert.equal(await js('!!document.querySelector("[role=alert]")'), false)

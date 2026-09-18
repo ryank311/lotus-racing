@@ -8,6 +8,8 @@ test('pinch zoom is anchored to the fingers and follows their midpoint when pann
   assert.deepEqual(pinchRange([0, 1000], [0, 1000], before, spread, 0, 600), [250, 750])
   const moved = pinchBetween({ x: 260, y: 100 }, { x: 460, y: 100 })
   assert.deepEqual(pinchRange([250, 750], [0, 1000], before, moved, 0, 600), [200, 700])
+  const spreadAndMoved = pinchBetween({ x: 160, y: 140 }, { x: 560, y: 140 })
+  assert.deepEqual(pinchRange([0, 1000], [0, 1000], before, spreadAndMoved, 0, 600), [200, 700])
 })
 
 test('navigation never leaves data extent or collapses into an unusable range', () => {

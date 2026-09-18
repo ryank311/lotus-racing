@@ -15,16 +15,38 @@ export function useChartTouch<T extends Element>({ inspect, clear, transform, pa
   const moved = useRef(false)
   const multi = useRef(false)
   const lastTap = useRef<{ point: TouchPoint; time: number } | null>(null)
+  const frame = useRef<number | null>(null)
+  const pinch = useRef<Pinch | null>(null)
+  const transformRef = useRef(transform)
+  transformRef.current = transform
   const pos = (e: PointerEvent<T>) => ({ x: e.clientX, y: e.clientY })
-  const cancel = () => { points.current.clear(); start.current = null; multi.current = false; lastTap.current = null }
-  useEffect(() => { cancel(); clear() }, [expanded])
+  const currentPinch = () => {
+    const pair = [...points.current.values()]
+    return pair.length === 2 ? pinchBetween(pair[0], pair[1]) : null
+  }
+  const flushTransform = () => {
+    if (frame.current === null) return
+    cancelAnimationFrame(frame.current)
+    frame.current = null
+    const before = pinch.current, after = currentPinch()
+    pinch.current = after
+    if (before && after) transformRef.current?.(before, after)
+  }
+  const cancel = () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current)
+    frame.current = null; pinch.current = null
+    points.current.clear(); start.current = null; multi.current = false; lastTap.current = null
+  }
+  useEffect(() => { cancel(); clear(); return cancel }, [expanded])
 
   return {
     onPointerDown: (e: PointerEvent<T>) => {
       if (e.pointerType === 'mouse') return
       if (expanded) e.preventDefault()
       e.currentTarget.setPointerCapture(e.pointerId)
+      flushTransform()
       points.current.set(e.pointerId, pos(e))
+      pinch.current = currentPinch()
       if (points.current.size === 1) { start.current = pos(e); moved.current = false; multi.current = false }
       else { multi.current = true; lastTap.current = null; clear() }
     },
@@ -32,13 +54,13 @@ export function useChartTouch<T extends Element>({ inspect, clear, transform, pa
       if (e.pointerType === 'mouse') { inspect(e); return }
       const previous = points.current.get(e.pointerId)
       if (!previous) return
-      const before = [...points.current.values()]
       points.current.set(e.pointerId, pos(e))
       if (start.current && Math.hypot(e.clientX - start.current.x, e.clientY - start.current.y) > 8) moved.current = true
       if (!expanded) return
       if (points.current.size === 2) {
-        const after = [...points.current.values()]
-        transform?.(pinchBetween(before[0], before[1]), pinchBetween(after[0], after[1]))
+        // Pointer events arrive separately for each finger. Apply their latest
+        // positions together so a pan doesn't become two clamped half-pinches.
+        if (frame.current === null) frame.current = requestAnimationFrame(flushTransform)
       } else if (points.current.size === 1 && !multi.current) {
         if (pan) { clear(); pan(previous, pos(e)) }
         else inspect(e)
@@ -46,6 +68,8 @@ export function useChartTouch<T extends Element>({ inspect, clear, transform, pa
     },
     onPointerUp: (e: PointerEvent<T>) => {
       if (e.pointerType === 'mouse' || !points.current.has(e.pointerId)) return
+      // Commit the final movement before changing the active finger pair.
+      flushTransform()
       if (!multi.current && !moved.current) {
         const last = lastTap.current
         if (expanded && reset && last && Date.now() - last.time < 300 && Math.hypot(e.clientX - last.point.x, e.clientY - last.point.y) < 24) {
@@ -53,6 +77,7 @@ export function useChartTouch<T extends Element>({ inspect, clear, transform, pa
         } else { inspect(e); lastTap.current = { point: pos(e), time: Date.now() } }
       }
       points.current.delete(e.pointerId)
+      pinch.current = currentPinch()
       if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
     },
     onPointerCancel: () => { cancel(); clear() },
@@ -64,5 +89,5 @@ export function useChartTouch<T extends Element>({ inspect, clear, transform, pa
 export function TouchHint({ spatial = false, zoom = false }: { spatial?: boolean; zoom?: boolean }) {
   const { expanded } = useChartSurface()
   if (!expanded) return null
-  return <div className="chart-touch-hint">{spatial ? 'Drag to pan · Tap to inspect' : 'Drag to inspect'}{zoom ? ' · Pinch to zoom · Two fingers to pan' : ''}</div>
+  return <div className="chart-touch-hint">{spatial ? 'Drag to pan · Tap to inspect' : 'Drag to inspect'}{zoom ? ' · Two fingers to zoom & pan' : ''}</div>
 }

@@ -79,6 +79,9 @@ async function main() {
   await touch('touchMove', [[1, r.x + 150, r.y + 80]])
   await touch('touchEnd')
   assert.ok(await js('document.querySelector("main").scrollTop > 0'), 'embedded charts allow page scrolling')
+  // Use an interior scroll position for the later restoration check; the
+  // swipe can coast to the bottom, where layout changes clamp scrollTop.
+  await js('document.querySelector("main").scrollTop = 100')
   await click('Maximize SPEED')
   assert.equal(await js('document.querySelectorAll("dialog:modal").length'), 1)
   assert.equal(await js('document.activeElement.getAttribute("aria-label")'), 'Close SPEED full screen')
@@ -87,9 +90,15 @@ async function main() {
   r = await rect('dialog[open] canvas')
   assert.ok(r.height > 480 && r.width <= 390, JSON.stringify(r))
   const canvas = 'document.querySelector("dialog[open] canvas")'
-  const inspectAt = async fraction => { await delay(310); await tap(r.x + 50 + (r.width - 66) * fraction, r.y + r.height / 2); return js('window.hoverX') }
+  const inspectAt = async fraction => { await delay(310); await tap(r.x + 36 + (r.width - 46) * fraction, r.y + r.height / 2); return js('window.hoverX') }
   const before = await inspectAt(0.25)
   const y = r.y + r.height / 2
+  // Moving both fingers at the full extent must not introduce accidental zoom
+  // when the browser delivers a separate pointer event for each finger.
+  await touch('touchStart', [[1, r.x + 140, y], [2, r.x + 240, y]])
+  await touch('touchMove', [[1, r.x + 170, y], [2, r.x + 270, y]])
+  await touch('touchEnd')
+  assert.ok(Math.abs(await inspectAt(0.25) - before) < 1, 'two-finger pan at full extent does not accidentally zoom')
   await touch('touchStart', [[1, r.x + 140, y], [2, r.x + 240, y]])
   await touch('touchMove', [[1, r.x + 90, y], [2, r.x + 290, y]])
   await touch('touchEnd')
@@ -114,6 +123,22 @@ async function main() {
   await tap(r.x + 190, r.y + 120)
   await tap(r.x + 190, r.y + 120)
   assert.ok(Math.abs(await inspectAt(0.25) - before) < 3, 'double tap resets zoom')
+  // Spread, translate, and reverse direction without lifting either finger.
+  await touch('touchStart', [[1, r.x + 140, y], [2, r.x + 240, y]])
+  await touch('touchMove', [[1, r.x + 100, y + 20], [2, r.x + 300, y + 20]])
+  await touch('touchMove', [[1, r.x + 90, y + 40], [2, r.x + 340, y + 40]])
+  await touch('touchMove', [[1, r.x + 100, y + 30], [2, r.x + 300, y + 30]])
+  await touch('touchEnd')
+  // Midpoint moves 190 → 200 while spacing doubles: the initial midpoint's
+  // data value must now be under 200, and the visible span must be halved.
+  const plotWidth = r.width - 46
+  const initialSpan = 1000 // Fixture distance extent.
+  const expectedLo = (154 - 164 / 2) / plotWidth * initialSpan
+  const combinedLow = await inspectAt(0.25)
+  const combinedHigh = await inspectAt(0.75)
+  assert.ok(Math.abs(combinedLow - (expectedLo + initialSpan / 8)) < 2, `combined pinch and pan keeps the data anchored to the fingers: ${combinedLow} vs ${expectedLo + initialSpan / 8}; initial span ${initialSpan}, width ${plotWidth}`)
+  assert.ok(Math.abs(combinedHigh - combinedLow - initialSpan / 4) < 2, 'combined gesture applies the full zoom')
+  await click('Reset zoom')
   // Pointer handlers must retain desktop selection and panning.
   await cdp('Emulation.setTouchEmulationEnabled', { enabled: false })
   const mouse = async (type, x, y, down = false) => {
@@ -124,7 +149,7 @@ async function main() {
   await mouse('mousePressed', r.x + 110, r.y + 180, true)
   await mouse('mouseMoved', r.x + 250, r.y + 180, true)
   await mouse('mouseReleased', r.x + 250, r.y + 180)
-  await mouse('mouseMoved', r.x + 50 + (r.width - 66) * 0.25, r.y + 180)
+  await mouse('mouseMoved', r.x + 36 + (r.width - 46) * 0.25, r.y + 180)
   assert.ok(Math.abs((await js('window.hoverX')) - before) > 30, 'mouse drag still selects a zoom range')
   await cdp('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
   await cdp('Emulation.setDeviceMetricsOverride', { width: 844, height: 390, deviceScaleFactor: 2, mobile: true })
@@ -157,10 +182,14 @@ async function main() {
   await click('Maximize Track map')
   const svg = 'document.querySelector("dialog[open] .track-map > svg")'
   const original = await js(`${svg}.getAttribute('viewBox')`)
+  const anchor = await js(`(() => { const p = new DOMPoint(190, 350).matrixTransform(${svg}.getScreenCTM().inverse()); return { x: p.x, y: p.y } })()`)
   await touch('touchStart', [[1, 140, 350], [2, 240, 350]])
-  await touch('touchMove', [[1, 90, 350], [2, 290, 350]])
+  await touch('touchMove', [[1, 100, 370], [2, 300, 370]])
   await touch('touchEnd')
-  assert.ok(Number((await js(`${svg}.getAttribute('viewBox')`)).split(' ')[2]) < Number(original.split(' ')[2]), 'map pinches in world coordinates')
+  const mapWidth = Number((await js(`${svg}.getAttribute('viewBox')`)).split(' ')[2])
+  assert.ok(Math.abs(mapWidth - Number(original.split(' ')[2]) / 2) < 0.01, 'map applies the full pinch zoom')
+  const projected = await js(`(() => { const p = new DOMPoint(${anchor.x}, ${anchor.y}).matrixTransform(${svg}.getScreenCTM()); return { x: p.x, y: p.y } })()`)
+  assert.ok(Math.hypot(projected.x - 200, projected.y - 370) < 1, 'map pans in both axes while zooming and keeps the world point under the fingers')
   await click('Close Track map full screen')
   await click('Maximize SPEED')
   r = await rect('dialog[open] canvas')
