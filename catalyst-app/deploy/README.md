@@ -6,8 +6,7 @@ Your phone needs the Tailscale app connected to the same network. No purchased
 domain or router port forwarding is needed. The NAS must remain powered on and
 connected to the internet.
 
-Tailscale's [Personal plan](https://tailscale.com/pricing) currently supports
-up to six users for free. The [Synology integration guide](https://tailscale.com/docs/integrations/synology)
+The [Synology integration guide](https://tailscale.com/docs/integrations/synology)
 covers installation and updates. This app has a passwordless username selector:
 anyone allowed to reach it can open a known username's workspace. Restrict its
 Tailscale access to people you trust; do not expose port 3210 or enable Funnel.
@@ -36,6 +35,13 @@ access token with `read:packages`. See [GitHub's registry guide](https://docs.gi
 
 ## Install when you get home
 
+The image `ghcr.io/ryank311/catalyst-coach:sha-983b96f` was successfully built
+and confirmed anonymously pullable on September 18, 2026
+([build run](https://github.com/ryank311/lotus-racing/actions/runs/35373239084)).
+You can use this version for your first installation without a GitHub token.
+GitHub builds and publishes images; installing or upgrading the NAS is a manual
+step using the commands below.
+
 1. In DSM, install **Container Manager** and **Tailscale** from Package Center.
    Update Tailscale if the packaged version is old. Sign in to Tailscale on the
    NAS and your phone using the same account.
@@ -43,6 +49,8 @@ access token with `read:packages`. See [GitHub's registry guide](https://docs.gi
    from this folder there. Rename `.env.example` to `.env` and set
    `CATALYST_IMAGE` to the successful build's image reference. The default
    `ghcr.io/ryank311/catalyst-coach:latest` uses the latest successful main build.
+   Set `CATALYST_NAS_DATA_DIR` to the absolute NAS data folder, initially
+   `/volume1/docker/catalyst-coach/data`. Keep that path unchanged on upgrades.
 3. Enable DSM SSH temporarily and connect as an administrator. Create the
    container's data directory with the image's unprivileged UID/GID:
 
@@ -51,15 +59,20 @@ access token with `read:packages`. See [GitHub's registry guide](https://docs.gi
    sudo mkdir -p data
    sudo chown 1000:1000 data
    sudo chmod 700 data
+   sudo docker compose config
    sudo docker compose pull
    sudo docker compose up -d
    sudo docker compose ps
    ```
 
-   If your DSM provides `docker-compose` instead of `docker compose`, substitute
-   that command. Container Manager's **Project → Create** can also deploy the
-   same folder and Compose file; create the writable data directory first.
-   Adjust `/volume1` if your Docker shared folder lives on another volume.
+   In the rendered configuration, confirm the bind mount maps your absolute NAS
+   data folder to `/data`. The folder must exist; Compose deliberately refuses
+   to create it automatically. If your DSM provides `docker-compose` instead of
+   `docker compose`, substitute that command. If it rejects `create_host_path`,
+   update Container Manager/Compose. Container Manager's **Project → Create** can
+   also deploy the same folder and Compose file; create the writable data
+   directory first. Adjust both the commands and `CATALYST_NAS_DATA_DIR` if your
+   Docker shared folder lives on another volume.
 
 4. Give the app a persistent private HTTPS endpoint:
 
@@ -89,11 +102,28 @@ admin console and disable expiry for this trusted server if appropriate.
 
 ## Persistence, backups, upgrades, and rollback
 
-`./data` contains the session-signing secret and every username's database,
+`CATALYST_NAS_DATA_DIR` (default `/volume1/docker/catalyst-coach/data`) is a
+**NAS folder bind-mounted at `/data`**, outside the container's writable layer.
+It contains the session-signing secret and every username's database,
 downloaded telemetry, Garmin tokens, AI settings, coaching history, and Garage
 files. It survives container replacement and NAS restarts. Treat backups as
 private because they include credentials. There is no need to install Node,
 Electron, or development dependencies on the NAS.
+
+The main database for each driver is stored at:
+
+```text
+/volume1/docker/catalyst-coach/data/users/<driver-id>/garmin/data/catalyst-app.duckdb
+```
+
+Keep the entire `data` folder, including any DuckDB `.wal` files. `stop`, `start`,
+`restart`, and `down` followed by `up -d` preserve this bind-mounted folder.
+Removing/replacing the container or pulling a newer image does not delete it.
+Deleting the NAS folder, pointing `CATALYST_NAS_DATA_DIR` at a different empty
+folder, or losing the NAS disks can still lose data or make the app appear empty.
+Container persistence is not a backup; keep a separate backup of this folder.
+The container root filesystem is read-only, so app data must go to `/data`;
+`/tmp` is temporary scratch space only.
 
 For a consistent backup, stop the container, back up the entire project folder
 with Hyper Backup or a filesystem snapshot, and then start it again:
@@ -125,6 +155,21 @@ the **entire server data directory**, including `.session-secret` and `users`,
 into the NAS `data` folder before its first start. This imports existing driver
 workspaces. Restore ownership to UID/GID 1000 after copying. Signing in with the
 same username alone does not transfer data between separate server installations.
+
+On this Mac, the default server data directory is
+`~/Library/Application Support/catalyst-coach/server/` unless you set
+`CATALYST_SERVER_DATA_DIR`. Copy its **contents**, including the hidden
+`.session-secret`, into the NAS `data` folder. Do not copy only the database or
+only the repository's legacy `garmin/data` folder. After copying, run on the NAS:
+
+```sh
+sudo chown -R 1000:1000 /volume1/docker/catalyst-coach/data
+sudo chmod 700 /volume1/docker/catalyst-coach/data
+```
+
+Then start the container and choose the same driver name (often `Desktop` for
+an imported desktop workspace). Configure desktop clients to connect to the NAS
+server if you want all devices to share that one data store.
 
 ## Local image build (optional)
 

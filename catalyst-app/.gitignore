@@ -41,6 +41,7 @@ Thumbs.db
 .env.local
 .env.*.local
 /deploy/data/
+/deploy/backups/
 
 # Test / coverage
 coverage/

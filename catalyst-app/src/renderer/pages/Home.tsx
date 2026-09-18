@@ -88,8 +88,6 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
           </div>
         </div>
 
-        {signedIn && <p className="muted small">Sync now downloads the latest 20 sessions. Older sessions download when selected.</p>}
-
         {(stats?.sessionCount ?? 0) > 0 && <button className="workflow-link" onClick={onSessions}>
           <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
         </button>}
