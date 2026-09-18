@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { NavLink, useNavigation, useRoute } from '../navigation'
+import { reportAnalysisUrl, segment } from '../routes'
 import { api } from '../api'
 import type { CoachingSession, CoachAnnotation } from '../../shared/types'
 import { replaceSessionIds, sanitizeCoachingResult, type SessionAliasMap } from '../../shared/sessionIdentity'
@@ -18,11 +20,25 @@ interface Props {
 }
 
 export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }: Props) {
+  const { id } = useRoute()
+  const { go } = useNavigation()
   const [sessions, setSessions] = useState<CoachingSession[]>([])
   const [current, setCurrent] = useState<CoachingSession | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [runLog, setRunLog] = useState<string[]>([])
   const [running, setRunning] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setCurrent(null); setDetailError(null); setDetailLoading(!!id)
+    if (id) void api.getCoachSession(id).then(report => {
+      if (cancelled) return
+      if (!report) setDetailError('This coaching report is unavailable.')
+      else setCurrent(report)
+    }).catch(e => { if (!cancelled) setDetailError(String(e)) }).finally(() => { if (!cancelled) setDetailLoading(false) })
+    return () => { cancelled = true }
+  }, [id, refreshTick])
 
   const loadSessions = async () => {
     try {
@@ -64,7 +80,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
         void loadSessions().then(async () => {
           if (sessionId) {
             const s = await api.getCoachSession(sessionId)
-            if (s) setCurrent(s)
+            // Completion updates the list; only a user action changes routes.
           }
         })
       }
@@ -93,7 +109,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
   const deleteSession = async (s: CoachingSession) => {
     if (!confirm(`Delete "${s.title}"?`)) return
     await api.deleteCoachSession(s.id)
-    if (current?.id === s.id) setCurrent(null)
+    if (current?.id === s.id) go('/coach', { replace: true })
     await loadSessions()
   }
 
@@ -157,10 +173,9 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
               </div>
             )}
             {sessions.map(s => (
-              <div
+              <NavLink to={`/coach/${segment(s.id)}`}
                 key={s.id}
                 className={`list-item ${current?.id === s.id ? 'active' : ''}`}
-                onClick={() => setCurrent(s)}
               >
                 <div className="filename" style={{ lineHeight: 1.3, marginBottom: 3 }}>
                   {replaceSessionIds(s.title, fallbackSessionAliases(s))}
@@ -168,13 +183,13 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
                 <div className="meta">
                   {s.profile_name} · {s.model_used} · {s.created_at.slice(0, 10)}
                 </div>
-              </div>
+              </NavLink>
             ))}
           </div>
 
           {/* Session detail */}
           <div className="viewer-pane" style={{ padding: 0 }}>
-            {current
+            {detailLoading ? <div data-route-loading role="status">Loading report…</div> : detailError ? <div role="alert">{detailError} <NavLink to="/coach">All reports</NavLink></div> : current
               ? <SessionViewer session={current} onLoad={onLoadSession} onDelete={deleteSession} />
               : <div className="muted" style={{ padding: 28, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
                   Select a coaching session to view it.
@@ -229,10 +244,9 @@ function SessionViewer({ session, onLoad, onDelete }: {
           )}
         </div>
         <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-          <button className="btn primary" style={{ padding: '5px 14px', fontSize: 11 }}
-            onClick={() => onLoad(session)}>
+          <NavLink className="btn primary" style={{ padding: '5px 14px', fontSize: 11 }} to={reportAnalysisUrl(session)}>
             Load in Analysis
-          </button>
+          </NavLink>
           <button className="btn ghost" style={{ padding: '5px 10px', fontSize: 11 }}
             onClick={() => onDelete(session)}>
             Delete

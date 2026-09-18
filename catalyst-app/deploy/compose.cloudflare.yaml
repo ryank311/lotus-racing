@@ -4,7 +4,9 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: [tunnel, --no-autoupdate, run]
+    # Use TCP: QUIC/UDP connections can stall on the Mac/home network and
+    # truncate large analysis responses while the origin remains healthy.
+    command: [tunnel, --no-autoupdate, --protocol, http2, run]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set the tunnel token in .env.cloudflare}
     labels:

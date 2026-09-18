@@ -101,7 +101,7 @@ function createWindow(): void {
     if (desktopUsername) url.searchParams.set('desktopDriver', desktopUsername)
     mainWindow.loadURL(url.toString())
   } else {
-    mainWindow.loadFile(path.join(__dirname, '..', '..', 'dist-renderer', 'index.html'))
+    mainWindow.loadFile(path.join(__dirname, '..', '..', 'dist-renderer', 'desktop', 'index.html'))
   }
 
   mainWindow.on('closed', () => {

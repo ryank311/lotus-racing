@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isRemote } from '../api'
+import { NavLink, useNavigation, useRoute, useUnsavedChanges } from '../navigation'
+import { fileId, segment } from '../routes'
 import type { CarProfile, VehicleSummary } from '../../shared/types'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -16,11 +18,14 @@ function slugify(s: string): string {
 // ─── Garage page ─────────────────────────────────────────────────────────────
 
 export function Garage() {
+  const { id: selected, fileId: selectedFile } = useRoute()
+  const { go } = useNavigation()
+  const [loading, setLoading] = useState(true)
+  const [filesOwner, setFilesOwner] = useState<string | null>(null)
+  const filesRequest = useRef(0)
   const [vehicles, setVehicles]   = useState<VehicleSummary[]>([])
   const [profiles, setProfiles]   = useState<CarProfile[]>([])
-  const [selected, setSelected]   = useState<string | null>(null) // vehicleGuid
   const [files, setFiles]         = useState<{ name: string; path: string }[]>([])
-  const [editPath, setEditPath]   = useState<string | null>(null)
   const [content, setContent]     = useState('')
   const [original, setOriginal]   = useState('')
   const [dropping, setDropping]   = useState(false)
@@ -34,23 +39,31 @@ export function Garage() {
     setProfiles(p)
   }, [])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load().catch(e => setSaveError(String(e))).finally(() => setLoading(false)) }, [load])
 
   const selectedVehicle = vehicles.find(v => v.vehicleGuid === selected) ?? null
+  const editPath = filesOwner === selectedVehicle?.profile ? files.find(f => fileId(f.name) === selectedFile)?.path ?? null : null
+  const vehicleUrl = `/garage/${segment(selected ?? '')}`
 
   const refreshFiles = useCallback(async (profileName: string) => {
+    const request = ++filesRequest.current
     const fs = await api.listProfileFiles(profileName)
+    if (request !== filesRequest.current) return
     setFiles(fs)
+    setFilesOwner(profileName)
   }, [])
 
   useEffect(() => {
-    if (!selectedVehicle?.profile) { setFiles([]); setEditPath(null); return }
-    void refreshFiles(selectedVehicle.profile)
+    setFiles([]); setFilesOwner(null)
+    if (!selectedVehicle?.profile) return
+    void refreshFiles(selectedVehicle.profile).catch(e => setSaveError(String(e)))
+    return () => { filesRequest.current++ }
   }, [selectedVehicle?.profile, refreshFiles])
 
   useEffect(() => {
     if (!editPath) { setContent(''); setOriginal(''); setSaveError(null); return }
     let cancelled = false
+    setContent(''); setOriginal('')
     void api.readProfileFile(editPath).then(t => {
       if (cancelled) return
       setContent(t)
@@ -64,28 +77,28 @@ export function Garage() {
   }, [editPath])
 
   const onSelectVehicle = (guid: string) => {
-    if (dirty && !confirm('Discard unsaved edits?')) return
-    setSelected(guid)
-    setEditPath(null)
-    setContent(''); setOriginal('')
+    go(`/garage/${segment(guid)}`)
   }
 
   const onSave = useCallback(async () => {
-    if (!editPath || !selectedVehicle?.profile) return
-    if (content === original) return
+    if (!editPath || !selectedVehicle?.profile) return false
+    if (content === original) return true
     setSaving(true)
     setSaveError(null)
     try {
       await api.writeCarMd(selectedVehicle.profile, editPath, content)
       setOriginal(content)
+      return true
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setSaveError(msg)
       console.error('[garage] save failed', e)
+      return false
     } finally {
       setSaving(false)
     }
   }, [editPath, selectedVehicle?.profile, content, original])
+  useUnsavedChanges(dirty, onSave)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -106,7 +119,10 @@ export function Garage() {
     if (!selectedVehicle?.profile) return
     if (!confirm(`Delete ${fileName}?`)) return
     await api.deleteContextFile(selectedVehicle.profile, fileName)
-    if (editPath?.endsWith('/' + fileName)) setEditPath(null)
+    if (editPath?.endsWith('/' + fileName)) {
+      setContent(''); setOriginal('')
+      go(vehicleUrl, { replace: true })
+    }
     await refreshFiles(selectedVehicle.profile)
   }
 
@@ -157,6 +173,7 @@ export function Garage() {
       </header>
 
       <div className="page-body garage-layout">
+        {loading && <div data-route-loading role="status">Loading vehicles…</div>}
         {/* ── Vehicle list ── */}
         <div className="garage-vehicles">
           {vehicles.length === 0 && (
@@ -180,7 +197,7 @@ export function Garage() {
 
         {/* ── Profile detail ── */}
         <div className="garage-detail">
-          {!selected ? (
+          {selected && !selectedVehicle && !loading ? <div role="alert">Vehicle unavailable. <NavLink to="/garage">All vehicles</NavLink></div> : selectedFile && filesOwner && !editPath ? <div role="alert">Document unavailable. <NavLink to={vehicleUrl}>Vehicle files</NavLink></div> : !selectedVehicle ? (
             <div className="garage-empty-hint" style={{ margin: 'auto' }}>
               Select a vehicle to manage its context files
             </div>
@@ -195,8 +212,8 @@ export function Garage() {
               saveError={saveError}
               dropping={dropping}
               onSelectFile={(p) => {
-                if (dirty && !confirm('Discard unsaved edits?')) return
-                setEditPath(p)
+                const file = files.find(f => f.path === p)
+                if (file) go(`${vehicleUrl}/files/${fileId(file.name)}`)
               }}
               onDelete={onDelete}
               onContentChange={setContent}
@@ -226,7 +243,7 @@ function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: 
 
   return (
     <div className={`garage-vehicle-card ${selected ? 'selected' : ''}`} onClick={onClick}>
-      <div className="garage-vehicle-name">{vehicleLabel(vehicle)}</div>
+      <NavLink className="garage-vehicle-name" to={`/garage/${segment(vehicle.vehicleGuid)}`} onClick={e => e.stopPropagation()}>{vehicleLabel(vehicle)}</NavLink>
       <div className="garage-vehicle-meta">
         <span className="muted text-mono" style={{ fontSize: 10 }}>
           {vehicle.sessionCount} session{vehicle.sessionCount !== 1 ? 's' : ''}
@@ -329,7 +346,7 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
             className={`garage-file-item ${editPath === f.path ? 'active' : ''}`}
             onClick={() => onSelectFile(f.path)}
           >
-            <span className="garage-file-name">{f.name}</span>
+            <NavLink className="garage-file-name" to={`/garage/${segment(vehicle.vehicleGuid)}/files/${fileId(f.name)}`} onClick={e => e.stopPropagation()}>{f.name}</NavLink>
             {f.name.toLowerCase() !== 'car.md' && (
               <button
                 className="garage-file-delete"

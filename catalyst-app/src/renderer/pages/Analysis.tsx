@@ -6,6 +6,7 @@ import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries,
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
+import { useNavigation, useRoute } from '../navigation'
 import { humanSessionLabel, sanitizeCoachingResult } from '../../shared/sessionIdentity'
 import { coachingLapFilter, type LapFilter } from '../../shared/coachingScope'
 import type { AnalysisData } from '../../garmin/analysisData'
@@ -37,11 +38,16 @@ const LAP_FILTERS: Array<{ value: LapFilter; label: string; limit: 3 | 5 | 10 | 
 const lapLimitFor = (filter: LapFilter) => LAP_FILTERS.find(item => item.value === filter)?.limit ?? null
 
 export function Analysis({ selected, setSelected, onBack, activeCoachSession, onClearCoachSession, busy, setBusy }: Props) {
+  const { params } = useRoute()
+  const { query } = useNavigation()
   const { system } = useUnits()
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [mobileView, setMobileView] = useState<'charts' | 'map'>('charts')
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const stopWaiting = useRef<() => void>(() => {})
+  const mobileView = params.get('view') === 'map' ? 'map' : 'charts'
+  const setMobileView = (view: 'charts' | 'map') => query({ view })
   const [splitPct, setSplitPct] = useState(62)
   const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
   const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
@@ -51,7 +57,8 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [coachedKey, setCoachedKey] = useState<string | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
   const [coachError, setCoachError] = useState<string | null>(null)
-  const [lapFilter, setLapFilter] = useState<LapFilter>('top10')
+  const lapFilter = (params.get('laps') ?? 'top10') as LapFilter
+  const setLapFilter = (laps: LapFilter) => query({ laps, report: null })
   const [coachMenuOpen, setCoachMenuOpen] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
@@ -67,7 +74,6 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     if (activeCoachSession && loadedCoachId.current !== activeCoachSession.id) {
       loadedCoachId.current = activeCoachSession.id
       const filter = coachingLapFilter(activeCoachSession)
-      setLapFilter(filter)
       setCoachResult(activeCoachSession.parsed_result)
       setCoachedKey(`${guidKey(activeCoachSession.session_guids)}|${filter}`)
       setFocusedRef(null)
@@ -161,22 +167,41 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   }
 
   useEffect(() => {
+    let cancelled = false
     if (selected.size === 0) {
-      setData(null); setErr(null)
+      setData(null); setErr(null); setLoading(false)
       return
     }
-    setLoading(true); setErr(null)
+    setLoading(true); setErr(null); setData(null)
+    // A tunnel can stall without rejecting fetch. Stop waiting after two
+    // minutes, and ignore any late result after cancellation or a retry.
+    const fail = (message: string) => {
+      cancelled = true
+      clearTimeout(timeout)
+      setErr(message)
+      setLoading(false)
+    }
+    const timeout = setTimeout(() => fail('Analysis took too long to load. Check your connection and try again.'), 120_000)
+    stopWaiting.current = () => fail('Stopped waiting for analysis. You can retry when ready.')
     void (async () => {
       try {
+        const sessions = await api.listSessions(null)
+        if (cancelled) return
+        const requested = sessions.filter(s => selected.has(s.session_guid))
+        if (requested.length !== selected.size) throw new Error('Some sessions are unavailable. Return to Sessions to update your selection.')
+        if (requested.some(s => !s.details_loaded)) throw new Error('Telemetry is missing. Return to Sessions and download the selected telemetry.')
         const d = (await api.buildAnalysis([...selected], system, lapLimitFor(lapFilter))) as AnalysisData
-        setData(d)
+        if (!d) throw new Error('The server returned no analysis. Please try again.')
+        if (!cancelled) setData(d)
       } catch (e: any) {
-        setErr(e.message ?? String(e))
+        if (!cancelled) setErr(e.message ?? String(e))
       } finally {
-        setLoading(false)
+        clearTimeout(timeout)
+        if (!cancelled) setLoading(false)
       }
     })()
-  }, [selected, system, lapFilter])
+    return () => { cancelled = true; clearTimeout(timeout); stopWaiting.current = () => {} }
+  }, [selected, system, lapFilter, loadAttempt])
 
   const displayCoachResult = useMemo(() => {
     if (!coachResult) return null
@@ -260,7 +285,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       </header>
 
       <div
-        className={`analysis-split mobile-view-${mobileView}`}
+        className={`analysis-split mobile-view-${loading || err ? 'charts' : mobileView}`}
         ref={containerRef}
         style={{ gridTemplateColumns: `minmax(0, ${splitPct}fr) 6px minmax(0, ${100 - splitPct}fr)` }}
       >
@@ -272,16 +297,18 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
                 <div>
                   <div className="spinner" style={{ width: 32, height: 32, borderWidth: 2, margin: '0 auto 18px' }} />
                   <div className="sub">Reading samples · computing splits · building figures</div>
+                  <button className="btn ghost" style={{ marginTop: 18 }} onClick={() => stopWaiting.current()}>Stop waiting</button>
                 </div>
               </div>
             )}
 
             {err && !loading && (
-              <div className="card" style={{ padding: 22 }}>
+              <div className="card" role="alert" style={{ padding: 22 }}>
                 <div className="card-label" style={{ color: 'var(--red)' }}>Error</div>
                 <div className="card-corner-marks"><i /></div>
                 <div style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{err}</div>
                 <div className="btn-row">
+                  <button className="btn primary" onClick={() => setLoadAttempt(attempt => attempt + 1)}>Retry analysis</button>
                   <button className="btn ghost" onClick={onBack}>Back to Sessions</button>
                 </div>
               </div>

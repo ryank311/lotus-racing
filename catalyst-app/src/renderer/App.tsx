@@ -1,4 +1,7 @@
-import { lazy, Suspense, useEffect, useState, useCallback, useRef } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { NavLink, useNavigation, useOverlay, useRoute } from './navigation'
+import { paths, reportAnalysisUrl, routeUrl } from './routes'
 import { Sidebar, NavKey } from './components/Sidebar'
 import { Home } from './pages/Home'
 import type { LogEntry } from './pages/Logs'
@@ -20,7 +23,7 @@ const Account = lazy(() => import('./pages/Account').then(module => ({ default: 
 const Logs = lazy(() => import('./pages/Logs').then(module => ({ default: module.Logs })))
 
 function PageLoading() {
-  return <div className="page-body" role="status" aria-live="polite">Loading page…</div>
+  return <div className="page-body" data-route-loading role="status" aria-live="polite">Loading page…</div>
 }
 
 function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () => void }) {
@@ -35,7 +38,7 @@ function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () =
       <span className="coach-toast-icon">✦</span>
       <div className="coach-toast-body">
         <div className="coach-toast-title">Coach analysis ready</div>
-        <div className="coach-toast-sub">New coaching results loaded in Analysis</div>
+        <div className="coach-toast-sub">Your coaching report is ready to view</div>
       </div>
       <button className="coach-toast-view" onClick={onView}>View</button>
       <button className="coach-toast-close" onClick={onDismiss}>×</button>
@@ -44,7 +47,14 @@ function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () =
 }
 
 export function App() {
-  const [page, setPage] = useState<NavKey>('home')
+  const { page, params, location } = useRoute()
+  const { go, query, lastSessions } = useNavigation()
+  const navigate = useNavigate()
+  const selectionKey = JSON.stringify(params.getAll(page === 'sessions' ? 'selected' : 'session').sort())
+  const selected = useMemo(() => new Set<string>(JSON.parse(selectionKey)), [selectionKey])
+  const setSelected = (next: Set<string>) => query({ [page === 'sessions' ? 'selected' : 'session']: [...next], ...(page === 'analysis' ? { report: null } : {}) })
+  const destination = (key: NavKey) => key === 'sessions' ? lastSessions() : ['analysis', 'coach'].includes(key) ? routeUrl(paths[key], { session: [...selected] }) : paths[key]
+  const setPage = (key: NavKey) => go(destination(key))
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [stats, setStats] = useState<SyncStats | null>(null)
   const [logLine, setLogLine] = useState('')
@@ -55,6 +65,21 @@ export function App() {
     ? { accounts: [], activeLabel: null }
     : loadAccounts())
   const [activeCoachSession, setActiveCoachSession] = useState<CoachingSession | null>(null)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [reportError, setReportError] = useState<string | null>(null)
+  const reportId = page === 'analysis' ? params.get('report') : null
+  useEffect(() => {
+    let cancelled = false
+    setActiveCoachSession(null); setReportError(null); setReportLoading(!!reportId)
+    if (reportId) void api.getCoachSession(reportId).then(report => {
+      if (cancelled) return
+      if (!report) { setReportError('This coaching report is unavailable.'); return }
+      setActiveCoachSession(report)
+      // The saved report is authoritative when opening a direct report link.
+      go(reportAnalysisUrl(report), { replace: true })
+    }).catch(e => { if (!cancelled) setReportError(String(e)) }).finally(() => { if (!cancelled) setReportLoading(false) })
+    return () => { cancelled = true }
+  }, [reportId, go])
   const [logLines, setLogLines] = useState<string[]>([])
   const [logsExpanded, setLogsExpanded] = useState(false)
   const [logEntries, setLogEntries] = useState<LogEntry[]>([])
@@ -68,9 +93,6 @@ export function App() {
   }, [])
   const [coachToast, setCoachToast] = useState<{ sessionId: string } | null>(null)
 
-  // Selected session guids — accumulated on the Sessions tab, consumed by Analysis.
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const autoSyncedAccount = useRef<string | null>(null)
 
   const refresh = useCallback(async () => {
     const [a, s, email] = await Promise.all([
@@ -137,16 +159,7 @@ export function App() {
         setLogLines(prev => [...prev.slice(-499), `✓ ${doneMsg}`])
         setProgress(null)
         if (evt.kind === 'coach' && evt.payload) {
-          // Auto-load into Analysis tab. Use setTimeout to ensure state updates
-          // flush before navigation (avoids React batching edge cases with async events).
-          const sessionId = evt.payload
-          void api.getCoachSession(sessionId).then(session => {
-            if (!session?.parsed_result) return
-            setTimeout(() => {
-              loadCoachSession(session)
-              setCoachToast({ sessionId })
-            }, 0)
-          })
+          setCoachToast({ sessionId: evt.payload })
         } else {
           refresh()
         }
@@ -174,7 +187,6 @@ export function App() {
     // Read fresh from storage so an auto-sync right after sign-in picks up the
     // token that was just persisted (React state may not have flushed yet).
     const active = isRemote ? getActiveAccount(accounts) : getActiveAccount()
-    autoSyncedAccount.current = active?.label ?? '__server__'
     try {
       await api.startSync(isRemote ? { mode } : {
         mode,
@@ -209,21 +221,13 @@ export function App() {
     ? (!!auth?.tokenValid || tokenValid(getActiveAccount(accounts)))
     : tokenValid(getActiveAccount(accounts))
   const activeLabel = getActiveAccount(accounts)?.label ?? null
-  useEffect(() => {
-    if (!signedIn) { autoSyncedAccount.current = null; return }
-    if (!auth || busy) return
-    const account = activeLabel ?? '__server__'
-    if (autoSyncedAccount.current === account) return
-    autoSyncedAccount.current = account
-    void startSync('recent')
-  }, [signedIn, activeLabel, auth, busy])
   // Cached telemetry already in the DB. When present, feature pages stay usable
   // read-only even while signed out (a banner notes sync is unavailable); only a
   // signed-out AND empty DB shows the full sign-in gate.
   const hasData = (stats?.sessionCount ?? 0) > 0
   const canView = signedIn || hasData
-  const [loginOpen, setLoginOpen] = useState(false)
-  const [signOutOpen, setSignOutOpen] = useState(false)
+  const [loginOpen, setLoginOpen] = useOverlay('garmin-sign-in')
+  const [signOutOpen, setSignOutOpen] = useOverlay('sign-out')
   const openLogin = useCallback(() => setLoginOpen(true), [])
 
   const handleSignedIn = (label: string, token: string, expiresAt: number) => {
@@ -241,7 +245,8 @@ export function App() {
       : removeAccount(activeLabel))
     setSignOutOpen(false)
     // Leave the Account page once signed out (it requires a session).
-    if (page === 'account') setPage('home')
+    // Keep the account route behind its signed-out gate; closing the dialog
+    // consumes its own history entry without racing a second navigation.
     // Also wipe the main-process Garmin/Catalyst tokens so the app is truly
     // signed out everywhere (the cached config token must not keep "LINK" green
     // or let a stale token sync). Refresh auth state afterwards.
@@ -258,20 +263,24 @@ export function App() {
     }
   }
 
-  const openAnalysis = () => setPage('analysis')
+  const openAnalysis = () => go(routeUrl('/analysis', { session: [...selected] }))
+  const sessionsParent = location.state?.from?.startsWith('/sessions') ? location.state.from : routeUrl('/sessions', { selected: [...selected] })
+  const backToSessions = () => {
+    if (location.state?.from === sessionsParent && location.state?.fromKey) void navigate(-1)
+    else go(sessionsParent)
+  }
 
   // Load a coaching session into the Analysis tab.
   const loadCoachSession = (session: CoachingSession) => {
-    setSelected(new Set(session.session_guids))
-    setActiveCoachSession(session)
-    setPage('analysis')
+    go(reportAnalysisUrl(session))
   }
 
   return (
     <div className="app-shell">
       <Sidebar
-        active={page}
+        active={page === 'not-found' || page === 'sign-in' ? 'home' : page}
         onChange={setPage}
+        destination={destination}
         connected={signedIn}
         selectionCount={selected.size}
         signedIn={signedIn}
@@ -291,6 +300,7 @@ export function App() {
                 onSessions={() => setPage('sessions')}
               />
             )}
+            {!auth && !stats && !['home', 'tracks', 'logs', 'not-found'].includes(page) ? <PageLoading /> : <>
             {page === 'sessions' && (
               canView ? (
                 <Sessions
@@ -317,13 +327,13 @@ export function App() {
             {page === 'garage' && (canView ? <Garage /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
             {page === 'tracks' && <Tracks />}
             {page === 'analysis' && (
-              canView ? (
+              canView ? reportLoading || (reportId && !activeCoachSession && !reportError) ? <PageLoading /> : reportError ? <div className="page-body" role="alert">{reportError} <NavLink to={routeUrl('/analysis', { session: [...selected] })}>Open telemetry</NavLink></div> : (
                 <Analysis
                   selected={selected}
                   setSelected={setSelected}
-                  onBack={() => setPage('sessions')}
+                  onBack={backToSessions}
                   activeCoachSession={activeCoachSession}
-                  onClearCoachSession={() => setActiveCoachSession(null)}
+                  onClearCoachSession={() => query({ report: null })}
                   busy={busy}
                   setBusy={setBusy}
                 />
@@ -341,6 +351,8 @@ export function App() {
                 <Logs entries={logEntries} onLoad={startLoad} busy={busy} />
               </div>
             )}
+            {page === 'not-found' && <><header className="page-header"><h1 className="page-title">Page not found</h1></header><div className="page-body"><NavLink to="/overview">Overview</NavLink> · <NavLink to="/sessions">Sessions</NavLink></div></>}
+            </>}
           </Suspense>
         </ErrorBoundary>
 
@@ -372,7 +384,7 @@ export function App() {
         {/* Coach analysis ready toast */}
         {coachToast && (
           <CoachToast
-            onView={() => { setPage('analysis'); setCoachToast(null) }}
+            onView={() => { go(`/coach/${encodeURIComponent(coachToast.sessionId)}`); setCoachToast(null) }}
             onDismiss={() => setCoachToast(null)}
           />
         )}

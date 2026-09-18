@@ -18,16 +18,19 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test:server": "tsc -p tsconfig.main.json && node --test tests/*.test.cjs",
     "test:charts": "node --import tsx --test tests/chartGestures.test.ts && node tests/chartTouch.mjs",
+    "test:layout": "node tests/mobileLayout.mjs",
+    "test:analysis": "node tests/analysisRecovery.mjs",
     "fetch": "tsx src/garmin/cli/fetch.ts",
     "load": "tsx src/garmin/cli/load.ts",
     "brief": "tsx src/garmin/cli/brief.ts",
     "corners": "tsx src/garmin/cli/corners.ts",
     "build:main": "node scripts/clean-main.mjs && tsc -p tsconfig.main.json",
-    "build:renderer": "vite build && node scripts/compress-renderer.mjs"
+    "build:renderer": "vite build && vite build --mode desktop && node scripts/compress-renderer.mjs"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.2.0-alpha.14",
-    "openai": "^6.49.0"
+    "openai": "^6.49.0",
+    "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

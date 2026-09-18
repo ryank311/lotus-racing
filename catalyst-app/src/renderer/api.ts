@@ -17,7 +17,13 @@ async function requestJson(path: string, init?: RequestInit): Promise<any> {
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   })
-  const payload = await response.json().catch(() => ({}))
+  let payload: any
+  try {
+    payload = await response.json()
+  } catch {
+    if (!response.ok) throw new Error(`Server request failed (${response.status}). Please try again.`)
+    throw new Error('The server response was incomplete or invalid. Please try again. If this keeps happening, check the server or tunnel connection.')
+  }
   if (!response.ok) throw new Error(payload.error ?? `Server request failed (${response.status})`)
   return payload
 }

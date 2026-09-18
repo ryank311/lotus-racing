@@ -1,5 +1,6 @@
 import { createContext, useContext, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { useOverlay } from '../navigation'
 
 const SurfaceContext = createContext({ expanded: false, toggle: () => {}, toolsHost: null as HTMLDivElement | null, setToolsHost: (_node: HTMLDivElement | null) => {} })
 export const useChartSurface = () => useContext(SurfaceContext)
@@ -7,7 +8,7 @@ export const useChartSurface = () => useContext(SurfaceContext)
 // Move a stable portal host into the top-layer dialog, preserving chart state.
 // A viewport dialog also works on phones that cannot fullscreen arbitrary elements.
 export function ChartSurface({ title, children, className = '' }: { title: string; children: ReactNode; className?: string }) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useOverlay(`chart:${title}`)
   const [toolsHost, setToolsHost] = useState<HTMLDivElement | null>(null)
   const [host] = useState(() => document.createElement('div'))
   const slot = useRef<HTMLDivElement>(null)

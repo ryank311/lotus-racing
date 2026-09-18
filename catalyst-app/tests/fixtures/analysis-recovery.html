@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <head><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Exercise the real browser RPC transport, including body parsing.
+      window.analysisMode = 'truncated';
+      window.analysisCalls = 0;
+      window.heldResponses = [];
+      window.expireAnalysis = () => {};
+      const originalTimeout = window.setTimeout.bind(window);
+      window.setTimeout = (callback, ms, ...args) => {
+        if (ms === 120000) window.expireAnalysis = callback;
+        return originalTimeout(callback, ms, ...args);
+      };
+      const originalFetch = window.fetch.bind(window);
+      const result = {
+        config: 'Recovered analysis', totalDistM: 1000, sessions: [], laps: [],
+        segments: [], corners: [], speedTraces: [], longgTraces: [], lateralTraces: [],
+        cornerRows: [], racingLines: [], speedUnit: 'mph',
+        gg: { p95_g: 1, lat_g: [], long_g: [], speed_mph: [] },
+        padding: 'x'.repeat(400000),
+      };
+      const json = payload => new Response(JSON.stringify(payload), { headers: { 'Content-Type': 'application/json' } });
+      window.fetch = async (url, init) => {
+        if (!String(url).endsWith('/api/rpc')) return originalFetch(url, init);
+        const { channel } = JSON.parse(init.body);
+        if (channel === 'units:get') return json({ result: 'imperial' });
+        if (channel === 'db:listSessions') return json({ result: [{ session_guid: 'test', details_loaded: true }] });
+        if (channel !== 'analysis:build') throw new Error('Unexpected RPC: ' + channel);
+        window.analysisCalls++;
+        switch (window.analysisMode) {
+          case 'truncated': return new Response('{"result":{"segments":[1,2');
+          case 'http': return new Response('<html>Bad Gateway</html>', { status: 502 });
+          case 'network': throw new TypeError('Network connection lost');
+          case 'empty': return json({});
+          case 'hold': return new Promise(resolve => window.heldResponses.push(() => resolve(json({ result: { ...result, config: 'Stale analysis' } }))));
+          default: return json({ result });
+        }
+      };
+    </script>
+    <script type="module" src="./analysis-recovery.tsx"></script>
+  </body>
+</html>

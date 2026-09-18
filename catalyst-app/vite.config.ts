@@ -8,7 +8,7 @@ const proxyTarget = `http://${proxyHost.includes(':') ? `[${proxyHost}]` : proxy
 
 export default defineConfig(({ mode }) => ({
   root: 'src/renderer',
-  base: './',
+  base: mode === 'desktop' ? './' : '/',
   plugins: [react()],
   resolve: {
     alias: {
@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   build: {
-    outDir: path.resolve(__dirname, 'dist-renderer'),
+    outDir: path.resolve(__dirname, mode === 'desktop' ? 'dist-renderer/desktop' : 'dist-renderer'),
     emptyOutDir: true,
   },
   server: {

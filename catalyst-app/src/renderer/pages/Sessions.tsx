@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
+import { NavLink, useDebouncedQuery, useNavigation, useRoute } from '../navigation'
+import { routeUrl } from '../routes'
 import type { DbSessionRow } from '../../shared/types'
 
 interface Props {
@@ -58,13 +60,17 @@ function compareWith(key: SortKey, dir: SortDir) {
 }
 
 export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount, onEnsureSessions }: Props) {
+  const { params } = useRoute()
+  const { query } = useNavigation()
   const [rows, setRows] = useState<DbSessionRow[]>([])
   const [hasDb, setHasDb] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('')
-  const [vehicleFilter, setVehicleFilter] = useState<string | null>(null) // vehicle_guid or null
-  const [sortKey, setSortKey] = useState<SortKey>('date')
-  const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [filter, setFilter] = useDebouncedQuery('q', params.get('q') ?? '')
+  const vehicleFilter = params.get('vehicle')
+  const setVehicleFilter = (value: string | null) => query({ vehicle: value })
+  const sortKey = (params.get('sort') ?? 'date') as SortKey
+  const sortDir: SortDir = params.get('dir') === 'asc' ? 'asc' : 'desc'
+  const setSortDir = (fn: (old: SortDir) => SortDir) => query({ dir: fn(sortDir) })
   const inFlight = useRef(new Set<string>())
   const failed = useRef(new Set<string>())
   const [downloading, setDownloading] = useState(new Set<string>())
@@ -77,9 +83,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     if (sortKey === key) {
       setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
     } else {
-      setSortKey(key)
-      // Date / best-lap / laps are more useful descending; text columns ascending.
-      setSortDir(key === 'date' || key === 'best' || key === 'laps' ? 'desc' : 'asc')
+      query({ sort: key, dir: key === 'date' || key === 'best' || key === 'laps' ? 'desc' : 'asc' })
     }
   }
 
@@ -97,13 +101,11 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     return () => { cancelled = true }
   }, [refreshTick, activeAccount])
 
-  useEffect(() => {
+  const downloadSelected = () => {
     const missing = rows.filter(row => selected.has(row.session_guid) && !row.details_loaded
       && !inFlight.current.has(row.session_guid) && !failed.current.has(row.session_guid))
       .map(row => row.session_guid)
     if (!missing.length) return
-    // Batch rapid checkbox clicks into one request, including Select visible.
-    const timer = setTimeout(() => {
       missing.forEach(guid => inFlight.current.add(guid))
       setDownloading(new Set(inFlight.current))
       void onEnsureSessions(missing).then(async () => {
@@ -116,9 +118,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         missing.forEach(guid => inFlight.current.delete(guid))
         setDownloading(new Set(inFlight.current))
       })
-    }, 200)
-    return () => clearTimeout(timer)
-  }, [rows, selected, onEnsureSessions, activeAccount, retryTick])
+  }
 
   // One chip per distinct vehicle_guid in the current rows, with a count.
   const vehicleGroups = useMemo<VehicleGroup[]>(() => {
@@ -189,14 +189,16 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         </div>
       </header>
 
-      <div className={`page-body sessions-body${selected.size > 0 ? ' has-selection' : ''}`}>
-        <p className="muted small">Select sessions to compare laps and get coaching. Older telemetry downloads automatically.</p>
+      <div className="page-body sessions-body">
+        <p className="muted small">Select sessions to compare laps and get coaching.</p>
+        {selected.size > 0 && rows.some(r => selected.has(r.session_guid) && !r.details_loaded) && <button className="btn primary" disabled={downloading.size > 0} onClick={downloadSelected}>Download selected telemetry</button>}
+        {!loading && [...selected].some(id => !rows.some(r => r.session_guid === id)) && <p role="alert">Some selected sessions are unavailable. Clear the selection to choose available sessions.</p>}
         {downloading.size > 0 && <p className="small" role="status">Downloading details for {downloading.size} session(s)…</p>}
         {downloadError && (
           <div className="session-download-error" role="alert">
             <span>{downloadError}</span>
             <button className="btn ghost" onClick={() => {
-              failed.current.clear(); setDownloadError(null); setRetryTick(t => t + 1)
+              failed.current.clear(); setDownloadError(null); downloadSelected()
             }}>Retry selected</button>
           </div>
         )}
@@ -334,7 +336,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         </div>
       </div>
 
-      {/* Outside the scroll area; pinned to the viewport on mobile. */}
+      {/* Outside the scroll area; reserves space below the session list. */}
       {selected.size > 0 && (
         <div className="selection-bar">
           <div className="pulse" />
@@ -354,9 +356,9 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
             )}
           </div>
           <button className="btn ghost" onClick={() => setSelected(new Set())}>Clear</button>
-          <button className="btn primary" onClick={onAnalyze} disabled={selectedNeedsDetails || loading}>
-            {selectedNeedsDetails ? 'Waiting for details…' : `Analyze ${selected.size} →`}
-          </button>
+          {selectedNeedsDetails || loading || [...selected].some(id => !rows.some(r => r.session_guid === id))
+            ? <button className="btn primary" disabled>{selectedNeedsDetails ? 'Download details first' : 'Sessions unavailable'}</button>
+            : <NavLink className="btn primary" to={routeUrl('/analysis', { session: [...selected] })}>Analyze {selected.size} →</NavLink>}
         </div>
       )}
     </>

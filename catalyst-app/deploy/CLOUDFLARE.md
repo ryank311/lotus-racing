@@ -68,6 +68,19 @@ connector, then starts them using the NAS Compose configuration. The app uses
 `linux/amd64`, matching the DS920+; Docker Desktop emulates it on Apple Silicon.
 The test uses its own Compose project and local port 3211.
 
+The connector uses HTTP/2 over TCP. On networks where QUIC/UDP stalls, the
+server can finish analysis but the tunnel cuts off its JSON response, leaving
+the browser unable to display it. Repeated `timeout: no recent network activity`
+messages alongside JSON parse errors are consistent with this transport problem. After
+changing the Compose command, recreate the connector (a restart alone retains
+the old command); its connection logs should show `protocol=http2`. See
+[Cloudflare tunnel troubleshooting](https://developers.cloudflare.com/tunnel/troubleshooting/).
+
+Cloudflare's automatically injected Web Analytics script is allowed by the
+app's Content Security Policy. Its beacon uses the already permitted same-origin
+`/cdn-cgi/rum` endpoint. Analytics script warnings are separate from analysis
+API failures. See [Cloudflare's CSP requirements](https://developers.cloudflare.com/web-analytics/faq/#what-do-i-need-to-add-to-my-content-security-policy-csp).
+
 Open the printed HTTPS URL on your phone with Wi-Fi and any VPN turned off.
 You should see Cloudflare's email-code login before the app. Sign into a driver
 workspace and Garmin, then try syncing and editing Garage data. Keep the Mac's

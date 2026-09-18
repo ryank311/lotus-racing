@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { getServerSession, isRemote, loginToServer, logoutFromServer } from '../api'
+import { useNavigation, useRoute } from '../navigation'
+import { routeUrl, safeReturnTo } from '../routes'
 
 const desktopDriver = new URLSearchParams(window.location.search).get('desktopDriver')
 const rememberedUsernameKey = 'catalyst-server-username'
@@ -39,6 +41,8 @@ function initialUsername(): string {
 }
 
 export function ServerGate({ children }: { children: JSX.Element }) {
+  const { page, location, params } = useRoute()
+  const { go, clearWorkspace } = useNavigation()
   const [username, setUsername] = useState<string | null>(isRemote ? null : '')
   const [loading, setLoading] = useState(isRemote)
   const [entry, setEntry] = useState(initialUsername)
@@ -50,8 +54,22 @@ export function ServerGate({ children }: { children: JSX.Element }) {
     void getServerSession().then(session => {
       setUsername(session?.username ?? null)
       setLoading(false)
-    })
+    }).catch(e => { setError(String(e)); setLoading(false) })
   }, [])
+
+  useEffect(() => {
+    if (loading) return
+    if (page === 'sign-in' && location.state?.switchWorkspace) {
+      setLoading(true)
+      void logoutFromServer().then(() => {
+        clearWorkspace(); setUsername(null); go('/sign-in', { replace: true, state: { switchWorkspace: false } })
+      }).catch(e => setError(String(e))).finally(() => setLoading(false))
+    } else if (isRemote && !username && page !== 'sign-in') {
+      go(routeUrl('/sign-in', { returnTo: location.pathname + location.search }), { replace: true })
+    } else if (page === 'sign-in' && (!isRemote || username)) {
+      go(safeReturnTo(params.get('returnTo')), { replace: true })
+    }
+  }, [loading, username, page, location.pathname, location.search, location.state?.switchWorkspace, go, clearWorkspace])
 
   if (!isRemote) return children
   if (loading) return <div className="server-login-loading">Connecting to Catalyst Coach…</div>
@@ -67,7 +85,9 @@ export function ServerGate({ children }: { children: JSX.Element }) {
         const session = await loginToServer(submittedUsername)
         // Passwordless forms are not always saved by browser autofill.
         try { localStorage.setItem(rememberedUsernameKey, session.username) } catch { /* Storage may be disabled. */ }
+        clearWorkspace()
         setUsername(session.username)
+        go(safeReturnTo(params.get('returnTo')), { replace: true })
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       } finally {
@@ -113,12 +133,7 @@ export function ServerGate({ children }: { children: JSX.Element }) {
   return (
     <ServerSessionContext.Provider value={{
       username,
-      switchUser: () => {
-        void logoutFromServer().finally(() => {
-          setUsername(null)
-          setEntry(username)
-        })
-      },
+      switchUser: () => go('/sign-in', { state: { switchWorkspace: true } }),
     }}>
       {children}
     </ServerSessionContext.Provider>

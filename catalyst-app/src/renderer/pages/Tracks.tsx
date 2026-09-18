@@ -5,6 +5,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import { NavLink, useNavigation, useRoute, useUnsavedChanges } from '../navigation'
+import { routeUrl, segment } from '../routes'
 import { TrackMap } from '../components/TrackMap'
 import type { TrackListEntry } from '../../shared/types'
 
@@ -87,28 +89,30 @@ function TrackSilhouette({ preview }: { preview?: TrackPreview }) {
 }
 
 export function Tracks() {
+  const { id: selectedGuid, params } = useRoute()
+  const { go, query } = useNavigation()
+  const selectedTrackName = params.get('track')
+  const selectedTurn = params.get('turn')
+  const setSelectedTurn = (turn: string | null) => query({ turn })
+  const setSelectedGuid = (guid: string | null) => go(guid ? `/tracks/${segment(guid)}` : '/tracks')
+  const [error, setError] = useState<string | null>(null)
   const [list, setList] = useState<TrackListEntry[]>([])
-  const [selectedTrackName, setSelectedTrackName] = useState<string | null>(null)
-  const [selectedGuid, setSelectedGuid] = useState<string | null>(null)
   const [trackPreviews, setTrackPreviews] = useState<Record<string, TrackPreview>>({})
   const [loaded, setLoaded] = useState<LoadedTrack | null>(null)
   const [loading, setLoading] = useState(false)
   const [corners, setCorners] = useState<EditableCorner[]>([])
-  const [selectedTurn, setSelectedTurn] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
   const [savingMsg, setSavingMsg] = useState<string | null>(null)
 
   // ── data loading ──────────────────────────────────────────────────────────
   useEffect(() => {
+    let cancelled = false
     void (async () => {
       const tracks = await api.listTracks()
+      if (cancelled) return
       setList(tracks)
-      if (!selectedGuid && tracks.length) {
-        const first = tracks.find(t => t.meanLineExists) ?? tracks[0]
-        setSelectedTrackName(first.trackName)
-        if (first.meanLineGuid) setSelectedGuid(first.meanLineGuid)
-      }
-    })()
+    })().catch(e => { if (!cancelled) setError(String(e)) })
+    return () => { cancelled = true }
   }, [])
 
   const trackGroups = useMemo(() => {
@@ -135,25 +139,31 @@ export function Tracks() {
     })).then(results => {
       if (cancelled) return
       setTrackPreviews(Object.fromEntries(results.filter((item): item is NonNullable<typeof item> => item != null)))
-    })
+    }).catch(e => { if (!cancelled) setError(String(e)) })
     return () => { cancelled = true }
   }, [trackGroups])
 
   useEffect(() => {
+    let cancelled = false
+    setLoaded(null); setError(null); setDirty(false)
     if (!selectedGuid) return
     void (async () => {
       setLoading(true)
       try {
         const detail = await api.getTrack(selectedGuid) as LoadedTrack | null
+        if (cancelled) return
         setLoaded(detail)
+        if (!detail) setError('This track layout is unavailable.')
         setCorners(((detail?.corners ?? []) as EditableCorner[]).map(c => ({ ...c, _key: _cornerKey++ })))
-        setSelectedTurn((detail?.corners?.[0] as EditableCorner | undefined)?.turn ?? null)
         setDirty(false)
         setSavingMsg(null)
+      } catch (e) {
+        if (!cancelled) setError(String(e))
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     })()
+    return () => { cancelled = true }
   }, [selectedGuid])
 
   // ── derived ───────────────────────────────────────────────────────────────
@@ -172,14 +182,13 @@ export function Tracks() {
   )
 
   const activeEntry = list.find(t => t.meanLineGuid === selectedGuid) ?? null
-  const activeTrackName = selectedTrackName ?? activeEntry?.trackName ?? trackGroups[0]?.trackName ?? null
+  const activeTrackName = activeEntry?.trackName ?? selectedTrackName ?? trackGroups[0]?.trackName ?? null
   const activeLayouts = trackGroups.find(group => group.trackName === activeTrackName)?.layouts ?? []
 
   const selectTrack = (trackName: string) => {
-    setSelectedTrackName(trackName)
     const layouts = trackGroups.find(group => group.trackName === trackName)?.layouts ?? []
     const first = layouts.find(layout => layout.meanLineExists && layout.meanLineGuid) ?? layouts[0]
-    setSelectedGuid(first?.meanLineGuid ?? null)
+    go(first?.meanLineGuid ? `/tracks/${segment(first.meanLineGuid)}` : routeUrl('/tracks', { track: trackName }))
   }
 
   // ── corner mutations ──────────────────────────────────────────────────────
@@ -230,7 +239,7 @@ export function Tracks() {
   }
 
   const save = async () => {
-    if (!loaded || !selectedGuid) return
+    if (!loaded || !selectedGuid) return false
     setSavingMsg('saving…')
     try {
       const res = await api.saveTrackCorners({
@@ -243,10 +252,13 @@ export function Tracks() {
       // refresh list to update yamlExists / cornerCount badges
       void api.listTracks().then(setList)
       setTimeout(() => setSavingMsg(null), 2500)
+      return true
     } catch (e: any) {
       setSavingMsg(`error: ${e.message ?? e}`)
+      return false
     }
   }
+  useUnsavedChanges(dirty, save)
 
   const revert = async () => {
     if (!selectedGuid) return
@@ -289,6 +301,7 @@ export function Tracks() {
       </header>
 
       <div className="page-body tracks-body">
+        {error && <p role="alert">{error} <NavLink to="/tracks">All tracks</NavLink></p>}
         {/* Track and layout pickers */}
         <section className="tracks-selector" aria-label="Track and layout selector">
           {list.length === 0 && (
@@ -302,14 +315,14 @@ export function Tracks() {
                   const active = activeTrackName === group.trackName
                   const sessionCount = group.layouts.reduce((sum, layout) => sum + layout.sessionCount, 0)
                   return (
-                    <button key={group.trackName} type="button" className={`tracks-circuit-card ${active ? 'active' : ''}`}
-                      aria-pressed={active} onClick={() => selectTrack(group.trackName)}>
+                    <NavLink key={group.trackName} to={routeUrl('/tracks', { track: group.trackName })} className={`tracks-circuit-card ${active ? 'active' : ''}`}
+                      aria-current={active ? 'true' : undefined}>
                       <TrackSilhouette preview={trackPreviews[group.trackName]} />
                       <span className="tracks-circuit-copy">
                         <strong>{group.trackName}</strong>
                         <small>{group.layouts.length} {group.layouts.length === 1 ? 'layout' : 'layouts'} · {sessionCount} sessions</small>
                       </span>
-                    </button>
+                    </NavLink>
                   )
                 })}
               </div>
@@ -318,11 +331,11 @@ export function Tracks() {
                 <div className="tracks-selector-label">Layout</div>
                 <div className="tracks-picker">
                   {activeLayouts.map(t => (
-                    <button
+                    <NavLink to={t.meanLineGuid ? `/tracks/${segment(t.meanLineGuid)}` : routeUrl('/tracks', { track: t.trackName })}
                       key={`${t.meanLineGuid ?? 'noguid'}-${t.configName}`}
                       className={`chip ${selectedGuid === t.meanLineGuid ? 'signal' : ''}`}
-                      disabled={!t.meanLineExists}
-                      onClick={() => t.meanLineGuid && setSelectedGuid(t.meanLineGuid)}
+                      aria-disabled={!t.meanLineExists}
+                      onClick={e => { if (!t.meanLineExists) e.preventDefault() }}
                       title={t.meanLineExists ? '' : 'mean_line.pb missing — re-sync to fetch it'}
                       style={{ cursor: t.meanLineExists ? 'pointer' : 'not-allowed' }}
                     >
@@ -331,7 +344,7 @@ export function Tracks() {
                         · {t.sessionCount}s
                         {t.yamlExists ? ` · ${t.cornerCount} corners` : ' · no yaml'}
                       </span>
-                    </button>
+                    </NavLink>
                   ))}
                 </div>
               </div>
@@ -339,7 +352,7 @@ export function Tracks() {
           )}
         </section>
 
-        {loading && <div className="muted small" style={{ padding: 16 }}>Loading track geometry…</div>}
+        {loading && <div data-route-loading className="muted small" style={{ padding: 16 }}>Loading track geometry…</div>}
 
         {!loading && loaded && trackMapInput && (
           <div className="tracks-editor">

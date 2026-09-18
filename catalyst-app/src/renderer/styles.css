@@ -150,6 +150,11 @@ body {
 .session-download-error { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; color: var(--red); }
 
 button { font-family: inherit; cursor: pointer; }
+a { color: inherit; }
+a.btn, a.nav-item, a.sidebar-account, a.sidebar-log-btn, a.list-item,
+a.garage-vehicle-name, a.garage-file-name, a.tracks-circuit-card, a.chip { text-decoration: none; }
+a.btn { display: inline-flex; align-items: center; justify-content: center; }
+.navigation-error { position: fixed; bottom: 16px; left: 16px; right: 16px; z-index: 200; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; background: var(--panel); border: 1px solid var(--red); }
 input, textarea, select { font-family: inherit; color: inherit; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -168,7 +173,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .app-shell {
   display: grid;
   grid-template-columns: 220px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -589,7 +596,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 /* ── main pane ──────────────────────────────────────────────────────── */
 
 .main-pane {
-  overflow: hidden;
+  /* Only the page body scrolls; focusing controls must not scroll the shell. */
+  min-height: 0;
+  overflow: clip;
   overflow-anchor: none;
   display: flex;
   flex-direction: column;
@@ -597,6 +606,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 
 .page-header {
+  flex-shrink: 0;
   padding: 18px 36px 12px;
   display: flex;
   align-items: center;
@@ -1720,6 +1730,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 
 .list-item {
+  display: block;
   padding: 10px 12px;
   border-radius: var(--radius);
   font-size: 12.5px;
@@ -4133,10 +4144,11 @@ input, textarea, select { font-family: inherit; color: inherit; }
   .session-card-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-mute); font: 10px var(--font-mono); }
   .session-card-footer > span:last-child { color: var(--cyan); }
   .session-download-error { flex-wrap: wrap; overflow-wrap: anywhere; }
-  .sessions-body.has-selection { padding-bottom: calc(120px + env(safe-area-inset-bottom)); }
   .selection-bar {
-    position: fixed; inset: auto 0 0; z-index: 20; gap: 10px;
-    padding: 12px max(16px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    /* Reserve footer space inside the dynamic-height shell, including when
+       mobile browser toolbars change the visible viewport. */
+    gap: 10px;
+    padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left));
     box-shadow: 0 -8px 24px #0005;
   }
   .selection-bar .pulse, .selection-bar .selected-laptimes { display: none; }

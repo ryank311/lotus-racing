@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      window.catalyst = {
+        getAiSettings: async () => ({ provider: 'anthropic', hasAnthropicApiKey: false }),
+        getUnits: async () => 'imperial',
+        hasDb: async () => true,
+        listSessions: async () => Array.from({ length: 30 }, (_, i) => ({
+          session_guid: String(i), session_start: '2026-09-18', track_name: 'Test track',
+          lap_count: 10, best_lap_ms: 90000, details_loaded: true,
+        })),
+      }
+    </script>
+    <script type="module" src="./mobile-layout.tsx"></script>
+  </body>
+</html>

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ServerUserSwitcher } from './ServerGate'
+import { NavLink, useOverlay } from '../navigation'
+import { paths } from '../routes'
 
 export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
 
@@ -76,7 +78,8 @@ const UserIcon = () => (
   </svg>
 )
 
-export function Sidebar({ active, onChange, connected, selectionCount = 0, signedIn, email, onSignIn }: {
+export function Sidebar({ active, onChange, connected, selectionCount = 0, signedIn, email, onSignIn, destination = key => paths[key] }: {
+  destination?: (key: NavKey) => string
   active: NavKey
   onChange: (k: NavKey) => void
   connected: boolean
@@ -86,17 +89,16 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
   onSignIn: () => void
 }) {
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 800px)').matches)
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useOverlay('navigation')
   const drawerRef = useRef<HTMLElement>(null)
   const toggleRef = useRef<HTMLButtonElement>(null)
-  const navigate = (key: NavKey) => { onChange(key); setOpen(false) }
+  const navigate = (key: NavKey) => { onChange(key) }
   useEffect(() => {
     const query = window.matchMedia('(max-width: 800px)')
     const update = () => { setMobile(query.matches); setOpen(false) }
     query.addEventListener('change', update)
     return () => query.removeEventListener('change', update)
   }, [])
-  useEffect(() => { setOpen(false) }, [active])
   useEffect(() => {
     if (!open || !mobile) return
     const main = document.querySelector('.main-pane')
@@ -161,12 +163,11 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
       <nav className="nav" aria-label="Main navigation">
         <div className="nav-section-label">Workspace</div>
         {NAV.map(n => (
-          <button
-            type="button"
+          <NavLink
+            to={destination(n.key)}
             aria-current={active === n.key ? 'page' : undefined}
             key={n.key}
             className={`nav-item ${active === n.key ? 'active' : ''}`}
-            onClick={() => navigate(n.key)}
           >
             {n.icon}
             <span>{n.label}</span>
@@ -187,18 +188,17 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
               </span>
             )}
             <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{n.k}</span>
-          </button>
+          </NavLink>
         ))}
       </nav>
 
-      <button
+      <NavLink to="/account"
         className={`sidebar-account ${active === 'account' ? 'active' : ''}`}
-        onClick={() => { setOpen(false); signedIn ? onChange('account') : onSignIn() }}
         title={signedIn ? (email ?? 'Account') : 'Sign in'}
       >
         <UserIcon />
         <span className="sidebar-account-label">{signedIn ? email : 'Sign in'}</span>
-      </button>
+      </NavLink>
 
       <ServerUserSwitcher />
 
@@ -209,13 +209,12 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
         </div>
         <div className="row-center" style={{ gap: 8 }}>
           <span>{time.toTimeString().slice(0, 5)}</span>
-          <button
+          <NavLink to="/logs"
             className={`sidebar-log-btn ${active === 'logs' ? 'active' : ''}`}
-            onClick={() => navigate('logs')}
             title="Debug logs"
           >
             <BugIcon />
-          </button>
+          </NavLink>
         </div>
       </div>
     </aside>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useDebouncedQuery, useNavigation, useRoute } from '../navigation'
 
 export interface LogEntry {
   id: number
@@ -37,9 +38,12 @@ interface LogsProps {
 }
 
 export function Logs({ entries, onLoad, busy }: LogsProps) {
-  const [filter, setFilter] = useState('')
-  const [levelFilter, setLevelFilter] = useState<Set<string>>(new Set(['log', 'warn', 'error', 'info']))
-  const [autoScroll, setAutoScroll] = useState(true)
+  const { params } = useRoute()
+  const { query } = useNavigation()
+  const [filter, setFilter] = useDebouncedQuery('q', params.get('q') ?? '')
+  const levelFilter = new Set(params.has('level') ? params.getAll('level') : ['log', 'warn', 'error', 'info'])
+  const autoScroll = params.get('follow') !== '0'
+  const setAutoScroll = (value: boolean | ((old: boolean) => boolean)) => query({ follow: (typeof value === 'function' ? value(autoScroll) : value) ? null : '0' })
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,11 +59,9 @@ export function Logs({ entries, onLoad, busy }: LogsProps) {
   )
 
   const toggleLevel = (l: string) => {
-    setLevelFilter(prev => {
-      const next = new Set(prev)
+      const next = new Set(levelFilter)
       next.has(l) ? next.delete(l) : next.add(l)
-      return next
-    })
+      query({ level: next.size ? [...next] : ['none'] })
   }
 
   const copyAll = () => {
