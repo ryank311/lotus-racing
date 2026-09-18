@@ -171,6 +171,29 @@ Then start the container and choose the same driver name (often `Desktop` for
 an imported desktop workspace). Configure desktop clients to connect to the NAS
 server if you want all devices to share that one data store.
 
+## Try private phone access on your Mac
+
+Install [Tailscale for macOS](https://tailscale.com/download/mac) and Tailscale on
+your phone, then connect both to the same account. From `catalyst-app`, run:
+
+```sh
+bash deploy/test-tailscale-mac.sh
+```
+
+The script builds and runs the headless browser app locally, then uses
+[Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) to
+print a private HTTPS URL. Follow its HTTPS-enablement link if prompted. Open
+the URL on your phone with Tailscale connected and Wi-Fi off to test over cellular.
+Log into a driver workspace, sign into Garmin, and try syncing and saving Garage
+data. Ctrl+C stops the app and temporary sharing. Rerun and use the same driver
+name to reopen the saved workspace.
+
+Test data stays in `deploy/data/tailscale-mac/` (gitignored), separate from the
+normal desktop data. This exercises the browser app and Tailscale access using
+Node.js 22+, without requiring Docker. The NAS will use the container instead.
+Keep the Mac awake with its lid open during the test; the script prevents idle
+sleep while the server runs. Use `--help` for port and data-directory overrides.
+
 ## Local image build (optional)
 
 From the repository root on a machine with Docker:
