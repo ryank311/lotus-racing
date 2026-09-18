@@ -226,7 +226,7 @@ export function registerApiHandlers(
   register('profiles:readFile', (_e, filePath: string) => readGarageFile(filePath))
   register('profiles:writeCarMd', async (_e, profileName: string, fileName: string, content: string) => {
     const dest = await writeGarageFile(profileName, fileName, content)
-    console.log(`[profiles] wrote ${dest} (${content.length} chars)`)
+    console.log(`[profiles] saved ${profileName}/${path.basename(fileName)} to workspace database (${content.length} chars)`)
     return dest
   })
   register('profiles:readCarMd', async (_e, name: string) => {
@@ -344,7 +344,7 @@ export function registerApiHandlers(
     return resolveGarageVehicleProfile(vehicleGuid, make)
   })
 
-  // Import an external file into a profile's context directory.
+  // Import external context into the workspace database.
   // sourcePath is the dropped file's path on disk (provided by Electron's File API).
   register('profiles:importContextFile', async (
     _e,
@@ -364,11 +364,11 @@ export function registerApiHandlers(
     await writeGarageFile(profileName, safeName, content)
   })
 
-  // Delete a context file from a profile directory. Car.md is protected.
+  // Delete a context record from the workspace database. Car.md is protected.
   register('profiles:deleteContextFile', (_e, profileName: string, fileName: string) =>
     deleteGarageFile(profileName, fileName))
 
-  // Create a new profile directory with a blank Car.md and optionally link it to a vehicle.
+  // Create a database profile with blank car context and optionally link it to a vehicle.
   register('profiles:ensureProfile', (_e, name: string, vehicleGuid?: string) =>
     ensureGarageProfile(name, vehicleGuid))
 

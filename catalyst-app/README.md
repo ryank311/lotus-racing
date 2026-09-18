@@ -34,11 +34,11 @@ driver name gets a separate workspace containing its own DuckDB database, raw
 sessions, Garmin token/config, AI coaching history, Garage profiles, track
 edits, and settings.
 
-Garage profile Markdown is imported into DuckDB the first time a workspace
-opens Garage. From then on, Garage reads and writes the database. The `.md`
-files are kept in sync as compatibility mirrors so AI prompt generation and
-human-readable backups continue to work; if the telemetry database is rebuilt,
-those mirrors seed the Garage tables again.
+Garage profile Markdown seeds DuckDB once, when a workspace first accesses
+Garage or generates coaching context. From then on, Garage and AI prompts read
+the workspace database, and edits save only to that database. Seed `.md` files
+are left unchanged. Telemetry reloads preserve Garage data and coaching history;
+include the workspace database in backups to retain saved edits.
 
 On login with a valid Garmin session, sync automatically refreshes all session
 overviews and downloads missing telemetry for the latest 20 sessions. Selecting

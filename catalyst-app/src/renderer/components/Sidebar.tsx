@@ -206,6 +206,8 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
         <span className="sidebar-account-label">{signedIn ? email : 'Sign in'}</span>
       </button>
 
+      <ServerUserSwitcher />
+
       <div className="sidebar-footer">
         <div className="row-center">
           <span className={`led ${connected ? '' : 'dim'}`} />
@@ -222,7 +224,6 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
           </button>
         </div>
       </div>
-      <ServerUserSwitcher />
     </aside>
     </>
   )

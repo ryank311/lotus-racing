@@ -11,14 +11,23 @@ export function ServerUserSwitcher() {
   return (
     <button
       type="button"
-      className="server-user-chip"
-      title={`Server user: ${session.username}. Switch user`}
-      aria-label={`Switch server user (currently ${session.username})`}
+      className="sidebar-account sidebar-driver"
+      title={`Switch driver workspace (currently ${session.username})`}
+      aria-label={`Switch driver workspace (currently ${session.username})`}
       onClick={session.switchUser}
     >
-      <span>server ·</span>
-      <span className="server-user-name">{session.username}</span>
-      <span>· switch</span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="1" />
+        <circle cx="9" cy="10" r="2" />
+        <path d="M5 17v-1a4 4 0 0 1 8 0v1M16 9h3M16 13h3" />
+      </svg>
+      <span className="sidebar-driver-details">
+        <span className="sidebar-driver-caption">Driver workspace</span>
+        <span className="sidebar-account-label">{session.username}</span>
+      </span>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon sidebar-driver-switch" aria-hidden="true">
+        <path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4" />
+      </svg>
     </button>
   )
 }

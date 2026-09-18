@@ -6,7 +6,7 @@ import path from 'node:path'
 import { DuckDBConnection } from '@duckdb/node-api'
 import { COACHING_DIR, DB_PATH, TRACKS_DIR } from './paths.js'
 import { loadTrackYaml, resolveTrackYamlPath, TrackCorner, TrackSegment, TrackYaml } from './trackYaml.js'
-import { resolveProfileDir, resolveVehicleProfile } from './profiles.js'
+import { ensureGarageSeeded, resolveGarageProfile, resolveGarageVehicleProfile } from './garageStore.js'
 import { openDb } from './loadToDb.js'
 import {
   DEFAULT_UNIT_SYSTEM, speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem,
@@ -57,9 +57,7 @@ function fmtWind(speedMps: number | null | undefined, dirDeg: number | null | un
   return `${speedFromMps(speedMps, system).toFixed(1)} ${speedUnitLabel(system)}${from}`
 }
 
-function inlineMd(p: string, headingDemote = 1): string {
-  if (!fs.existsSync(p)) return `_(missing: ${path.basename(p)})_`
-  let text = fs.readFileSync(p, 'utf-8')
+function inlineMd(text: string, headingDemote = 1): string {
   if (headingDemote > 0) {
     const pad = '#'.repeat(headingDemote)
     text = text.split('\n').map(l => (l.startsWith('#') ? pad + l : l)).join('\n')
@@ -360,7 +358,6 @@ export interface BuildBriefOpts {
   trackYaml: TrackYaml
   scope: 'overview' | 'corner' | 'compare'
   con: DuckDBConnection
-  profileDir: string
   profileName: string
   includeGuides?: boolean
   dataDirRelpath?: string | null
@@ -370,7 +367,7 @@ export interface BuildBriefOpts {
 }
 
 export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
-  const { sessions: selectedSessions, trackYaml, scope, con, profileDir, profileName, includeGuides, dataDirRelpath } = opts
+  const { sessions: selectedSessions, trackYaml, scope, con, profileName, includeGuides, dataDirRelpath } = opts
   // Active unit system — every speed/temperature in the brief uses these so the
   // AI reads and answers in the same units the app displays.
   const system = opts.system ?? DEFAULT_UNIT_SYSTEM
@@ -456,7 +453,11 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
   parts.push('')
 
   parts.push(`## Car & driver — ${profileName}`)
-  parts.push(inlineMd(path.join(profileDir, 'Car.md'), 2))
+  const profileFiles = await rowsToDicts(con,
+    'SELECT file_name, content FROM garage_files WHERE profile_name = ? ORDER BY lower(file_name)',
+    [profileName])
+  const car = profileFiles.find(file => file.file_name.toLowerCase() === 'car.md')
+  parts.push(car ? inlineMd(car.content, 2) : '_(missing: Car.md)_')
   parts.push('')
 
   parts.push(`## Track — ${configName}`)
@@ -745,7 +746,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
     // remains in Car.md unless explicitly framed as driver context; injecting
     // every reference document would dilute the lap evidence and inflate prompts.
     const configSlug = configName.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-    const contextGuides = fs.readdirSync(profileDir)
+    const contextGuides = profileFiles.map(file => String(file.file_name))
       .filter(n => n.toLowerCase().endsWith('.md') && n.toLowerCase() !== 'car.md')
       .filter(n => {
         const slug = n.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/\.md$/, '')
@@ -754,7 +755,7 @@ export async function buildBrief(opts: BuildBriefOpts): Promise<string> {
       })
     for (const guide of contextGuides) {
       parts.push(`## Driver/track context — ${guide}`)
-      parts.push(inlineMd(path.join(profileDir, guide), 2))
+      parts.push(inlineMd(profileFiles.find(file => file.file_name === guide)!.content, 2))
       parts.push('')
     }
   }
@@ -934,6 +935,7 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
   if (!fs.existsSync(dbPath)) {
     throw new Error(`no database at ${dbPath}. Run load first.`)
   }
+  await ensureGarageSeeded(dbPath)
   const db = await openDb(dbPath)
   const con = db.con
   try {
@@ -967,7 +969,7 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
     const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
     const trackYaml = loadTrackYaml(trackPath)
 
-    const profile = resolveProfileDir(opts.profile)
+    const profile = await resolveGarageProfile(opts.profile, dbPath)
     fs.mkdirSync(COACHING_DIR, { recursive: true })
 
     const outPath = opts.outPath ?? path.join(
@@ -984,7 +986,7 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
 
     const brief = await buildBrief({
       sessions, trackYaml, scope, con,
-      profileDir: profile.dir, profileName: profile.name,
+      profileName: profile.name,
       includeGuides: opts.includeGuides,
       dataDirRelpath: dataRelPath,
       system: opts.system,
@@ -1066,6 +1068,7 @@ export interface CoachRunOpts {
 export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; profile: string; sessionAliases: Record<string, string> }> {
   const dbPath = opts.dbPath ?? DB_PATH
   if (!fs.existsSync(dbPath)) throw new Error(`no database at ${dbPath}. Run load first.`)
+  await ensureGarageSeeded(dbPath)
   const db = await openDb(dbPath)
   const con = db.con
   try {
@@ -1100,12 +1103,12 @@ export async function runCoach(opts: CoachRunOpts): Promise<{ prompt: string; pr
     const trackPath = resolveTrackYamlPath(topTrackName, topConfig, topMeanLineGuid).path
     const trackYaml = loadTrackYaml(trackPath)
 
-    const mappedProfile = resolveVehicleProfile(sessions[0].vehicle_guid, sessions[0].vehicle_make).profile
-    const profile = resolveProfileDir(mappedProfile ?? opts.profile)
+    const mappedProfile = (await resolveGarageVehicleProfile(sessions[0].vehicle_guid, sessions[0].vehicle_make, dbPath)).profile
+    const profile = await resolveGarageProfile(mappedProfile ?? opts.profile, dbPath)
 
     const prompt = await buildCoachPrompt({
       sessions, trackYaml, scope: opts.scope, con,
-      profileDir: profile.dir, profileName: profile.name,
+      profileName: profile.name,
       includeGuides: true,
       system: opts.system,
       lapLimit: opts.lapLimit,

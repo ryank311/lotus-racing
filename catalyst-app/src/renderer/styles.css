@@ -120,27 +120,6 @@ body {
   line-height: 1.55;
 }
 .server-login-loading { height: 100%; display: grid; place-items: center; color: var(--text-mute); font-family: var(--font-mono); }
-.server-user-chip {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  min-width: 0;
-  margin: 0 12px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(10,10,11,0.9);
-  color: var(--text-mute);
-  padding: 5px 9px;
-  font: 9px var(--font-mono);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  -webkit-app-region: no-drag;
-}
-.server-user-chip > span { flex-shrink: 0; }
-.server-user-chip .server-user-name { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.server-user-chip:hover { color: var(--cyan); border-color: var(--border-strong); }
-
 .sync-split-button { position: relative; display: inline-flex; flex-shrink: 0; }
 .banner.sync-banner { overflow: visible; }
 .sync-split-button > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
@@ -369,6 +348,17 @@ input, textarea, select { font-family: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.sidebar-driver { min-width: 0; flex-shrink: 0; }
+.sidebar-driver-details { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sidebar-driver-caption {
+  color: var(--text-mute);
+  font: 9px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.sidebar-driver-switch { margin-left: auto; color: var(--text-mute); }
+.sidebar-driver:hover .sidebar-driver-switch { color: var(--text); }
 
 .sidebar-footer {
   padding: 14px 18px 18px;
@@ -3951,7 +3941,6 @@ input, textarea, select { font-family: inherit; color: inherit; }
   .sidebar-account { min-height: 50px; }
   .sidebar-footer { min-height: 52px; }
   .sidebar-log-btn { min-width: 44px; min-height: 44px; }
-  .server-user-chip { min-height: 44px; padding: 10px 12px; font-size: 11px; }
   .page-header { flex: 0 0 auto; flex-wrap: wrap; padding: 16px; gap: 12px; -webkit-app-region: no-drag; }
   .page-title { font-size: 32px; }
   .page-eyebrow { font-size: 9px; letter-spacing: 0.14em; margin-bottom: 4px; overflow-wrap: anywhere; }

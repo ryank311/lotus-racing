@@ -431,29 +431,25 @@ export async function loadAll(
   dbPath = DB_PATH,
   onProgress?: (p: LoadProgress) => void,
 ): Promise<{ sessions: number; samples: number }> {
-  // Always rebuild from scratch. The JSON+protobuf files in SESSIONS_DIR are
-  // the source of truth; the DB is just a derived cache. Wiping it dodges
-  // ART-index corruption that's accumulated from prior crashes or
-  // cross-version writes (e.g. Python writing the same file with a different
-  // libduckdb). Re-ingest is ~10s per 50 sessions thanks to the Appender.
-
-  // Release the shared instance before deleting the files so Windows can
-  // delete them (the old instance's handle will be GC'd; no connections are
-  // active since sync/load operations are mutually exclusive).
-  releaseSharedInstance()
-
-  for (const ext of ['', '.wal', '.tmp']) {
-    const p = dbPath + ext
-    if (fs.existsSync(p)) {
-      try { fs.rmSync(p, { recursive: true, force: true }); log(`[rebuild] removed ${path.basename(p)}`) }
-      catch (e: any) { log(`[rebuild] could not remove ${p}: ${e.message ?? e}`) }
-    }
-  }
-
+  // Rebuild only derived telemetry. Garage content, settings, and coaching
+  // history are workspace records and must survive a telemetry reload.
   const db = await openDb(dbPath)
   let totalSamples = 0
   try {
-    await initSchema(db.con)
+    await db.con.run('BEGIN TRANSACTION')
+    try {
+      await db.con.run(`
+        DROP TABLE IF EXISTS samples;
+        DROP TABLE IF EXISTS laps;
+        DROP TABLE IF EXISTS sessions;
+        DROP TABLE IF EXISTS track_configs;
+      `)
+      await initSchema(db.con)
+      await db.con.run('COMMIT')
+    } catch (error) {
+      await db.con.run('ROLLBACK')
+      throw error
+    }
     const tcCount = await loadTrackConfigs(db.con)
     log(`[track_configs] ${tcCount} rows`)
 

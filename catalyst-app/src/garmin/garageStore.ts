@@ -2,8 +2,8 @@
  * DuckDB-backed Garage storage.
  *
  * Existing Markdown profile directories are imported once when the Garage
- * tables are empty. After that, DuckDB is canonical and Markdown files are
- * compatibility mirrors for promptPack and external backup/readability.
+ * tables are first initialized. After that, the workspace database is the sole
+ * source of truth; seed files are never modified or materialized from DuckDB.
  */
 
 import fs from 'node:fs'
@@ -15,16 +15,14 @@ import {
   discoverProfiles as discoverMarkdownProfiles,
   getActiveProfileName as getMarkdownActiveProfile,
   getVehicleProfileMap as getMarkdownVehicleMap,
-  setActiveProfileName as mirrorActiveProfile,
-  setVehicleProfile as mirrorVehicleProfile,
 } from './profiles.js'
 
-let seedPromise: Promise<void> | null = null
-let seededDbIdentity: string | null = null
+const seedPromises = new Map<string, Promise<void>>()
+const seededDbIdentities = new Map<string, string>()
 
-function dbIdentity(): string | null {
-  if (!fs.existsSync(DB_PATH)) return null
-  const stat = fs.statSync(DB_PATH)
+function dbIdentity(dbPath: string): string | null {
+  if (!fs.existsSync(dbPath)) return null
+  const stat = fs.statSync(dbPath)
   return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`
 }
 
@@ -37,90 +35,96 @@ function safeName(value: string, label: string): string {
 }
 
 function profileShape(name: string): CarProfile {
+  // Legacy API paths identify database records; they need not exist on disk.
   const dir = path.join(REPO_ROOT, name)
   return { name, dir, carMdPath: path.join(dir, 'Car.md') }
 }
 
-function writeMirror(profileName: string, fileName: string, content: string): void {
-  const profile = profileShape(profileName)
-  fs.mkdirSync(profile.dir, { recursive: true })
-  fs.writeFileSync(path.join(profile.dir, fileName), content, 'utf8')
-}
-
-async function seedOrMaterialize(): Promise<void> {
+async function seedGarage(dbPath: string): Promise<void> {
   await withDb(async con => {
     await initSchema(con)
-    const countRow = (await con.runAndReadAll('SELECT COUNT(*) FROM garage_profiles')).getRowsJson()[0] ?? []
-    const isEmpty = Number(countRow[0] ?? 0) === 0
+    await con.run('BEGIN TRANSACTION')
+    try {
+      const seeded = (await con.runAndReadAll(
+        "SELECT value FROM garage_settings WHERE key = 'seed_complete'",
+      )).getRowsJson()
+      if (seeded.length) {
+        await con.run('COMMIT')
+        return
+      }
+      const countRow = (await con.runAndReadAll('SELECT COUNT(*) FROM garage_profiles')).getRowsJson()[0] ?? []
+      const isEmpty = Number(countRow[0] ?? 0) === 0
 
-    if (isEmpty) {
-      for (const profile of discoverMarkdownProfiles()) {
-        await con.run(
-          'INSERT OR IGNORE INTO garage_profiles (name) VALUES (?)',
-          [profile.name] as any,
-        )
-        for (const fileName of fs.readdirSync(profile.dir)) {
-          if (!fileName.toLowerCase().endsWith('.md')) continue
-          const filePath = path.join(profile.dir, fileName)
-          if (!fs.statSync(filePath).isFile()) continue
-          const content = fs.readFileSync(filePath, 'utf8')
+      if (isEmpty) {
+        for (const profile of discoverMarkdownProfiles()) {
           await con.run(
-            `INSERT OR IGNORE INTO garage_files (profile_name, file_name, content)
-             VALUES (?, ?, ?)`,
-            [profile.name, fileName, content] as any,
+            'INSERT OR IGNORE INTO garage_profiles (name) VALUES (?)',
+            [profile.name] as any,
+          )
+          for (const fileName of fs.readdirSync(profile.dir)) {
+            if (!fileName.toLowerCase().endsWith('.md')) continue
+            const filePath = path.join(profile.dir, fileName)
+            if (!fs.statSync(filePath).isFile()) continue
+            const content = fs.readFileSync(filePath, 'utf8')
+            await con.run(
+              `INSERT OR IGNORE INTO garage_files (profile_name, file_name, content)
+               VALUES (?, ?, ?)`,
+              [profile.name, fileName, content] as any,
+            )
+          }
+        }
+
+        for (const [vehicleGuid, profileName] of Object.entries(getMarkdownVehicleMap())) {
+          await con.run(
+            `INSERT OR IGNORE INTO garage_vehicle_profiles (vehicle_guid, profile_name)
+             VALUES (?, ?)`,
+            [vehicleGuid, profileName] as any,
+          )
+        }
+        const active = getMarkdownActiveProfile()
+        if (active) {
+          await con.run(
+            `INSERT OR IGNORE INTO garage_settings (key, value) VALUES ('active_profile', ?)`,
+            [active] as any,
           )
         }
       }
 
-      for (const [vehicleGuid, profileName] of Object.entries(getMarkdownVehicleMap())) {
-        await con.run(
-          `INSERT OR IGNORE INTO garage_vehicle_profiles (vehicle_guid, profile_name)
-           VALUES (?, ?)`,
-          [vehicleGuid, profileName] as any,
-        )
-      }
-      const active = getMarkdownActiveProfile()
-      if (active) {
-        await con.run(
-          `INSERT OR IGNORE INTO garage_settings (key, value) VALUES ('active_profile', ?)`,
-          [active] as any,
-        )
-      }
+      // Existing database profiles are already canonical. Mark them initialized
+      // without importing stale files; also remember an intentionally empty seed.
+      await con.run("INSERT INTO garage_settings (key, value) VALUES ('seed_complete', 'true')")
+      await con.run('COMMIT')
+    } catch (error) {
+      await con.run('ROLLBACK')
+      throw error
     }
-
-    // Rematerialize from DuckDB on process startup. If a previous filesystem
-    // write was interrupted, prompt generation still sees the committed value.
-    const rows = (await con.runAndReadAll(
-      'SELECT profile_name, file_name, content FROM garage_files ORDER BY profile_name, file_name',
-    )).getRowsJson()
-    for (const row of rows) writeMirror(String(row[0]), String(row[1]), String(row[2] ?? ''))
-  }, DB_PATH)
+  }, dbPath)
 }
 
-export async function ensureGarageSeeded(): Promise<void> {
-  const currentIdentity = dbIdentity()
-  if (currentIdentity && seededDbIdentity === currentIdentity) return
-  if (!seedPromise) {
-    seedPromise = seedOrMaterialize().then(() => {
-      seededDbIdentity = dbIdentity()
+export async function ensureGarageSeeded(dbPath = DB_PATH): Promise<void> {
+  const currentIdentity = dbIdentity(dbPath)
+  if (currentIdentity && seededDbIdentities.get(dbPath) === currentIdentity) return
+  let current = seedPromises.get(dbPath)
+  if (!current) {
+    current = seedGarage(dbPath).then(() => {
+      const identity = dbIdentity(dbPath)
+      if (identity) seededDbIdentities.set(dbPath, identity)
     })
+    seedPromises.set(dbPath, current)
   }
-  const current = seedPromise
   try {
     await current
   } finally {
-    // loadAll intentionally replaces the DuckDB file. Its new identity will
-    // cause the next Garage call to seed again from the committed mirrors.
-    if (seedPromise === current) seedPromise = null
+    if (seedPromises.get(dbPath) === current) seedPromises.delete(dbPath)
   }
 }
 
-export async function listGarageProfiles(): Promise<CarProfile[]> {
-  await ensureGarageSeeded()
+export async function listGarageProfiles(dbPath = DB_PATH): Promise<CarProfile[]> {
+  await ensureGarageSeeded(dbPath)
   return withDb(async con => {
     const rows = (await con.runAndReadAll('SELECT name FROM garage_profiles ORDER BY lower(name)')).getRowsJson()
     return rows.map(row => profileShape(String(row[0])))
-  })
+  }, dbPath)
 }
 
 export async function listGarageFiles(profileName: string): Promise<Array<{ name: string; path: string }>> {
@@ -169,7 +173,6 @@ export async function writeGarageFile(profileName: string, fileNameOrPath: strin
       [name, fileName, content] as any,
     )
   })
-  writeMirror(name, fileName, content)
   return path.join(REPO_ROOT, name, fileName)
 }
 
@@ -181,8 +184,6 @@ export async function deleteGarageFile(profileName: string, fileName: string): P
   await withDb(async con => {
     await con.run('DELETE FROM garage_files WHERE profile_name = ? AND file_name = ?', [name, file] as any)
   })
-  const mirror = path.join(REPO_ROOT, name, file)
-  if (fs.existsSync(mirror)) fs.rmSync(mirror)
 }
 
 export async function ensureGarageProfile(nameValue: string, vehicleGuid?: string): Promise<CarProfile> {
@@ -210,21 +211,21 @@ export async function setGarageVehicleProfile(vehicleGuid: string, profileName: 
       await con.run('DELETE FROM garage_vehicle_profiles WHERE vehicle_guid = ?', [vehicleGuid] as any)
     }
   })
-  mirrorVehicleProfile(vehicleGuid, profileName)
 }
 
 export async function resolveGarageVehicleProfile(
   vehicleGuid: string | null,
   make: string | null,
+  dbPath = DB_PATH,
 ): Promise<{ profile: string | null; explicit: boolean }> {
-  const profiles = await listGarageProfiles()
+  const profiles = await listGarageProfiles(dbPath)
   if (vehicleGuid) {
     const explicit = await withDb(async con => (
       await con.runAndReadAll(
         'SELECT profile_name FROM garage_vehicle_profiles WHERE vehicle_guid = ?',
         [vehicleGuid] as any,
       )
-    ).getRowsJson())
+    ).getRowsJson(), dbPath)
     if (explicit.length) return { profile: String(explicit[0][0]), explicit: true }
   }
   if (make) {
@@ -238,11 +239,11 @@ export async function resolveGarageVehicleProfile(
   return { profile: null, explicit: false }
 }
 
-export async function getGarageActiveProfile(): Promise<string | null> {
-  const profiles = await listGarageProfiles()
+export async function getGarageActiveProfile(dbPath = DB_PATH): Promise<string | null> {
+  const profiles = await listGarageProfiles(dbPath)
   const rows = await withDb(async con => (
     await con.runAndReadAll("SELECT value FROM garage_settings WHERE key = 'active_profile'")
-  ).getRowsJson())
+  ).getRowsJson(), dbPath)
   const selected = rows.length ? String(rows[0][0]) : null
   return selected && profiles.some(profile => profile.name === selected) ? selected : (profiles[0]?.name ?? null)
 }
@@ -257,5 +258,13 @@ export async function setGarageActiveProfile(profileName: string): Promise<void>
       [name] as any,
     )
   })
-  mirrorActiveProfile(name)
+}
+
+export async function resolveGarageProfile(name?: string | null, dbPath = DB_PATH): Promise<CarProfile> {
+  const profiles = await listGarageProfiles(dbPath)
+  const selected = name ?? await getGarageActiveProfile(dbPath)
+  const profile = profiles.find(item => item.name === selected)
+    ?? profiles.find(item => item.name.toLowerCase() === selected?.toLowerCase())
+  if (profile) return profile
+  throw new Error(selected ? `no Garage profile '${selected}'` : 'no Garage profile found')
 }
