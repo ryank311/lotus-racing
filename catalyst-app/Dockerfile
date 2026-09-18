@@ -7,6 +7,7 @@ COPY catalyst-app/package.json catalyst-app/package-lock.json ./
 RUN npm ci
 COPY catalyst-app/tsconfig.json catalyst-app/tsconfig.main.json catalyst-app/vite.config.ts ./
 COPY catalyst-app/src ./src
+COPY catalyst-app/scripts ./scripts
 RUN npm run build && npm prune --omit=dev --ignore-scripts
 
 FROM node:22-bookworm-slim AS runtime

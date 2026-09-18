@@ -13,21 +13,20 @@
     "dev:electron:inspect": "wait-on http://localhost:5173 && tsc -p tsconfig.main.json && cross-env NODE_ENV=development electron . --remote-debugging-port=9224",
     "server": "npm run build && npm run server:start --",
     "server:start": "node dist-main/main/headless.js",
-    "build": "tsc -p tsconfig.main.json && vite build",
+    "build": "npm run build:main && npm run build:renderer",
     "package": "npm run build && electron-builder",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test:server": "tsc -p tsconfig.main.json && node --test tests/*.test.cjs",
     "fetch": "tsx src/garmin/cli/fetch.ts",
     "load": "tsx src/garmin/cli/load.ts",
     "brief": "tsx src/garmin/cli/brief.ts",
-    "corners": "tsx src/garmin/cli/corners.ts"
+    "corners": "tsx src/garmin/cli/corners.ts",
+    "build:main": "node scripts/clean-main.mjs && tsc -p tsconfig.main.json",
+    "build:renderer": "vite build && node scripts/compress-renderer.mjs"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.2.0-alpha.14",
-    "@types/plotly.js": "^3.0.10",
-    "open": "^10.1.0",
-    "openai": "^6.49.0",
-    "plotly.js-dist-min": "^3.5.1"
+    "openai": "^6.49.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
@@ -38,7 +37,6 @@
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "framer-motion": "^11.13.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsx": "^4.19.2",

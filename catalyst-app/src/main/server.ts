@@ -6,6 +6,7 @@ import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
+import { serveStaticAsset } from './staticAssets.js'
 
 export interface CatalystServerOptions {
   host?: string
@@ -76,20 +77,6 @@ async function readJson(req: IncomingMessage): Promise<any> {
   }
   if (!chunks.length) return {}
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new Error('Invalid JSON body') }
-}
-
-function mimeType(filePath: string): string {
-  switch (path.extname(filePath).toLowerCase()) {
-    case '.html': return 'text/html; charset=utf-8'
-    case '.js': return 'text/javascript; charset=utf-8'
-    case '.css': return 'text/css; charset=utf-8'
-    case '.json': return 'application/json; charset=utf-8'
-    case '.svg': return 'image/svg+xml'
-    case '.png': return 'image/png'
-    case '.ico': return 'image/x-icon'
-    case '.woff2': return 'font/woff2'
-    default: return 'application/octet-stream'
-  }
 }
 
 class UserBackend {
@@ -361,15 +348,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
 
       if (req.method !== 'GET' && req.method !== 'HEAD') { json(res, 405, { error: 'Method not allowed' }); return }
       if (staticDir && fs.existsSync(path.join(staticDir, 'index.html'))) {
-        const decoded = decodeURIComponent(url.pathname)
-        const relative = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '')
-        let filePath = path.resolve(staticDir, relative)
-        if (!filePath.startsWith(staticDir + path.sep) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-          filePath = path.join(staticDir, 'index.html')
-        }
-        res.writeHead(200, { 'Content-Type': mimeType(filePath), 'Cache-Control': relative === 'index.html' ? 'no-cache' : 'public, max-age=3600' })
-        if (req.method === 'HEAD') res.end()
-        else fs.createReadStream(filePath).on('error', error => res.destroy(error)).pipe(res)
+        serveStaticAsset(req, res, staticDir, url.pathname)
         return
       }
       if (options.devRendererUrl) {

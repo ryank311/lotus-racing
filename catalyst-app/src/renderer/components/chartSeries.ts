@@ -3,7 +3,7 @@
 // hot-reload the chart components cleanly — Fast Refresh forbids modules that
 // export both components and non-component values.
 
-import { PALETTE, LAP_PALETTE } from './PlotlyChart'
+import { PALETTE, LAP_PALETTE } from './chartTheme'
 import type { LineSeries } from './Charts'
 import type { AnalysisData } from '../../garmin/analysisData'
 

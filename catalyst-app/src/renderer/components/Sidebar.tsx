@@ -41,12 +41,6 @@ const AnalysisIcon = () => (
     <path d="M5 17V11" /><path d="M10 17V8" /><path d="M15 17V13" /><path d="M20 17V5" />
   </svg>
 )
-const ResultsIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
-    <path d="M4 4H20V20H4Z" />
-    <path d="M8 9H16" /><path d="M8 13H16" /><path d="M8 17H13" />
-  </svg>
-)
 const TracksIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
     <path d="M5 5C5 12 19 12 19 19" />

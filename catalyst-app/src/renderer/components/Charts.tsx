@@ -2,7 +2,7 @@
 // Canvas rendering is ~10× faster than Plotly's SVG for multi-lap line data.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { PALETTE, LAP_PALETTE } from './PlotlyChart'
+import { PALETTE, LAP_PALETTE } from './chartTheme'
 import type { AnalysisData, GGData, HeatmapData } from '../../garmin/analysisData'
 import type { TrackCorner, TrackSegment } from '../../garmin/trackYaml'
 

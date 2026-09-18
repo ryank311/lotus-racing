@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisData, RacingLineLap, TrackGeometryPayload, CoachLinePoint } from '../../garmin/analysisData'
 import type { CoachAnnotation } from '../../shared/types'
 import { useUnits } from '../units'
-import { LAP_PALETTE } from './PlotlyChart'
+import { LAP_PALETTE } from './chartTheme'
 
 // Structural subset of AnalysisData that this component actually needs. Both
 // the Analysis page (passes its full AnalysisData) and the Tracks editor

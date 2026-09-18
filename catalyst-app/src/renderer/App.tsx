@@ -1,13 +1,7 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback, useRef } from 'react'
 import { Sidebar, NavKey } from './components/Sidebar'
 import { Home } from './pages/Home'
-import { Sessions } from './pages/Sessions'
-import { AICoach } from './pages/AICoach'
-import { Garage } from './pages/Garage'
-import { Tracks } from './pages/Tracks'
-import { Analysis } from './pages/Analysis'
-import { Account } from './pages/Account'
-import { Logs, type LogEntry } from './pages/Logs'
+import type { LogEntry } from './pages/Logs'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Modal } from './components/Modal'
 import { LoginModal } from './components/LoginModal'
@@ -16,6 +10,18 @@ import { SignedOutBanner } from './components/SignedOutBanner'
 import { api, isRemote } from './api'
 import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid, upsertAccount } from './accounts'
 import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession, SyncOptions } from '../shared/types'
+
+const Sessions = lazy(() => import('./pages/Sessions').then(module => ({ default: module.Sessions })))
+const AICoach = lazy(() => import('./pages/AICoach').then(module => ({ default: module.AICoach })))
+const Garage = lazy(() => import('./pages/Garage').then(module => ({ default: module.Garage })))
+const Tracks = lazy(() => import('./pages/Tracks').then(module => ({ default: module.Tracks })))
+const Analysis = lazy(() => import('./pages/Analysis').then(module => ({ default: module.Analysis })))
+const Account = lazy(() => import('./pages/Account').then(module => ({ default: module.Account })))
+const Logs = lazy(() => import('./pages/Logs').then(module => ({ default: module.Logs })))
+
+function PageLoading() {
+  return <div className="page-body" role="status" aria-live="polite">Loading page…</div>
+}
 
 function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () => void }) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -274,66 +280,68 @@ export function App() {
       <div className="main-pane">
         {!signedIn && hasData && <SignedOutBanner onSignIn={openLogin} />}
         <ErrorBoundary label={`${page} page`} resetKey={page}>
-          {page === 'home' && (
-            <Home
-              auth={auth} stats={stats} busy={busy}
-              signedIn={signedIn}
-              onSync={startSync}
-              onRequestSignIn={openLogin}
-              onSessions={() => setPage('sessions')}
-            />
-          )}
-          {page === 'sessions' && (
-            canView ? (
-              <Sessions
-                refreshTick={refreshTick}
-                selected={selected}
-                setSelected={setSelected}
-                onAnalyze={openAnalysis}
-                activeAccount={accounts.activeLabel}
-                onEnsureSessions={ensureSessions}
+          <Suspense fallback={<PageLoading />}>
+            {page === 'home' && (
+              <Home
+                auth={auth} stats={stats} busy={busy}
+                signedIn={signedIn}
+                onSync={startSync}
+                onRequestSignIn={openLogin}
+                onSessions={() => setPage('sessions')}
               />
-            ) : <SignedOutGate feature="Sessions" onSignIn={openLogin} />
-          )}
-          {page === 'coach' && (
-            canView ? (
-              <AICoach
-                refreshTick={refreshTick}
-                selected={selected}
-                busy={busy}
-                setBusy={setBusy}
-                onLoadSession={loadCoachSession}
-              />
-            ) : <SignedOutGate feature="AI Coach" onSignIn={openLogin} />
-          )}
-          {page === 'garage' && (canView ? <Garage /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
-          {page === 'tracks' && <Tracks />}
-          {page === 'analysis' && (
-            canView ? (
-              <Analysis
-                selected={selected}
-                setSelected={setSelected}
-                onBack={() => setPage('sessions')}
-                activeCoachSession={activeCoachSession}
-                onClearCoachSession={() => setActiveCoachSession(null)}
-                busy={busy}
-                setBusy={setBusy}
-              />
-            ) : <SignedOutGate feature="Analysis" onSignIn={openLogin} />
-          )}
-          {page === 'account' && (
-            signedIn
-              ? <Account email={activeLabel} auth={auth} onSignOut={() => setSignOutOpen(true)} />
-              : <SignedOutGate feature="Account" onSignIn={openLogin} />
-          )}
-        </ErrorBoundary>
+            )}
+            {page === 'sessions' && (
+              canView ? (
+                <Sessions
+                  refreshTick={refreshTick}
+                  selected={selected}
+                  setSelected={setSelected}
+                  onAnalyze={openAnalysis}
+                  activeAccount={accounts.activeLabel}
+                  onEnsureSessions={ensureSessions}
+                />
+              ) : <SignedOutGate feature="Sessions" onSignIn={openLogin} />
+            )}
+            {page === 'coach' && (
+              canView ? (
+                <AICoach
+                  refreshTick={refreshTick}
+                  selected={selected}
+                  busy={busy}
+                  setBusy={setBusy}
+                  onLoadSession={loadCoachSession}
+                />
+              ) : <SignedOutGate feature="AI Coach" onSignIn={openLogin} />
+            )}
+            {page === 'garage' && (canView ? <Garage /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
+            {page === 'tracks' && <Tracks />}
+            {page === 'analysis' && (
+              canView ? (
+                <Analysis
+                  selected={selected}
+                  setSelected={setSelected}
+                  onBack={() => setPage('sessions')}
+                  activeCoachSession={activeCoachSession}
+                  onClearCoachSession={() => setActiveCoachSession(null)}
+                  busy={busy}
+                  setBusy={setBusy}
+                />
+              ) : <SignedOutGate feature="Analysis" onSignIn={openLogin} />
+            )}
+            {page === 'account' && (
+              signedIn
+                ? <Account email={activeLabel} auth={auth} onSignOut={() => setSignOutOpen(true)} />
+                : <SignedOutGate feature="Account" onSignIn={openLogin} />
+            )}
 
-        {/* Logs page — full-height, outside page-body so its own toolbar stays fixed */}
-        {page === 'logs' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <Logs entries={logEntries} onLoad={startLoad} busy={busy} />
-          </div>
-        )}
+            {/* Logs page — full-height, outside page-body so its own toolbar stays fixed */}
+            {page === 'logs' && (
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <Logs entries={logEntries} onLoad={startLoad} busy={busy} />
+              </div>
+            )}
+          </Suspense>
+        </ErrorBoundary>
 
         {/* Global sign-in modal */}
         {loginOpen && (

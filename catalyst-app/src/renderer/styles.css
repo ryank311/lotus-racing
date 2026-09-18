@@ -1700,7 +1700,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 
 /* =========================================================================
- * BRIEFS / MARKDOWN VIEWER
+ * SHARED LIST / VIEWER LAYOUT
  * ========================================================================= */
 
 .split {
@@ -1770,44 +1770,6 @@ input, textarea, select { font-family: inherit; color: inherit; }
 }
 
 .viewer-toolbar .spacer { flex: 1; }
-
-.viewer-body {
-  flex: 1;
-  overflow: auto;
-  padding: 22px 28px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text-dim);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.viewer-body .md-h1 {
-  font-family: var(--font-display);
-  font-size: 28px;
-  color: var(--text);
-  margin: 18px 0 8px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.viewer-body .md-h2 {
-  font-family: var(--font-display);
-  font-size: 20px;
-  color: var(--signal);
-  margin: 22px 0 6px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.viewer-body .md-h3 {
-  font-family: var(--font-body);
-  font-weight: 700;
-  font-size: 14px;
-  color: var(--cyan);
-  margin: 18px 0 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
 
 /* =========================================================================
  * COACH TOAST

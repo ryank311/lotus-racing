@@ -1,0 +1,24 @@
+# Use together with compose.yaml, after configuring Cloudflare Access.
+# Set the tunnel's published application service to http://catalyst:3210.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: [tunnel, --no-autoupdate, run]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set the tunnel token in .env.cloudflare}
+    labels:
+      io.catalyst.public-hostname: ${CATALYST_PUBLIC_HOSTNAME:?Set the hostname in .env.cloudflare}
+    depends_on:
+      catalyst:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -42,6 +42,7 @@ Thumbs.db
 .env.*.local
 /deploy/data/
 /deploy/backups/
+/deploy/.env.cloudflare
 
 # Test / coverage
 coverage/
