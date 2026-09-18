@@ -4,7 +4,8 @@ import { NavLink, useNavigation, useOverlay, useRoute } from './navigation'
 import { paths, reportAnalysisUrl, routeUrl } from './routes'
 import { Sidebar, NavKey } from './components/Sidebar'
 import { Home } from './pages/Home'
-import type { LogEntry } from './pages/Logs'
+import { createActivityStore, type LogEntry } from './activityStore'
+import { StatusBar } from './components/StatusBar'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Modal } from './components/Modal'
 import { LoginModal } from './components/LoginModal'
@@ -12,7 +13,7 @@ import { SignedOutGate } from './components/SignedOutGate'
 import { SignedOutBanner } from './components/SignedOutBanner'
 import { api, isRemote } from './api'
 import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid, upsertAccount } from './accounts'
-import type { AuthState, SyncStats, WorkerEvent, WorkerProgress, CoachingSession, SyncOptions } from '../shared/types'
+import type { AuthState, SyncStats, WorkerEvent, CoachingSession, SyncOptions } from '../shared/types'
 
 const Sessions = lazy(() => import('./pages/Sessions').then(module => ({ default: module.Sessions })))
 const AICoach = lazy(() => import('./pages/AICoach').then(module => ({ default: module.AICoach })))
@@ -47,6 +48,7 @@ function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () =
 }
 
 export function App() {
+  const [{ addLogEntry, logStore, statusStore }] = useState(createActivityStore)
   const { page, params, location } = useRoute()
   const { go, query, lastSessions } = useNavigation()
   const navigate = useNavigate()
@@ -57,8 +59,6 @@ export function App() {
   const setPage = (key: NavKey) => go(destination(key))
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [stats, setStats] = useState<SyncStats | null>(null)
-  const [logLine, setLogLine] = useState('')
-  const [progress, setProgress] = useState<WorkerProgress | null>(null)
   const [busy, setBusy] = useState<'sync' | 'load' | 'coach' | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [accounts, setAccounts] = useState<AccountState>(() => isRemote
@@ -80,17 +80,6 @@ export function App() {
     }).catch(e => { if (!cancelled) setReportError(String(e)) }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
   }, [reportId, go])
-  const [logLines, setLogLines] = useState<string[]>([])
-  const [logsExpanded, setLogsExpanded] = useState(false)
-  const [logEntries, setLogEntries] = useState<LogEntry[]>([])
-  const logIdRef = useRef(0)
-
-  const addLogEntry = useCallback((level: LogEntry['level'], source: LogEntry['source'], message: string) => {
-    setLogEntries(prev => {
-      const entry: LogEntry = { id: logIdRef.current++, ts: Date.now(), level, source, message }
-      return prev.length > 5000 ? [...prev.slice(-4000), entry] : [...prev, entry]
-    })
-  }, [])
   const [coachToast, setCoachToast] = useState<{ sessionId: string } | null>(null)
 
 
@@ -137,8 +126,8 @@ export function App() {
     refresh()
     const unsub = api.onWorker((evt: WorkerEvent) => {
       if (evt.type === 'log' && evt.payload) {
-        setLogLine(evt.payload)
-        setLogLines(prev => [...prev.slice(-499), evt.payload!])
+        statusStore.setLogLine(evt.payload)
+        statusStore.appendLine(evt.payload)
         addLogEntry(
           evt.payload.startsWith('[error]') || evt.payload.startsWith('✗') ? 'error'
             : evt.payload.startsWith('[diag]') || evt.payload.startsWith('[harness]') ? 'info'
@@ -148,16 +137,15 @@ export function App() {
       }
       if (evt.type === 'progress' && evt.progress) {
         setBusy(evt.kind === 'sync' ? 'sync' : evt.kind === 'coach' ? 'coach' : 'load')
-        setProgress(evt.progress)
+        statusStore.setProgress(evt.progress)
       }
       if (evt.type === 'catalog') { void refresh(); setRefreshTick(t => t + 1) }
       if (evt.type === 'done') {
         setBusy(null)
-        setLogsExpanded(false)
         const doneMsg = `${evt.kind} complete${evt.payload ? ` · ${evt.payload.slice(0, 40)}` : ''}`
-        setLogLine(doneMsg)
-        setLogLines(prev => [...prev.slice(-499), `✓ ${doneMsg}`])
-        setProgress(null)
+        statusStore.setLogLine(doneMsg)
+        statusStore.appendLine(`✓ ${doneMsg}`)
+        statusStore.setProgress(null)
         if (evt.kind === 'coach' && evt.payload) {
           setCoachToast({ sessionId: evt.payload })
         } else {
@@ -167,23 +155,22 @@ export function App() {
       }
       if (evt.type === 'error') {
         setBusy(null)
-        setLogsExpanded(false)
-        setProgress(null)
+        statusStore.setProgress(null)
         const errMsg = `error: ${evt.payload}`
-        setLogLine(errMsg)
-        setLogLines(prev => [...prev.slice(-499), `✗ ${errMsg}`])
+        statusStore.setLogLine(errMsg)
+        statusStore.appendLine(`✗ ${errMsg}`)
         if (evt.kind === 'sync') void refresh()
         setRefreshTick(t => t + 1)
       }
     })
     return () => { unsub() }
-  }, [refresh])
+  }, [refresh, addLogEntry, statusStore])
 
   const startSync = async (mode: SyncOptions['mode'] = 'recent') => {
     if (busy) return
     setBusy('sync')
-    setLogLine('starting sync...')
-    setProgress({ current: 0, total: 0, label: 'Fetching session list…' })
+    statusStore.setLogLine('starting sync...')
+    statusStore.setProgress({ current: 0, total: 0, label: 'Fetching session list…' })
     // Read fresh from storage so an auto-sync right after sign-in picks up the
     // token that was just persisted (React state may not have flushed yet).
     const active = isRemote ? getActiveAccount(accounts) : getActiveAccount()
@@ -194,7 +181,7 @@ export function App() {
         accountLabel: active?.label,
       })
     } catch (e: any) {
-      setBusy(null); setLogLine(`error: ${e.message ?? e}`)
+      setBusy(null); statusStore.setLogLine(`error: ${e.message ?? e}`)
     }
   }
 
@@ -209,7 +196,7 @@ export function App() {
       await refresh()
       setRefreshTick(t => t + 1)
     }
-  }, [refresh])
+  }, [refresh, addLogEntry, statusStore])
 
   const onAccountsChange = useCallback((next: AccountState) => {
     setAccounts(next)
@@ -256,10 +243,10 @@ export function App() {
   const startLoad = async () => {
     if (busy) return
     setBusy('load')
-    setLogLine('loading database...')
-    setProgress({ current: 0, total: 0, label: 'Scanning sessions…' })
+    statusStore.setLogLine('loading database...')
+    statusStore.setProgress({ current: 0, total: 0, label: 'Scanning sessions…' })
     try { await api.startLoad() } catch (e: any) {
-      setBusy(null); setLogLine(`error: ${e.message ?? e}`)
+      setBusy(null); statusStore.setLogLine(`error: ${e.message ?? e}`)
     }
   }
 
@@ -348,7 +335,7 @@ export function App() {
             {/* Logs page — full-height, outside page-body so its own toolbar stays fixed */}
             {page === 'logs' && (
               <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                <Logs entries={logEntries} onLoad={startLoad} busy={busy} />
+                <Logs store={logStore} onLoad={startLoad} busy={busy} />
               </div>
             )}
             {page === 'not-found' && <><header className="page-header"><h1 className="page-title">Page not found</h1></header><div className="page-body"><NavLink to="/overview">Overview</NavLink> · <NavLink to="/sessions">Sessions</NavLink></div></>}
@@ -389,78 +376,7 @@ export function App() {
           />
         )}
 
-        {/* Status bar — overlays content, slides up when busy */}
-        <div
-          className={`status-bar ${busy ? 'busy' : ''}`}
-          style={{ cursor: 'pointer', flexDirection: 'column', alignItems: 'stretch', gap: 0, padding: 0 }}
-          onClick={() => setLogsExpanded(e => !e)}
-        >
-          {/* Collapsed row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '0 16px', minHeight: 40 }}>
-            {busy && <div className="spinner" />}
-            {progress && progress.total > 0 ? (
-              <div className="sync-progress" style={{ flex: 1 }}>
-                <div className="sync-progress-row">
-                  <span className="sync-progress-counter">{progress.current}/{progress.total}</span>
-                  <span className="sync-progress-log">
-                    {(progress.label || logLine).replace(/^\[\d+\/\d+\]\s*/, '')}
-                  </span>
-                  {progress.fileName && (
-                    <span className="sync-progress-file">→ {progress.fileName}</span>
-                  )}
-                  <span className="sync-progress-pct">
-                    {Math.round((progress.current / progress.total) * 100)}%
-                  </span>
-                </div>
-                <div className="sync-progress-track">
-                  <div className="sync-progress-fill" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
-                </div>
-              </div>
-            ) : (
-              <div className="log" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {logLine || 'working…'}
-              </div>
-            )}
-            <div className="tag" style={{ flexShrink: 0 }}>
-              {signedIn ? `TOKEN · ${auth?.tokenDaysRemaining ?? 0}D` : 'NO TOKEN'}
-            </div>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-mute)', flexShrink: 0 }}>
-              {logsExpanded ? '▼ logs' : '▲ logs'}
-            </span>
-          </div>
-
-          {/* Expanded log panel */}
-          {logsExpanded && (
-            <div
-              onClick={e => e.stopPropagation()}
-              style={{
-                borderTop: '1px solid var(--border)',
-                background: 'var(--bg)',
-                maxHeight: 260,
-                overflowY: 'auto',
-                padding: '8px 16px',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                color: 'var(--text-mute)',
-                lineHeight: 1.5,
-              }}
-            >
-              {logLines.length === 0
-                ? <span style={{ opacity: 0.4 }}>No log output yet.</span>
-                : logLines.map((l, i) => (
-                    <div key={i} style={{
-                      whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                      color: l.startsWith('✗') ? 'var(--red)'
-                           : l.startsWith('✓') ? 'var(--green)'
-                           : l.startsWith('[stderr]') ? 'var(--amber)'
-                           : l.startsWith('[harness]') || l.startsWith('[diag]') || l.startsWith('[fallback]') ? 'var(--cyan)'
-                           : 'var(--text-mute)',
-                    }}>{l}</div>
-                  ))
-              }
-            </div>
-          )}
-        </div>
+        <StatusBar store={statusStore} busy={busy} signedIn={signedIn} tokenDaysRemaining={auth?.tokenDaysRemaining ?? 0} />
       </div>
     </div>
   )

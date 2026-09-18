@@ -1,13 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useDebouncedQuery, useNavigation, useRoute } from '../navigation'
 
-export interface LogEntry {
-  id: number
-  ts: number
-  level: 'log' | 'warn' | 'error' | 'info'
-  source: 'main' | 'worker'
-  message: string
-}
+import type { ActivityStore, LogEntry } from '../activityStore'
 
 function levelColor(level: LogEntry['level']): string {
   switch (level) {
@@ -32,12 +26,13 @@ function fmtTime(ts: number): string {
 }
 
 interface LogsProps {
-  entries: LogEntry[]
+  store: ActivityStore['logStore']
   onLoad?: () => void
   busy?: 'sync' | 'load' | 'coach' | null
 }
 
-export function Logs({ entries, onLoad, busy }: LogsProps) {
+export function Logs({ store, onLoad, busy }: LogsProps) {
+  const entries = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const { params } = useRoute()
   const { query } = useNavigation()
   const [filter, setFilter] = useDebouncedQuery('q', params.get('q') ?? '')
@@ -50,7 +45,7 @@ export function Logs({ entries, onLoad, busy }: LogsProps) {
     if (autoScroll && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
-  }, [entries.length, autoScroll])
+  }, [entries, autoScroll])
 
   const q = filter.trim().toLowerCase()
   const visible = entries.filter(e =>
@@ -75,7 +70,7 @@ export function Logs({ entries, onLoad, busy }: LogsProps) {
     const el = listRef.current
     if (!el) return
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-    setAutoScroll(atBottom)
+    if (atBottom !== autoScroll) setAutoScroll(atBottom)
   }
 
   return (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { ServerUserSwitcher } from './ServerGate'
 import { NavLink, useOverlay } from '../navigation'
 import { paths } from '../routes'
@@ -89,7 +89,27 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
   onSignIn: () => void
 }) {
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 800px)').matches)
-  const [open, setOpen] = useOverlay('navigation')
+  const [historyOpen, setHistoryOpen] = useOverlay('navigation')
+  const [open, setVisualOpen] = useState(historyOpen)
+  const [pending, startTransition] = useTransition()
+  const requestedOpen = useRef<boolean | null>(null)
+  const setOpen = (next: boolean) => {
+    requestedOpen.current = next
+    // Paint the drawer immediately; history may re-render a large analysis page.
+    setVisualOpen(next)
+    startTransition(() => setHistoryOpen(next))
+  }
+  useEffect(() => {
+    if (pending) return
+    const requested = requestedOpen.current
+    // A second tap can arrive before the first history update commits.
+    if (requested !== null && historyOpen !== requested) {
+      startTransition(() => setHistoryOpen(requested))
+      return
+    }
+    requestedOpen.current = null
+    setVisualOpen(historyOpen)
+  }, [historyOpen, pending, setHistoryOpen])
   const drawerRef = useRef<HTMLElement>(null)
   const toggleRef = useRef<HTMLButtonElement>(null)
   const navigate = (key: NavKey) => { onChange(key) }
@@ -134,12 +154,6 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
     return () => window.removeEventListener('keydown', handler)
   }, [onChange])
 
-  const [time, setTime] = useState(new Date())
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000)
-    return () => clearInterval(t)
-  }, [])
-
   return (
     <>
     <header className="mobile-topbar">
@@ -149,7 +163,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
       <span className="brand-title">Catalyst<span className="mobile-brand-slash"> / </span><span className="mobile-page-name">{NAV.find(n => n.key === active)?.label ?? (active === 'logs' ? 'Logs' : 'Account')}</span></span>
       <span className={`led ${connected ? '' : 'dim'}`} title={connected ? 'Connected' : 'Offline'} />
     </header>
-    {mobile && open && <div className="mobile-nav-backdrop" onClick={() => setOpen(false)} />}
+    {mobile && <div className={`mobile-nav-backdrop ${open ? 'is-open' : ''}`} aria-hidden="true" onClick={() => setOpen(false)} />}
     <aside ref={drawerRef} id="workspace-navigation" className={`sidebar ${open ? 'is-open' : ''}`} role={mobile && open ? 'dialog' : undefined} aria-modal={mobile && open ? true : undefined} aria-label="Workspace navigation">
       <button className="mobile-nav-close" aria-label="Close navigation" onClick={() => setOpen(false)}>×</button>
       <div className="brand">
@@ -208,7 +222,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
           <span>{connected ? 'LINK' : 'OFFLINE'}</span>
         </div>
         <div className="row-center" style={{ gap: 8 }}>
-          <span>{time.toTimeString().slice(0, 5)}</span>
+          <SidebarClock />
           <NavLink to="/logs"
             className={`sidebar-log-btn ${active === 'logs' ? 'active' : ''}`}
             title="Debug logs"
@@ -220,4 +234,21 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
     </aside>
     </>
   )
+}
+
+function SidebarClock() {
+  const [time, setTime] = useState(() => new Date().toTimeString().slice(0, 5))
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>
+    const update = () => {
+      clearTimeout(timer)
+      if (document.hidden) return
+      setTime(new Date().toTimeString().slice(0, 5))
+      timer = setTimeout(update, 60_000 - Date.now() % 60_000)
+    }
+    update()
+    document.addEventListener('visibilitychange', update)
+    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', update) }
+  }, [])
+  return <span>{time}</span>
 }

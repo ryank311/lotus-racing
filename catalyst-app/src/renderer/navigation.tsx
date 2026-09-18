@@ -1,6 +1,7 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type AnchorHTMLAttributes, type ReactNode } from 'react'
 import { Link, useBlocker, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { matchRoute, MAX_ROUTE_LENGTH, normalizeRoute, safeReturnTo } from './routes'
+import { clearScrollSnapshots, restoreScrollPosition } from './scrollRestoration'
 import { NavigationContext as Context, type NavigationGuard as Guard, type NavigationOptions as Options } from './navigationContext'
 
 const bootstrap = new URLSearchParams(window.location.search)
@@ -58,8 +59,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     document.title = `${route.page === 'home' ? 'Overview' : route.page === 'not-found' ? 'Page not found' : route.page[0].toUpperCase() + route.page.slice(1)}${route.id ? ' · ' + route.id : ''} · Catalyst Coach`
   }, [location.pathname, location.search, go])
   const clearWorkspace = useCallback(() => {
-    snapshots.clear()
-    try { sessionStorage.removeItem('catalyst:last-sessions'); sessionStorage.removeItem('catalyst:scroll') } catch { /* optional */ }
+    clearScrollSnapshots()
+    try { sessionStorage.removeItem('catalyst:last-sessions') } catch { /* optional */ }
   }, [])
   const lastSessions = useCallback(() => {
     try { const url = sessionStorage.getItem('catalyst:last-sessions'); return url?.startsWith('/sessions?') || url === '/sessions' ? safeReturnTo(url) : '/sessions' } catch { return '/sessions' }
@@ -155,53 +156,9 @@ function useRoutedOverlay(name: string): [boolean, (open: boolean | ((old: boole
   return [open, set]
 }
 
-type Snapshot = { positions: Record<string, [number, number]>; focus?: string }
-const snapshots = new Map<string, Snapshot>()
-const paneSelector = '.page-body, .analysis-charts, .analysis-map, .viewer-pane, .garage-detail, .garage-editor, .logs-list, .coach-session-viewer, .tracks-corner-list'
-function panes() { return Array.from(document.querySelectorAll<HTMLElement>(paneSelector)) }
 function ScrollRestoration() {
   const location = useLocation(), action = useNavigationType()
   const key = location.state?.scrollKey ?? location.key
-  useLayoutEffect(() => {
-    let snapshot = snapshots.get(key)
-    if (!snapshot) try { snapshot = JSON.parse(sessionStorage.getItem('catalyst:scroll') ?? '{}')[key] } catch { /* optional */ }
-    let restoring = action === 'POP' && !!snapshot
-    const capture = () => {
-      if (restoring) return
-      const positions: Snapshot['positions'] = {}
-      panes().forEach((el, i) => { positions[i] = [el.scrollLeft, el.scrollTop] })
-      const active = document.activeElement
-      snapshots.set(key, { positions, focus: active?.id ? '#' + CSS.escape(active.id) : active?.getAttribute('aria-label') ? `[aria-label=${JSON.stringify(active.getAttribute('aria-label'))}]` : undefined })
-      try { sessionStorage.setItem('catalyst:scroll', JSON.stringify(Object.fromEntries([...snapshots].slice(-50)))) } catch { /* optional */ }
-    }
-    let focused = false
-    const resetPanes = new WeakSet<HTMLElement>()
-    const restore = () => {
-      const elements = panes()
-      if (!elements.length || document.querySelector('[data-route-loading]')) return
-      if (restoring && snapshot) {
-        elements.forEach((el, i) => { const pos = snapshot!.positions[i]; if (pos) { el.scrollLeft = pos[0]; el.scrollTop = pos[1] } })
-        if (snapshot.focus) document.querySelector<HTMLElement>(snapshot.focus)?.focus({ preventScroll: true })
-      } else if (action !== 'REPLACE') {
-        elements.forEach(el => { if (!resetPanes.has(el)) { el.scrollTop = 0; el.scrollLeft = 0; resetPanes.add(el) } })
-        const title = document.querySelector<HTMLElement>('.page-title, h1')
-        if (title && !focused) { title.tabIndex = -1; title.focus({ preventScroll: true }); focused = true }
-      }
-    }
-    restore()
-    const observer = new MutationObserver(restore)
-    observer.observe(document.getElementById('root')!, { childList: true, subtree: true })
-    const timeout = setTimeout(() => { restoring = false; observer.disconnect() }, 5000)
-    const stopRestoring = () => { restoring = false; observer.disconnect() }
-    document.addEventListener('scroll', capture, true)
-    document.addEventListener('focusin', capture)
-    document.addEventListener('pointerdown', stopRestoring, { once: true })
-    document.addEventListener('wheel', stopRestoring, { once: true })
-    return () => {
-      clearTimeout(timeout); observer.disconnect()
-      document.removeEventListener('scroll', capture, true); document.removeEventListener('focusin', capture)
-      document.removeEventListener('pointerdown', stopRestoring); document.removeEventListener('wheel', stopRestoring)
-    }
-  }, [key])
+  useLayoutEffect(() => restoreScrollPosition(key, action), [key])
   return null
 }

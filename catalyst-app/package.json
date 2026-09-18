@@ -19,6 +19,7 @@
     "test:server": "tsc -p tsconfig.main.json && node --test tests/*.test.cjs",
     "test:charts": "node --import tsx --test tests/chartGestures.test.ts && node tests/chartTouch.mjs",
     "test:analysis": "node tests/analysisRecovery.mjs",
+    "test:performance": "node --import tsx --test tests/activityStore.test.ts && node tests/scrollPerformance.mjs",
     "fetch": "tsx src/garmin/cli/fetch.ts",
     "load": "tsx src/garmin/cli/load.ts",
     "brief": "tsx src/garmin/cli/brief.ts",

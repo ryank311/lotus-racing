@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
+  <body>
+    <div id="root"></div>
+    <script>
+      window.commits = 0;
+      window.storageWrites = 0;
+      window.paneScans = 0;
+      window.emitLog = () => {};
+      window.emitWorker = () => {};
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (key === 'catalyst:scroll') window.storageWrites++;
+        return setItem.call(this, key, value);
+      };
+      const queryAll = Document.prototype.querySelectorAll;
+      Document.prototype.querySelectorAll = function(selector) {
+        if (selector.includes('.page-body,')) window.paneScans++;
+        return queryAll.call(this, selector);
+      };
+      window.catalyst = {
+        getAuthState: async () => ({ tokenValid: false }),
+        getSyncStats: async () => ({ sessionCount: 0 }),
+        getUnits: async () => 'imperial',
+        getAiSettings: async () => ({ provider: 'anthropic', hasAnthropicApiKey: true }),
+        onLog: callback => { window.emitLog = callback; return () => { window.emitLog = () => {}; }; },
+        onWorker: callback => { window.emitWorker = callback; return () => { window.emitWorker = () => {}; }; },
+      };
+    </script>
+    <script type="module" src="./scroll-performance.tsx"></script>
+  </body>
+</html>
