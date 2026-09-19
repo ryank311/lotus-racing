@@ -120,8 +120,12 @@
 .review-region-stats strong { font: 16px var(--font-mono); }
 .review-region-stats small { font: 10px/1.5 var(--font-mono); }
 .review-trend { width: 100%; min-width: 0; margin-top: 14px; }
+.review-trend-scroll { width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
 .review-trend svg { width: 100%; display: block; overflow: visible; }
 .review-trend text { font: 11px var(--font-mono); fill: var(--text-dim); }
+.review-trend .review-time-break text { font-size: 10px; }
+.review-trend .review-date-range text:last-child { font-size: 10px; fill: var(--text-mute); }
+.review-time-axis-note { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; margin-top: 6px; color: var(--text-dim); font: 10px/1.6 var(--font-mono); }
 .review-trend-point { cursor: pointer; }
 .review-trend-point:focus circle:last-child, .review-trend-point:hover circle:last-child { stroke: var(--text); stroke-width: 3; }
 .review-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font: 10px/1.6 var(--font-mono); color: var(--text-dim); margin-top: 10px; }
@@ -167,8 +171,6 @@
   .review-panel > summary > span + span { display: block; margin: 6px 0 0 14px; }
   .review-filter-row { gap: 12px; }
   .review-lap-row { display: flex; flex-direction: column; }
-  .review-trend { overflow-x: auto; }
-  .review-trend svg { min-width: 430px; }
 }
 
 * { box-sizing: border-box; }

@@ -4,6 +4,8 @@ After syncing, choose **Review latest session** on Overview, **Review** on a ses
 
 The charts and controls are React components with accessible SVG charts. The generated design images are illustrative references, not runtime UI. See [design images and reproduction prompts](session-review-design/README.md).
 
+History charts use session order with evenly spaced sessions within each visit. Nearby session dates (up to three days apart) share a date-range label; longer gaps get a fixed-width break annotated with elapsed days or weeks. Months away from the track do not stretch the axis. Years remain visible, and each selectable point retains its full session timestamp. Dense histories scroll within the chart on smaller screens.
+
 ## Tracked metrics
 
 | Metric | Population / calculation | Display |

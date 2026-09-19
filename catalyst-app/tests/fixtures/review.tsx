@@ -11,11 +11,13 @@ import type { ReviewAggregate, ReviewCoachResult } from '../../src/shared/review
 import '../../src/renderer/styles.css'
 
 const regions = [{ id: 'corner:T1', name: 'T1 · Illustrative corner', kind: 'corner' as const, startM: 20, endM: 60 }]
+// Several sessions per visit, with months off track between visits.
+const sessionDates = ['2026-04-18 10:00:00', '2026-04-18 14:00:00', '2026-04-19 11:00:00', '2026-08-29 10:00:00', '2026-08-30 10:00:00', '2026-09-19 10:00:00']
 const make = (n: number): ReviewAggregate => {
   const laps = [0, 1, 2, 3].map(index => { const durationMs = 14000 - n * 500 + index * 100; return measureLap({ index, durationMs, type: 'DRIVEN', descriptor: 0,
     samples: Array.from({ length: 101 }, (_, d) => ({ distance: d, time: d * durationMs / 100, speed: 10 + Math.abs(d - 40) / 10 })) }, regions, 100) })
   return { version: 1, revision: `aggregate-${n}`, laps, map: Array.from({ length: 101 }, (_, d) => ({ dist: d, x: Math.cos(d / 100 * 2 * Math.PI) * 100, y: Math.sin(d / 100 * 2 * Math.PI) * 70 })), summary: {
-    sessionGuid: `fixture-${n}`, start: `2026-09-0${n} 10:00:00`, track: 'Illustrative Raceway', layout: 'Full', vehicle: 'Example car',
+    sessionGuid: `fixture-${n}`, start: sessionDates[n - 1], track: 'Illustrative Raceway', layout: 'Full', vehicle: 'Example car',
     account: 'fixture', vehicleGuid: 'car', configurationId: 1, cartographyId: 1, reverse: false, direction: 'clockwise', meanLineGuid: 'line', geometryRevision: 'g', sourceRevision: 's',
     conditions: { surface: 'dry', temperatureC: 20, originalTemperatureC: 20, surfaceSource: 'estimated', temperatureSource: 'recorded', weather: 'Clear', correctedAt: null },
     qualityNotes: [], ...aggregateLaps(laps, regions),

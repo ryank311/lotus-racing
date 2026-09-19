@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { segment } from '../routes'
 import type { ReviewAggregate, ReviewMetric, ReviewRegionComparison, ReviewCoachResult, ReviewLap } from '../../shared/review'
 import { msToLap } from '../api'
+import { reviewTimeline } from './reviewTimeline'
 
 export function ReviewMarkers({ current, baseline, format }: { current: number | null; baseline: number | null; format: (v: number) => string }) {
   if (current == null || baseline == null) return null
@@ -37,7 +38,7 @@ export function ReviewTrend({ points, format, title, secondaryLabel, onSelect }:
   const [width, setWidth] = useState(800)
   useEffect(() => {
     if (!container.current) return
-    const observer = new ResizeObserver(entries => setWidth(Math.max(300, entries[0].contentRect.width)))
+    const observer = new ResizeObserver(entries => setWidth(entries[0].contentRect.width))
     observer.observe(container.current)
     return () => observer.disconnect()
   }, [])
@@ -45,9 +46,8 @@ export function ReviewTrend({ points, format, title, secondaryLabel, onSelect }:
   if (!all.length) return <div ref={container}><p className="muted">No measurements available for this trend.</p></div>
   const low = Math.min(...all), high = Math.max(...all), pad = Math.max((high - low) * .15, 0.1)
   const min = low - pad, span = high - low + pad * 2
-  const times = points.map((p, i) => Date.parse(p.date.replace(' ', 'T')) || i)
-  const first = Math.min(...times), period = Math.max(...times) - first
-  const x = (i: number) => period ? 88 + (times[i] - first) / period * (width - 118) : width / 2
+  const timeline = reviewTimeline(points.map(p => p.date), width)
+  const x = (i: number) => timeline.positions[i]
   const y = (v: number) => 185 - (v - min) / span * 155
   const line = (key: 'value' | 'secondary' | 'baseline' | 'pb') => {
     let previous = false
@@ -55,18 +55,32 @@ export function ReviewTrend({ points, format, title, secondaryLabel, onSelect }:
   }
   const open = (id: string) => onSelect ? onSelect(id) : go(`/review/${segment(id)}`)
   return <div ref={container} className="review-trend">
-    <svg viewBox={`0 0 ${width} 225`} role="group" aria-label={title}>
-      {[0, .5, 1].map(f => <g key={f}><line x1="85" x2={width - 20} y1={y(min + span * f)} y2={y(min + span * f)} stroke="var(--border)" /><text x="78" y={y(min + span * f) + 4} textAnchor="end">{format(min + span * f)}</text></g>)}
-      <path d={line('baseline')} fill="none" stroke="var(--text-dim)" strokeDasharray="6 4" strokeWidth="2" />
-      <path d={line('pb')} fill="none" stroke="var(--green)" strokeDasharray="2 5" strokeWidth="2" />
-      <path d={line('secondary')} fill="none" stroke="var(--cyan)" strokeWidth="2" />
-      <path d={line('value')} fill="none" stroke="var(--signal)" strokeWidth="2.5" />
-      {points.map((p, i) => p.value == null ? null : <g key={p.id} role="link" tabIndex={0} aria-label={`${p.date}: ${format(p.value)}. Open session review`}
-        onClick={() => open(p.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(p.id) } }} className="review-trend-point">
-        <title>{p.date}: {format(p.value)}</title><circle cx={x(i)} cy={y(p.value)} r="13" fill="transparent" /><circle cx={x(i)} cy={y(p.value)} r="4" fill="var(--signal)" />
-      </g>)}
-      {points.length > 0 && <><text x="88" y="216">{points[0].date.slice(0, 10)}</text><text x={width - 30} y="216" textAnchor="end">{points.at(-1)!.date.slice(0, 10)}</text></>}
-    </svg>
+    <div className="review-trend-scroll" role="region" aria-label={`${title} session timeline`} tabIndex={timeline.width > width ? 0 : undefined}>
+      <svg viewBox={`0 0 ${timeline.width} 250`} style={{ minWidth: timeline.width }} role="group" aria-label={title}>
+        {timeline.groups.map((group, i) => <rect key={group.start} x={x(group.start) - 9} y="25" width={x(group.end) - x(group.start) + 18} height="165" fill="var(--text-dim)" opacity={i % 2 ? .045 : .025} />)}
+        {[0, .5, 1].map(f => <g key={f}><line x1="85" x2={timeline.width - 30} y1={y(min + span * f)} y2={y(min + span * f)} stroke="var(--border)" /><text x="78" y={y(min + span * f) + 4} textAnchor="end">{format(min + span * f)}</text></g>)}
+        {timeline.breaks.map(gap => <g key={gap.before} className="review-time-break">
+          <title>{gap.days === null ? 'Date unavailable' : `${gap.days} days between session dates; gap compressed`}</title>
+          <line x1={gap.x} x2={gap.x} y1="27" y2="190" stroke="var(--border-strong)" strokeDasharray="3 5" />
+          <text x={gap.x} y="17" textAnchor="middle">{gap.label}</text>
+          <path d={`M${gap.x - 6},199 l4,-8 m2,8 l4,-8`} fill="none" stroke="var(--text-dim)" />
+        </g>)}
+        <path d={line('baseline')} fill="none" stroke="var(--text-dim)" strokeDasharray="6 4" strokeWidth="2" />
+        <path d={line('pb')} fill="none" stroke="var(--green)" strokeDasharray="2 5" strokeWidth="2" />
+        <path d={line('secondary')} fill="none" stroke="var(--cyan)" strokeWidth="2" />
+        <path d={line('value')} fill="none" stroke="var(--signal)" strokeWidth="2.5" />
+        {points.map((p, i) => p.value == null ? null : <g key={p.id} role="link" tabIndex={0} aria-label={`${p.date}: ${format(p.value)}. Open session review`}
+          onClick={() => open(p.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(p.id) } }} className="review-trend-point">
+          <title>{p.date}: {format(p.value)}</title><circle cx={x(i)} cy={y(p.value)} r="13" fill="transparent" /><circle cx={x(i)} cy={y(p.value)} r="4" fill="var(--signal)" />
+        </g>)}
+        {timeline.groups.map(group => <g key={group.start} className="review-date-range">
+          <path d={`M${x(group.start)},195 v5 H${x(group.end)} v-5`} fill="none" stroke="var(--border-strong)" />
+          <text x={(x(group.start) + x(group.end)) / 2} y="217" textAnchor="middle">{group.label}</text>
+          <text x={(x(group.start) + x(group.end)) / 2} y="234" textAnchor="middle">{group.year}</text>
+        </g>)}
+      </svg>
+    </div>
+    <div className="review-time-axis-note"><span>Sessions in date order · time gaps compressed</span>{timeline.width > width && <span>Scroll to see all sessions ↔</span>}</div>
     <div className="review-legend"><span>● {title}</span>{secondaryLabel && <span className="reference">● {secondaryLabel}</span>}{points.some(p => p.baseline != null) && <span>┄ Prior five-session mean</span>}{points.some(p => p.pb != null) && <span className="gain">┄ Prior matched PB</span>}</div>
   </div>
 }
