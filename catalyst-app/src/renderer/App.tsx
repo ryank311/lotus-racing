@@ -16,6 +16,8 @@ import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid
 import type { AuthState, SyncStats, WorkerEvent, CoachingSession, SyncOptions } from '../shared/types'
 
 const Sessions = lazy(() => import('./pages/Sessions').then(module => ({ default: module.Sessions })))
+const SessionReview = lazy(() => import('./pages/SessionReview').then(module => ({ default: module.SessionReview })))
+const Progress = lazy(() => import('./pages/Progress').then(module => ({ default: module.Progress })))
 const AICoach = lazy(() => import('./pages/AICoach').then(module => ({ default: module.AICoach })))
 const Garage = lazy(() => import('./pages/Garage').then(module => ({ default: module.Garage })))
 const Tracks = lazy(() => import('./pages/Tracks').then(module => ({ default: module.Tracks })))
@@ -311,6 +313,8 @@ export function App() {
                 />
               ) : <SignedOutGate feature="AI Coach" onSignIn={openLogin} />
             )}
+            {page === 'review' && (canView ? <SessionReview refreshTick={refreshTick} busy={busy} /> : <SignedOutGate feature="Session Review" onSignIn={openLogin} />)}
+            {page === 'progress' && (canView ? <Progress /> : <SignedOutGate feature="Progress" onSignIn={openLogin} />)}
             {page === 'garage' && (canView ? <Garage /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
             {page === 'tracks' && <Tracks />}
             {page === 'analysis' && (

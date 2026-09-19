@@ -3,6 +3,7 @@ import { NavLink, useNavigation, useRoute } from '../navigation'
 import { reportAnalysisUrl, segment } from '../routes'
 import { api } from '../api'
 import { CoachProgress } from '../components/CoachProgress'
+import { ReviewCoachContent } from '../components/ReviewCharts'
 import type { CoachingSession, CoachAnnotation } from '../../shared/types'
 import { replaceSessionIds, sanitizeCoachingResult, type SessionAliasMap } from '../../shared/sessionIdentity'
 
@@ -220,6 +221,14 @@ function SessionViewer({ session, onLoad, onDelete }: {
     () => replaceSessionIds(session.raw_response, aliases),
     [session.raw_response, aliases],
   )
+
+  if (session.review_context) return <div className="coach-session-viewer review-page" style={{ overflowY: 'auto', padding: 24 }}>
+    <div className="review-section-heading"><h2>Session Review coaching</h2><NavLink className="btn primary" to={reportAnalysisUrl(session)}>Open session review</NavLink></div>
+    <p className="muted">{session.created_at} · {session.model_used} · {session.review_context.units} units. This report preserves the measurements used when it was generated.</p>
+    {session.review_result ? <ReviewCoachContent result={session.review_result} evidence={session.review_context.evidence} /> : <p role="alert">{session.review_context.error ?? 'Report unavailable'}</p>}
+    <details><summary>Saved prompt and response</summary><pre className="review-raw">{session.prompt}{'\n\n'}{safeRawResponse}</pre></details>
+    <button className="btn ghost" onClick={() => onDelete(session)}>Delete report</button>
+  </div>
 
   return (
     <div className="coach-session-viewer" style={{ height: '100%', overflowY: 'auto', padding: '20px 24px' }}>

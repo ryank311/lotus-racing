@@ -43,6 +43,7 @@ Thumbs.db
 /deploy/data/
 /deploy/backups/
 /deploy/.env.cloudflare
+/deploy/.env.cloudflare.mac
 
 # Test / coverage
 coverage/

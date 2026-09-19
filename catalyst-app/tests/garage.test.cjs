@@ -80,6 +80,8 @@ test('Garage seeds once, saves only to the workspace DB, and survives restart an
     await db.withDb(async con => {
       await con.run("INSERT INTO sessions (session_guid, session_start, vehicle_guid) VALUES ('session', '2026-09-18', 'vehicle')");
       await con.run("INSERT INTO laps (session_guid, lap_index, duration_ms) VALUES ('session', 0, 60000)");
+      await con.run("INSERT INTO review_conditions(session_guid, surface, temperature_c) VALUES ('session', 'damp', 21)");
+      await con.run("INSERT INTO review_lap_exclusions VALUES ('session', 0, 'Traffic')");
       await db.insertCoachingSession(con, {
         id: 'saved-coaching', created_at: '2026-09-18', session_guids: ['session'],
         profile_name: 'Custom', model_used: 'test', title: 'Saved coaching',
@@ -98,6 +100,8 @@ test('Garage seeds once, saves only to the workspace DB, and survives restart an
     await db.withDb(async con => {
       assert.equal((await con.runAndReadAll('SELECT COUNT(*) FROM sessions')).getRowsJson()[0][0], '0');
       assert.equal((await db.listCoachingSessions(con))[0].id, 'saved-coaching');
+      assert.equal((await con.runAndReadAll('SELECT surface FROM review_conditions')).getRowsJson()[0][0], 'damp');
+      assert.equal((await con.runAndReadAll('SELECT reason FROM review_lap_exclusions')).getRowsJson()[0][0], 'Traffic');
     });
   ` + verify)
   run(root, verify)

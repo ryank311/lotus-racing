@@ -64,6 +64,12 @@ function subscribe(channel: string, listener: EventListener): () => void {
 }
 
 const remoteBridge: CatalystBridge = {
+  getSessionReview: guid => rpc('review:get', guid),
+  ensureSessionReview: (guid, retry = false) => rpc('review:ensure', guid, retry),
+  getProgress: (filters = {}) => rpc('review:progress', filters),
+  updateReviewConditions: (guid, value) => rpc('review:conditions', guid, value),
+  setReviewLapExcluded: (guid, index, excluded, reason = '') => rpc('review:excludeLap', guid, index, excluded, reason),
+  onReviewStatus: cb => subscribe('review:event', cb),
   getAuthState: () => rpc('auth:state'),
   getSyncStats: () => rpc('auth:syncStats'),
   getAccountEmail: () => rpc('auth:email'),

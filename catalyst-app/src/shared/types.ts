@@ -1,6 +1,7 @@
 // Shared types between main and renderer processes.
 
 import type { UnitSystem } from './units.js'
+import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
 
 export interface SessionSummary {
   sessionGuid: string
@@ -196,13 +197,16 @@ export interface CoachingSession {
   prompt: string
   raw_response: string
   parsed_result: CoachingResult | null
+  review_context?: { sessionGuid: string; revision: string; units: UnitSystem; provider?: AiProvider; evidence?: Record<string, string>; error?: string } | null
+  review_result?: ReviewCoachResult | null
 }
 
 export interface CoachOptions {
   profile: string
-  scope: 'overview' | 'corner' | 'compare'
+  scope: 'overview' | 'corner' | 'compare' | 'session-review'
   sessionGuids: string[]
   lapLimit?: 3 | 5 | 10 | null
+  reviewRevision?: string
 }
 
 export type AiProvider = 'anthropic' | 'openai'
@@ -274,6 +278,12 @@ export interface TrackDetail {
 
 // Bridge exposed on window via preload.
 export interface CatalystBridge {
+  getSessionReview(guid: string): Promise<SessionReviewResponse>
+  ensureSessionReview(guid: string, retry?: boolean): Promise<void>
+  getProgress(filters?: ProgressFilters): Promise<ProgressResponse>
+  updateReviewConditions(guid: string, value: ConditionOverride): Promise<void>
+  setReviewLapExcluded(guid: string, index: number, excluded: boolean, reason?: string): Promise<void>
+  onReviewStatus(cb: (event: ReviewStatus) => void): () => void
   // Auth + state
   getAuthState(): Promise<AuthState>
   getSyncStats(): Promise<SyncStats>

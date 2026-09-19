@@ -1,0 +1,5 @@
+<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Session Review state fixture</title></head>
+<body><div id="root"></div><script>
+  window.catalyst = new Proxy({}, { get: (_, method) => (...args) => window.reviewFixture(method, args) });
+</script><script type="module" src="./review.tsx"></script></body></html>

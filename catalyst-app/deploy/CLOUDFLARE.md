@@ -9,12 +9,12 @@ still runs on your Mac/NAS and all its data stays in the mounted data folder.
 
 `coach.kingracing.net` is configured with an Access email-code policy for the two
 requested invitees. The `catalyst-coach` tunnel routes it to `http://catalyst:3210`
-and requires a valid Access token. The private `.env.cloudflare` is already
-saved on this Mac; it is not committed to Git. Start Docker Desktop and run the
-Mac command below. The app becomes available when its containers are running.
+and requires a valid Access token. The private `.env.cloudflare` is the
+production/NAS configuration; it is not committed to Git.
 
-The one-time instructions below document how to recreate this configuration or
-configure a different domain; they do not need to be repeated for this account.
+The Mac test uses `dev.kingracing.net` with a separate `catalyst-coach-dev`
+tunnel and private `.env.cloudflare.mac` file. Complete the dev setup below
+before its first run. Both servers can then run at the same time.
 
 ## One-time Cloudflare setup
 
@@ -56,6 +56,36 @@ Server-Sent Events used by the app for live sync and coaching progress.
 
 ## Test the published image on this Mac
 
+### One-time dev tunnel setup
+
+1. Create a separate Access application for **`dev.kingracing.net`**, protecting
+   the whole site with the same invited-email Allow policy and One-time PIN
+   login as production. Do this before publishing the dev route.
+2. Create a new remotely managed tunnel named **`catalyst-coach-dev`**. Add a
+   published application route for **`dev.kingracing.net`** to
+   **`http://catalyst:3210`**, enabling **Protect with Access** with the dev
+   application's audience (AUD) tag. Creating the route in the dashboard also
+   creates the hostname's DNS record.
+3. Prepare the private Mac configuration:
+
+   ```sh
+   cp deploy/.env.cloudflare.mac.example deploy/.env.cloudflare.mac
+   chmod 600 deploy/.env.cloudflare.mac
+   ```
+
+   Paste the **new dev tunnel's token** into `CLOUDFLARE_TUNNEL_TOKEN` in that
+   file. Keep `CATALYST_PUBLIC_HOSTNAME=dev.kingracing.net`.
+
+The hostname variable is a display label; Cloudflare's remote tunnel route
+controls actual traffic. Changing only the hostname while reusing the production
+token would still connect the Mac to production. Separate tunnels are required;
+see [Cloudflare's routing guide](https://developers.cloudflare.com/tunnel/concepts/routing/).
+The helper rejects the production hostname and, when `.env.cloudflare` exists
+locally, an identical production token. It also ignores exported token/hostname
+variables so they cannot override the selected file.
+
+### Run the test
+
 Install and start **Docker Desktop**. No local Node.js, npm build, Tailscale, or
 phone VPN is needed. From `catalyst-app`, run:
 
@@ -66,7 +96,10 @@ bash deploy/test-cloudflare-mac.sh
 Every run pulls `ghcr.io/ryank311/catalyst-coach:latest` and the Cloudflare
 connector, then starts them using the NAS Compose configuration. The app uses
 `linux/amd64`, matching the DS920+; Docker Desktop emulates it on Apple Silicon.
-The test uses its own Compose project and local port 3211.
+The test uses its own Compose project, local port 3211, and
+`deploy/.env.cloudflare.mac`. Open **https://dev.kingracing.net**.
+`CATALYST_CLOUDFLARE_ENV=/absolute/path` can select another private dev environment
+file; it must still specify `dev.kingracing.net` and the separate dev token.
 
 The connector uses HTTP/2 over TCP. On networks where QUIC/UDP stalls, the
 server can finish analysis but the tunnel cuts off its JSON response, leaving
@@ -99,10 +132,11 @@ Copy `compose.yaml`, `compose.cloudflare.yaml`, and `.env.cloudflare` to
 `/volume1/docker/catalyst-coach`. Set `CATALYST_NAS_DATA_DIR` in the environment
 file to `/volume1/docker/catalyst-coach/data` (or your actual NAS path).
 
-Stop the Mac test before connecting the NAS with the same tunnel token. Two
-connectors for one tunnel can receive requests interchangeably, but these app
-instances have separate databases. For simultaneous Mac testing later, create
-a separate tunnel and hostname protected by its own Access application.
+The NAS uses the `catalyst-coach` tunnel and **`coach.kingracing.net`**. Keep its
+production token in `.env.cloudflare`; the Mac's dev token belongs only in
+`.env.cloudflare.mac`. The separate tunnels let the NAS and Mac run concurrently
+without sending requests to each other's databases. Stop any Mac test started
+with the old shared configuration before restarting it with the dev file.
 
 ```sh
 cd /volume1/docker/catalyst-coach
@@ -114,7 +148,7 @@ sudo docker compose --env-file .env.cloudflare -f compose.yaml -f compose.cloudf
 sudo docker compose --env-file .env.cloudflare -f compose.yaml -f compose.cloudflare.yaml up -d
 ```
 
-Open the same HTTPS URL in a browser. The NAS runs the containers after reboot
+Open **https://coach.kingracing.net** in a browser. The NAS runs the containers after reboot
 using the restart policy. The domain/tunnel does not transfer Mac data; import
 existing workspaces before first startup if desired, as described in the
 [persistence and migration guide](README.md#persistence-backups-upgrades-and-rollback).

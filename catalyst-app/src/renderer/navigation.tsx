@@ -56,7 +56,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
       try { sessionStorage.setItem('catalyst:last-sessions', location.pathname + location.search) } catch { /* optional */ }
     }
     const route = matchRoute(location.pathname)
-    document.title = `${route.page === 'home' ? 'Overview' : route.page === 'not-found' ? 'Page not found' : route.page[0].toUpperCase() + route.page.slice(1)}${route.id ? ' · ' + route.id : ''} · Catalyst Coach`
+    document.title = `${route.page === 'home' ? 'Overview' : route.page === 'review' ? 'Session Review' : route.page === 'not-found' ? 'Page not found' : route.page[0].toUpperCase() + route.page.slice(1)}${route.id && route.page !== 'review' ? ' · ' + route.id : ''} · Catalyst Coach`
   }, [location.pathname, location.search, go])
   const clearWorkspace = useCallback(() => {
     clearScrollSnapshots()

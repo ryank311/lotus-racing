@@ -2,12 +2,14 @@
 // 1:1 port of garmin/load_to_db.py.
 
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { DuckDBInstance, DuckDBConnection } from '@duckdb/node-api'
 import { DATA_DIR, SESSIONS_DIR, DB_PATH } from './paths.js'
 import { decodePerformance } from './decodePerformance.js'
 import type { CoachingSession } from '../shared/types.js'
 import type { SessionSummary } from './catalystClient.js'
+import { initReviewSchema, markReviewDirty } from './reviewSchema.js'
 
 export function isoDurationToMs(s: string | undefined | null): number | null {
   if (!s || typeof s !== 'string' || !s.startsWith('PT')) return null
@@ -160,6 +162,7 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `)
+  await initReviewSchema(con)
 }
 
 function nullIfNaN(v: number | undefined | null): number | null {
@@ -247,7 +250,10 @@ async function loadSessionData(con: DuckDBConnection, sessionDir: string): Promi
 
   await loadSessionSummary(con, summary, account)
   if (!fs.existsSync(perfP) || fs.statSync(perfP).size === 0) return 0
-  const decoded = decodePerformance(new Uint8Array(fs.readFileSync(perfP)))
+  const performance = fs.readFileSync(perfP)
+  const reviewSourceRevision = createHash('sha256').update(JSON.stringify([summary, metadata, weather, account])).update(performance).digest('hex')
+  const previousRevision = (await con.runAndReadAll('SELECT review_source_revision FROM sessions WHERE session_guid=?', [sg])).getRowsJson()[0]?.[0]
+  const decoded = decodePerformance(new Uint8Array(performance))
 
   await con.run(
     `INSERT OR REPLACE INTO sessions
@@ -342,6 +348,8 @@ async function loadSessionData(con: DuckDBConnection, sessionDir: string): Promi
   } finally {
     appender.close()
   }
+  await con.run('UPDATE sessions SET review_source_revision = ? WHERE session_guid = ?', [reviewSourceRevision, sg])
+  if (previousRevision !== reviewSourceRevision) await markReviewDirty(con, sg)
   return sampleCount
 }
 
@@ -436,6 +444,7 @@ export async function loadAll(
   const db = await openDb(dbPath)
   let totalSamples = 0
   try {
+    await initSchema(db.con)
     await db.con.run('BEGIN TRANSACTION')
     try {
       await db.con.run(`
@@ -443,6 +452,9 @@ export async function loadAll(
         DROP TABLE IF EXISTS laps;
         DROP TABLE IF EXISTS sessions;
         DROP TABLE IF EXISTS track_configs;
+        DELETE FROM review_aggregates;
+        DELETE FROM review_lap_metrics;
+        DELETE FROM review_jobs;
       `)
       await initSchema(db.con)
       await db.con.run('COMMIT')
@@ -488,8 +500,8 @@ export async function insertCoachingSession(
 ): Promise<void> {
   await con.run(`
     INSERT OR REPLACE INTO coaching_sessions
-      (id, created_at, session_guids, profile_name, model_used, title, prompt, raw_response, parsed_result)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, created_at, session_guids, profile_name, model_used, title, prompt, raw_response, parsed_result, review_context, review_result)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     s.id,
     s.created_at,
@@ -500,13 +512,15 @@ export async function insertCoachingSession(
     s.prompt,
     s.raw_response,
     s.parsed_result !== null ? JSON.stringify(s.parsed_result) : null,
+    s.review_context ? JSON.stringify(s.review_context) : null,
+    s.review_result ? JSON.stringify(s.review_result) : null,
   ] as any)
 }
 
 export async function listCoachingSessions(con: DuckDBConnection): Promise<CoachingSession[]> {
   const reader = await con.runAndReadAll(`
     SELECT id, CAST(created_at AS VARCHAR) AS created_at, session_guids,
-           profile_name, model_used, title, prompt, raw_response, parsed_result
+           profile_name, model_used, title, prompt, raw_response, parsed_result, review_context, review_result
     FROM coaching_sessions
     ORDER BY created_at DESC
   `)
@@ -519,7 +533,7 @@ export async function getCoachingSession(
 ): Promise<CoachingSession | null> {
   const reader = await con.runAndReadAll(`
     SELECT id, CAST(created_at AS VARCHAR) AS created_at, session_guids,
-           profile_name, model_used, title, prompt, raw_response, parsed_result
+           profile_name, model_used, title, prompt, raw_response, parsed_result, review_context, review_result
     FROM coaching_sessions WHERE id = ?
   `, [id] as any)
   const rows = reader.getRowObjectsJson() as any[]
@@ -544,5 +558,7 @@ function rowToSession(r: Record<string, unknown>): CoachingSession {
     prompt: String(r.prompt),
     raw_response: String(r.raw_response),
     parsed_result: r.parsed_result ? JSON.parse(String(r.parsed_result)) : null,
+    review_context: r.review_context ? JSON.parse(String(r.review_context)) : null,
+    review_result: r.review_result ? JSON.parse(String(r.review_result)) : null,
   }
 }

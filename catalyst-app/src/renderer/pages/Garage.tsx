@@ -172,8 +172,18 @@ export function Garage() {
         </div>
       </header>
 
-      <div className="page-body garage-layout">
+      <div className="page-body garage-layout" data-stage={selectedFile ? 'editor' : selected ? 'files' : 'vehicles'}>
         {loading && <div data-route-loading role="status">Loading vehicles…</div>}
+        <div className="garage-mobile-navigation">
+          {selectedFile && editPath && selectedVehicle ? (
+            <span className="text-mono">{vehicleLabel(selectedVehicle)}</span>
+          ) : selectedFile ? (
+            <NavLink className="btn ghost" to={vehicleUrl}>Close editor</NavLink>
+          ) : selected ? (
+            <NavLink className="btn ghost" to="/garage">← Change car</NavLink>
+          ) : <span className="muted text-mono">Choose a car</span>}
+          {selected && <span className="muted text-mono">{selectedFile ? 'Edit file' : 'Choose a file'}</span>}
+        </div>
         {/* ── Vehicle list ── */}
         <div className="garage-vehicles">
           {vehicles.length === 0 && (
@@ -218,6 +228,7 @@ export function Garage() {
               onDelete={onDelete}
               onContentChange={setContent}
               onSave={onSave}
+              onClose={() => go(vehicleUrl)}
               onDrop={onDrop}
               onDragOver={(e) => { e.preventDefault(); setDropping(true) }}
               onDragLeave={() => setDropping(false)}
@@ -285,7 +296,7 @@ function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: 
 // ─── ProfileDetail ────────────────────────────────────────────────────────────
 
 function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveError, dropping,
-  onSelectFile, onDelete, onContentChange, onSave, onDrop, onDragOver, onDragLeave, onCreateProfile,
+  onSelectFile, onDelete, onContentChange, onSave, onClose, onDrop, onDragOver, onDragLeave, onCreateProfile,
 }: {
   vehicle: VehicleSummary
   files: { name: string; path: string }[]
@@ -299,6 +310,7 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
   onDelete: (name: string) => void
   onContentChange: (s: string) => void
   onSave: () => void
+  onClose: () => void
   onDrop: (e: React.DragEvent) => void
   onDragOver: (e: React.DragEvent) => void
   onDragLeave: () => void
@@ -319,7 +331,7 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
           <div className="hd" style={{ marginBottom: 8 }}>No profile linked</div>
           <div className="sub" style={{ marginBottom: 18 }}>
             Drop a file here to create a profile for this vehicle,<br />
-            or link it to an existing profile using the selector on the left.
+            or link it to an existing profile using the car's profile selector.
           </div>
           <button className="btn ghost" onClick={onCreateProfile}>Create blank profile</button>
         </div>
@@ -372,10 +384,10 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
       <div className="garage-editor">
         {editPath ? (
           <>
-            <div className="viewer-toolbar">
-              <span className="text-mono" style={{ fontSize: 11 }}>{editPath.split('/').pop()}</span>
+            <div className="viewer-toolbar garage-editor-toolbar">
+              <span className="text-mono garage-editor-filename" style={{ fontSize: 11 }}>{editPath.split('/').pop()}</span>
               <span className="spacer" />
-              <span className="muted text-mono" style={{ fontSize: 10 }}>
+              <span className="muted text-mono garage-editor-status" style={{ fontSize: 10 }}>
                 {content.length.toLocaleString()} chars
                 {saveError && <span style={{ color: 'var(--signal)', marginLeft: 8 }}>{saveError}</span>}
                 {!saveError && dirty && <span style={{ color: 'var(--signal)', marginLeft: 8 }}>unsaved</span>}
@@ -383,8 +395,10 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
               <button className="btn primary" disabled={!dirty || saving} onClick={onSave} style={{ marginLeft: 12, padding: '4px 14px' }}>
                 {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
               </button>
+              <button className="btn ghost" disabled={saving} onClick={onClose}>Close</button>
             </div>
             <textarea
+              aria-label={`Edit ${editPath.split('/').pop()}`}
               value={content}
               onChange={e => onContentChange(e.target.value)}
               spellCheck={false}

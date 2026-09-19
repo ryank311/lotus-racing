@@ -44,6 +44,9 @@ import { runAgent } from '../garmin/agentHarness.js'
 import { COACHING_TOOL } from '../garmin/coachingTool.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import { syncSessions, validateSessionGuids } from '../garmin/sessionSync.js'
+import { ReviewService } from '../garmin/reviewStore.js'
+import { buildReviewCoachPrompt, parseReviewCoaching, reviewCoachingTool } from '../garmin/reviewCoach.js'
+import type { ConditionOverride, ProgressFilters } from '../shared/review.js'
 import {
   deleteGarageFile,
   ensureGarageProfile,
@@ -182,7 +185,27 @@ export function registerApiHandlers(
     throw new Error('Sign in with your Garmin email and password before syncing')
   },
   aiKeys: AiKeyStore = databaseAiKeyStore(DB_PATH),
-): void {
+): { startReviews: () => Promise<void> } {
+  const reviews = new ReviewService({ isBusy: () => !!activeWorker, emit: event => {
+    const target = getMainWindow()
+    if (target && !target.isDestroyed()) target.webContents.send('review:event', event)
+  } })
+  let reviewReady: Promise<void> | null = null
+  const startReviews = () => reviewReady ??= reviews.initialize().catch(error => { reviewReady = null; throw error })
+  register('review:get', async (_e, guid: string) => { await startReviews(); return reviews.get(guid) })
+  register('review:ensure', async (_e, guid: string, retry?: boolean) => {
+    if (retry != null && typeof retry !== 'boolean') throw new Error('Invalid retry option')
+    await startReviews(); await ensureSessionDetails([guid]); await reviews.ensure(guid, retry ?? false)
+  })
+  register('review:progress', async (_e, filters?: ProgressFilters) => { await startReviews(); return reviews.progress(filters ?? {}) })
+  register('review:conditions', async (_e, guid: string, value: ConditionOverride) => {
+    if (activeWorker?.kind === 'sync' || activeWorker?.kind === 'load') throw new Error('Wait for telemetry sync to finish before changing conditions.')
+    await startReviews(); return reviews.updateConditions(guid, value)
+  })
+  register('review:excludeLap', async (_e, guid: string, index: number, excluded: boolean, reason?: string) => {
+    if (activeWorker?.kind === 'sync' || activeWorker?.kind === 'load') throw new Error('Wait for telemetry sync to finish before changing laps.')
+    await startReviews(); return reviews.excludeLap(guid, index, excluded, reason)
+  })
   register('auth:state', () => readAuthState())
   register('auth:syncStats', () => readSyncStats())
   register('auth:email', () => loadConfig().auth?.email ?? null)
@@ -484,6 +507,8 @@ export function registerApiHandlers(
   // ── Run coach (streaming worker) ────────────────────────────────────────────
 
   register('coach:run', async (_e, opts: CoachOptions): Promise<{ sessionId: null }> => {
+    if (opts.scope === 'session-review') return runReviewCoach(opts)
+    const analysisScope = opts.scope
     await ensureSessionDetails(opts.sessionGuids)
     if (activeWorker) throw new Error('Another worker is already running')
     activeWorker = { kind: 'coach' }
@@ -509,7 +534,7 @@ export function registerApiHandlers(
           sessionGuids: opts.sessionGuids,
           lapLimit: opts.lapLimit,
           profile: opts.profile,
-          scope: opts.scope,
+          scope: analysisScope,
           dbPath: DB_PATH,
           system: loadConfig().units ?? DEFAULT_UNIT_SYSTEM,
         })
@@ -621,6 +646,7 @@ export function registerApiHandlers(
         broadcast(win, { kind: 'coach', type: 'error', payload: errMsg })
       } finally {
         activeWorker = null
+        reviews.kick()
       }
     })()
 
@@ -723,7 +749,7 @@ export function registerApiHandlers(
     return Math.hypot(ux - bx, uy - by)
   }
 
-  register('tracks:saveCorners', (_e, opts: {
+  register('tracks:saveCorners', async (_e, opts: {
     yamlPath: string
     meanLineGuid: string
     corners: TrackCorner[]
@@ -751,7 +777,8 @@ export function registerApiHandlers(
       }
       return out
     })
-    saveTrackYamlCorners(opts.yamlPath, enriched)
+    await reviews.foreground(async () => { saveTrackYamlCorners(opts.yamlPath, enriched) })
+    if (reviewReady) await reviews.refresh()
     return { savedTo: opts.yamlPath, cornerCount: enriched.length }
   })
 
@@ -832,7 +859,7 @@ export function registerApiHandlers(
     broadcast(win, { kind: 'sync', type: 'progress', progress: {
       current: 0, total: 0, label: sessionGuids ? 'Preparing selected sessions…' : 'Fetching session overviews…',
     } })
-    const task = (async () => {
+    const task = reviews.foreground(async () => {
       let token = opts.token || loadCatalystToken()
       if (!token) {
         log('[auth] Sign in to Garmin to download session details')
@@ -847,15 +874,17 @@ export function registerApiHandlers(
         onProgress: progress => broadcast(win, { kind: 'sync', type: 'progress', progress }),
         onCatalog: () => broadcast(win, { kind: 'sync', type: 'catalog' }),
       })
-    })()
+    })
     // Release the worker before notifying clients, so queued selections can start immediately.
     syncTask = task.then(() => {
       activeWorker = null
       syncTask = null
+      void startReviews().then(() => reviews.refresh()).catch(error => console.error('[review]', error))
       broadcast(win, { kind: 'sync', type: 'done' })
     }, error => {
       activeWorker = null
       syncTask = null
+      void startReviews().then(() => reviews.refresh()).catch(error => console.error('[review]', error))
       broadcast(win, { kind: 'sync', type: 'error', payload: String(error?.message ?? error) })
       throw error
     })
@@ -890,7 +919,7 @@ export function registerApiHandlers(
     if (activeWorker) throw new Error('worker already running')
     activeWorker = { kind: 'load' }
     const win = getMainWindow()
-    void (async () => {
+    void reviews.foreground(async () => {
       try {
         await loadAll(
           line => broadcast(win, { kind: 'load', type: 'log', payload: line }),
@@ -910,6 +939,65 @@ export function registerApiHandlers(
       } finally {
         activeWorker = null
       }
-    })()
+    }).finally(() => { void startReviews().then(() => reviews.refresh()).catch(error => console.error('[review]', error)) })
   })
+
+  async function runReviewCoach(opts: CoachOptions): Promise<{ sessionId: null }> {
+    if (opts.sessionGuids.length !== 1 || !opts.reviewRevision) throw new Error('Choose one ready session review before asking the coach.')
+    if (activeWorker) throw new Error('Another worker is already running')
+    await startReviews()
+    const review = await reviews.get(opts.sessionGuids[0])
+    if (!review.snapshot || review.state !== 'ready') throw new Error('Review is still processing. Try again when it is ready.')
+    if (review.snapshot.coverage.pending) throw new Error('Downloaded history is still processing. Try coaching when the baseline is ready.')
+    if (review.snapshot.revision !== opts.reviewRevision) throw new Error('Review changed. Refresh it before asking the coach.')
+    if (activeWorker) throw new Error('Another worker is already running')
+    activeWorker = { kind: 'coach' }
+    const snapshot = review.snapshot, guid = snapshot.current.summary.sessionGuid
+    const win = getMainWindow(), units = loadConfig().units ?? DEFAULT_UNIT_SYSTEM
+    const cfg = loadConfig(), provider = providerFor(cfg.ai)
+    void (async () => {
+      let prompt = '', raw = '', model = 'error', profile = opts.profile
+      let evidence: Record<string, string> = {}, aliases: Record<string, string> = {}
+      const emit = (type: WorkerEvent['type'], payload?: string) => broadcast(win, { kind: 'coach', type, payload })
+      try {
+        broadcast(win, { kind: 'coach', type: 'progress', progress: { current: 0, total: 3, label: 'Preparing session review…' } })
+        const mapped = await resolveGarageVehicleProfile(snapshot.current.summary.vehicleGuid, null)
+        profile = mapped.profile ?? opts.profile
+        let context = ''
+        if (profile) {
+          const files = await listGarageFiles(profile)
+          const included = files.filter(f => f.name.endsWith('.md'))
+          for (const f of included) context += `\n${f.name}\n${await readGarageFile(f.path)}\n`
+        }
+        const pack = buildReviewCoachPrompt(snapshot, context, units)
+        prompt = pack.prompt; evidence = pack.evidence; aliases = pack.aliases
+        const apiKey = (await readAiKeys())[provider]
+        if (!apiKey) throw new Error(`No ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key configured. Add it under AI Coach on Overview.`)
+        model = configuredModelFor(cfg.ai?.model, provider)
+        const tool = reviewCoachingTool(snapshot, evidence)
+        raw = await runAgent(prompt, { provider, apiKey, model, stream: true, maxTokens: 16000,
+          reasoningEffort: provider === 'openai' ? 'xhigh' : undefined, tools: [tool], toolChoice: { type: 'tool', name: tool.name } }, chunk => {
+          if (chunk.startsWith('[status]')) broadcast(win, { kind: 'coach', type: 'progress', progress: { current: 1, total: 3, label: chunk.replace('[status]', '').trim() } })
+          else emit('log', replaceSessionIds(chunk, aliases))
+        })
+        raw = replaceSessionIds(raw, aliases)
+        const result = parseReviewCoaching(raw, snapshot, evidence)
+        const id = randomUUID()
+        await withDb(con => insertCoachingSession(con, { id, created_at: new Date().toISOString(), session_guids: [guid],
+          profile_name: profile, model_used: model, title: result.summary, prompt, raw_response: raw, parsed_result: null,
+          review_context: { sessionGuid: guid, revision: snapshot.revision, units, provider, evidence }, review_result: result }))
+        emit('done', id)
+      } catch (error) {
+        const message = replaceSessionIds(error instanceof Error ? error.message : String(error), aliases)
+        try {
+          await withDb(con => insertCoachingSession(con, { id: randomUUID(), created_at: new Date().toISOString(), session_guids: [guid],
+            profile_name: profile, model_used: model, title: `Review coaching failed: ${message}`, prompt, raw_response: raw, parsed_result: null,
+            review_context: { sessionGuid: guid, revision: snapshot.revision, units, provider, evidence, error: message }, review_result: null }))
+        } catch (saveError) { console.error('[review coach]', saveError) }
+        emit('error', message)
+      } finally { activeWorker = null; reviews.kick() }
+    })()
+    return { sessionId: null }
+  }
+  return { startReviews }
 }

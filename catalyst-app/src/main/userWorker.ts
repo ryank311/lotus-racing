@@ -87,7 +87,8 @@ async function start(): Promise<void> {
     try { await initSchema(db.con) } finally { await db.close() }
   }
 
-  registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, undefined, aiKeys)
+  const backend = registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, undefined, aiKeys)
+  void backend.startReviews().catch(error => console.error('[review startup]', error))
   handlers.set('auth:completeSso', async (_event, ticket: string, serviceUrl: string) => {
     const { expiresIn } = await exchangeTicketForToken(ticket, serviceUrl)
     return { token: '', expiresAt: Math.floor(Date.now() / 1000) + expiresIn }

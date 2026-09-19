@@ -8,14 +8,15 @@ if [[ "${1:-}" == --help ]]; then
 Usage: bash deploy/test-cloudflare-mac.sh
 
 First install/open Docker Desktop, then follow deploy/CLOUDFLARE.md to configure
-your domain, email access policy, tunnel, and deploy/.env.cloudflare.
+dev.kingracing.net, its email access policy, a separate dev tunnel, and
+deploy/.env.cloudflare.mac. Never reuse the production tunnel token.
 Every run pulls ghcr.io/ryank311/catalyst-coach:latest; no local app build runs.
 Ctrl+C removes the test containers while preserving all app data.
 
 Optional environment variables:
   CATALYST_TEST_PORT        Local HTTP port (default 3211)
   CATALYST_TEST_DATA_DIR    Absolute path to a separate test workspace
-  CATALYST_CLOUDFLARE_ENV   Absolute path to the Cloudflare environment file
+  CATALYST_CLOUDFLARE_ENV   Dev environment file (default deploy/.env.cloudflare.mac)
 HELP
   exit 0
 fi
@@ -32,9 +33,9 @@ command -v docker >/dev/null && docker compose version >/dev/null 2>&1 || {
 }
 docker info >/dev/null 2>&1 || { echo 'Start Docker Desktop, wait until it is ready, then rerun.' >&2; exit 1; }
 
-ENV_FILE="${CATALYST_CLOUDFLARE_ENV:-$DEPLOY_DIR/.env.cloudflare}"
+ENV_FILE="${CATALYST_CLOUDFLARE_ENV:-$DEPLOY_DIR/.env.cloudflare.mac}"
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "Copy $DEPLOY_DIR/.env.cloudflare.example to $ENV_FILE and fill in your hostname and tunnel token." >&2
+  echo "Copy $DEPLOY_DIR/.env.cloudflare.mac.example to $ENV_FILE and fill in the separate dev tunnel token." >&2
   echo "Configure email sign-in first, following $DEPLOY_DIR/CLOUDFLARE.md" >&2
   exit 1
 fi
@@ -45,13 +46,32 @@ DATA_DIR="${CATALYST_TEST_DATA_DIR:-$DEPLOY_DIR/data/cloudflare-mac}"
   echo 'CATALYST_TEST_PORT must be between 1024 and 65535.' >&2; exit 1;
 }
 IMAGE=ghcr.io/ryank311/catalyst-coach:latest
-compose() {
+compose() (
+  # Always read the selected file, even if a production token/hostname is exported.
+  unset CLOUDFLARE_TUNNEL_TOKEN CATALYST_PUBLIC_HOSTNAME
   CATALYST_IMAGE="$IMAGE" CATALYST_NAS_DATA_DIR="$DATA_DIR" CATALYST_HTTP_PORT="$HTTP_PORT" \
     docker compose --project-name catalyst-cloudflare-mac --env-file "$ENV_FILE" \
     -f "$DEPLOY_DIR/compose.yaml" -f "$DEPLOY_DIR/compose.cloudflare.yaml" "$@"
-}
+)
 # Validate without printing the resolved configuration, which includes a secret.
 compose config --quiet
+env_value() {
+  awk -v key="$1" 'index($0, key "=") == 1 { print substr($0, length(key) + 2) }'
+}
+PUBLIC_HOSTNAME="$(compose config --environment | env_value CATALYST_PUBLIC_HOSTNAME)"
+if [[ "$PUBLIC_HOSTNAME" != dev.kingracing.net ]]; then
+  echo 'The Mac test requires dev.kingracing.net and its own tunnel. Use .env.cloudflare.mac, not the production environment file.' >&2
+  exit 1
+fi
+if [[ -f "$DEPLOY_DIR/.env.cloudflare" ]]; then
+  DEV_TOKEN="$(compose config --environment | env_value CLOUDFLARE_TUNNEL_TOKEN)"
+  PRODUCTION_TOKEN="$(ENV_FILE="$DEPLOY_DIR/.env.cloudflare" compose config --environment | env_value CLOUDFLARE_TUNNEL_TOKEN)"
+  if [[ "$DEV_TOKEN" == "$PRODUCTION_TOKEN" ]]; then
+    echo 'The Mac test cannot reuse the production tunnel token. Create a separate tunnel for dev.kingracing.net.' >&2
+    exit 1
+  fi
+  unset DEV_TOKEN PRODUCTION_TOKEN
+fi
 if [[ -n "$(compose ps --status running -q)" ]]; then
   echo 'The Mac Cloudflare test is already running. Stop it in its original terminal first.' >&2
   exit 1
@@ -92,7 +112,6 @@ if ! compose up -d --no-build --pull never --force-recreate --wait --wait-timeou
   compose logs --tail=60
   exit 1
 fi
-PUBLIC_HOSTNAME="$(docker inspect --format '{{ index .Config.Labels "io.catalyst.public-hostname" }}' "$(compose ps -q cloudflared)")"
 cat <<INFO
 
 Published image: $IMAGE

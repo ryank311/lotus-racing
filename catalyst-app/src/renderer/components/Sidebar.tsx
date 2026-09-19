@@ -3,7 +3,7 @@ import { ServerUserSwitcher } from './ServerGate'
 import { NavLink, useOverlay } from '../navigation'
 import { paths } from '../routes'
 
-export type NavKey = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
+export type NavKey = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
 
 interface NavSpec {
   key: NavKey
@@ -54,6 +54,8 @@ const TracksIcon = () => (
 const NAV: NavSpec[] = [
   { key: 'home',     label: 'Overview',  k: '1', icon: <HomeIcon /> },
   { key: 'sessions', label: 'Sessions',  k: '2', icon: <SessionsIcon /> },
+  { key: 'review', label: 'Session Review', k: '7', icon: <SessionsIcon /> },
+  { key: 'progress', label: 'Progress', k: '8', icon: <AnalysisIcon /> },
   { key: 'analysis', label: 'Analysis',  k: '3', icon: <AnalysisIcon /> },
   { key: 'coach',    label: 'AI Coach',  k: '4', icon: <CoachIcon /> },
   { key: 'garage',   label: 'Garage',    k: '5', icon: <GarageIcon /> },
@@ -145,9 +147,10 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) {
         e.preventDefault()
-        onChange(NAV[parseInt(e.key, 10) - 1].key)
+        const destination = NAV.find(item => item.k === e.key)
+        if (destination) onChange(destination.key)
       }
     }
     window.addEventListener('keydown', handler)

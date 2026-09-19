@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useDebouncedQuery, useNavigation, useRoute } from '../navigation'
-import { routeUrl } from '../routes'
+import { routeUrl, segment } from '../routes'
 import type { DbSessionRow } from '../../shared/types'
 
 interface Props {
@@ -273,6 +273,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
               <div><small>Vehicle</small><span>{vehicleLabel(r) || '—'}</span></div>
             </div>
             <div className="session-card-footer"><span>{r.weather_description || 'Weather unavailable'}</span><span>{downloading.has(r.session_guid) ? 'Downloading…' : r.details_loaded ? 'Telemetry ready' : 'Details needed'}</span></div>
+            <NavLink className="btn ghost" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review session →</NavLink>
           </label>)}
         </div>
         <div className="tbl-wrap sessions-table">
@@ -326,7 +327,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                     <td className="small">{veh || <span className="muted">—</span>}</td>
                     <td className="num laptime">{msToLap(r.best_lap_ms)}</td>
                     <td className="num">{r.lap_count || '—'}</td>
-                    <td className="muted small">{r.weather_description || '—'}</td>
+                    <td className="muted small">{r.weather_description || '—'}<NavLink className="session-review-link" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review →</NavLink></td>
                   </tr>
                 )
               })}

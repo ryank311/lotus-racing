@@ -1,8 +1,8 @@
 import type { CoachingSession } from '../shared/types'
 import { coachingLapFilter } from '../shared/coachingScope'
 
-export type Page = 'home' | 'sessions' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'account' | 'logs' | 'sign-in' | 'not-found'
-export const paths = { home: '/overview', sessions: '/sessions', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', account: '/account', logs: '/logs' } as const
+export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'account' | 'logs' | 'sign-in' | 'not-found'
+export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', account: '/account', logs: '/logs' } as const
 export const MAX_ROUTE_LENGTH = 16000
 export const segment = (value: string) => encodeURIComponent(value)
 export function matchRoute(pathname: string): { page: Page; id?: string; fileId?: string } {
@@ -14,7 +14,7 @@ export function matchRoute(pathname: string): { page: Page; id?: string; fileId?
     if (parts[0] === 'sign-in' && parts.length === 1) return { page: 'sign-in' }
     if (!page) return { page: 'not-found' }
     if (parts.length === 1) return { page }
-    if (['coach', 'garage', 'tracks'].includes(page) && parts.length === 2) return { page, id: parts[1] }
+    if (['coach', 'garage', 'tracks', 'review'].includes(page) && parts.length === 2) return { page, id: parts[1] }
     if (page === 'garage' && parts.length === 4 && parts[2] === 'files') return { page, id: parts[1], fileId: parts[3] }
     return { page: 'not-found' }
   } catch { return { page: 'not-found' } }
@@ -31,6 +31,7 @@ export function routeUrl(path: string, values: Record<string, string | string[] 
 }
 
 export function reportAnalysisUrl(report: CoachingSession): string {
+  if (report.review_context) return `/review/${segment(report.review_context.sessionGuid)}`
   return routeUrl('/analysis', { session: report.session_guids, report: report.id, laps: coachingLapFilter(report) })
 }
 
@@ -56,6 +57,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
   const path = pathname === '/' ? '/overview' : pathname.replace(/\/$/, '')
   if (route.page === 'not-found') return { url: pathname + search }
   const allowed: Partial<Record<Page, string[]>> = {
+    progress: ['anchor', 'surface', 'temp'],
     sessions: ['q', 'vehicle', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report'],
     coach: ['session'], tracks: ['track', 'turn'], logs: ['q', 'level', 'follow'], 'sign-in': ['returnTo'],
   }
@@ -68,6 +70,9 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
     else values = values.slice(0, 1)
     for (const value of values) {
       if (!value) continue
+      if (key === 'surface' && !['dry', 'damp', 'wet', 'mixed', 'unknown'].includes(value)) { error = 'Invalid surface.'; continue }
+      if (key === 'temp' && (!Number.isFinite(Number(value)) || Number(value) < -60 || Number(value) > 70)) { error = 'Invalid temperature.'; continue }
+      if (key === 'anchor' && !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) { error = 'Invalid session identifier.'; continue }
       if (enums[key]) {
         if (!enums[key][0].includes(value)) { error = `Invalid ${key} value.`; continue }
         if (value === enums[key][1]) continue

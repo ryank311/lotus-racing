@@ -11,6 +11,16 @@ import type {
 import type { UnitSystem } from '../shared/units.js'
 
 const bridge: CatalystBridge = {
+  getSessionReview: guid => ipcRenderer.invoke('review:get', guid),
+  ensureSessionReview: (guid, retry) => ipcRenderer.invoke('review:ensure', guid, retry),
+  getProgress: filters => ipcRenderer.invoke('review:progress', filters),
+  updateReviewConditions: (guid, value) => ipcRenderer.invoke('review:conditions', guid, value),
+  setReviewLapExcluded: (guid, index, excluded, reason) => ipcRenderer.invoke('review:excludeLap', guid, index, excluded, reason),
+  onReviewStatus: cb => {
+    const listener = (_event: unknown, event: import('../shared/review.js').ReviewStatus) => cb(event)
+    ipcRenderer.on('review:event', listener)
+    return () => ipcRenderer.off('review:event', listener)
+  },
   getAuthState: () => ipcRenderer.invoke('auth:state'),
   getSyncStats: () => ipcRenderer.invoke('auth:syncStats'),
   getAccountEmail: () => ipcRenderer.invoke('auth:email'),
