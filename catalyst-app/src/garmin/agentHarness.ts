@@ -5,9 +5,9 @@ import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
 import { AnthropicStream, checkAnthropicStopReason } from './anthropicStream.js'
 import OpenAI from 'openai'
+import { receiveOpenAiResponse } from './openaiResponse.js'
 import type {
   FunctionTool,
-  Response,
   ResponseCreateParamsNonStreaming,
   ResponseFunctionToolCall,
 } from 'openai/resources/responses/responses'
@@ -30,11 +30,11 @@ export async function runAgent(
 ): Promise<string> {
   const maxTokens = config.maxTokens ?? 32000
   if (config.provider === 'openai') {
-    // OpenAI reasoning runs use background mode and short polling requests, so
-    // a dropped connection never discards several minutes of model work.
+    // Stream background runs so progress is visible and dropped connections
+    // can resume without discarding several minutes of model work.
     return runOpenAI(
       prompt, config.apiKey, config.model, onChunk, maxTokens,
-      config.tools, config.toolChoice, config.reasoningEffort ?? 'xhigh',
+      config.tools, config.toolChoice, config.reasoningEffort ?? 'xhigh', config.stream ?? true,
     )
   }
 
@@ -116,24 +116,6 @@ function wait(ms: number): Promise<void> {
 }
 
 // ─── Anthropic Messages API (SSE streaming) ──────────────────────────────────
-
-const THINKING_PHRASES = [
-  'Reviewing lap data…',
-  'Studying the sectors…',
-  'Scrubbing tires…',
-  'Analyzing corner entries…',
-  'Checking brake points…',
-  'Calculating time deltas…',
-  'Studying your racing line…',
-  'Fueling up the analysis…',
-  'Mapping the circuit…',
-  'Cross-referencing segments…',
-  'Computing theoretical best…',
-  'Comparing representative laps…',
-  'Talking to the engineers…',
-  'Reviewing telemetry traces…',
-  'Dialing in the suspension…',
-]
 
 function runAnthropic(
   prompt: string,
@@ -320,7 +302,6 @@ function runAnthropic(
 
 const OPENAI_REQUEST_TIMEOUT_MS = 60_000
 const OPENAI_MAX_RETRIES = 2
-const OPENAI_TOTAL_ATTEMPTS = OPENAI_MAX_RETRIES + 1
 
 async function runOpenAI(
   prompt: string,
@@ -331,6 +312,7 @@ async function runOpenAI(
   tools?: object[],
   toolChoice?: { type: 'tool'; name: string },
   reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'xhigh',
+  streaming = true,
 ): Promise<string> {
   // The app's canonical schema uses Anthropic's input_schema spelling. Convert
   // it at the provider boundary so both providers are constrained identically.
@@ -350,7 +332,7 @@ async function runOpenAI(
     reasoning: { effort: reasoningEffort },
     max_output_tokens: maxTokens,
     // Reasoning can take several minutes. Background mode lets the provider
-    // continue the job independently while we poll over short-lived requests.
+    // continue the job independently while a stream reconnects.
     background: true,
     store: false,
   }
@@ -362,7 +344,7 @@ async function runOpenAI(
     reqObj.parallel_tool_calls = false
   }
   onChunk(`[status] Connecting to ${model}…\n`)
-  onChunk(`[diag] provider=openai mode=background model=${model} reasoning=${reasoningEffort} max_output_tokens=${maxTokens} prompt=${(prompt.length / 1024).toFixed(1)}KB\n`)
+  onChunk(`[diag] provider=openai mode=background stream=${streaming} model=${model} reasoning=${reasoningEffort} max_output_tokens=${maxTokens} prompt=${(prompt.length / 1024).toFixed(1)}KB\n`)
 
   // The SDK owns request timeouts, transient retries, response parsing, and API
   // errors. Background mode keeps the model job independent from any one request.
@@ -372,41 +354,7 @@ async function runOpenAI(
     maxRetries: OPENAI_MAX_RETRIES,
   })
   const requestStart = Date.now()
-  let response = await openAiSdkRequest(
-    () => client.responses.create(reqObj),
-    onChunk,
-    'starting background analysis',
-  )
-  const responseId = typeof response.id === 'string' ? response.id : null
-
-  if ((response.status === 'queued' || response.status === 'in_progress') && !responseId) {
-    throw new Error('OpenAI started the coaching analysis but did not return a response ID')
-  }
-
-  let phraseIdx = 0
-  let nextStatusAt = 0
-  const deadline = requestStart + 15 * 60_000
-  while (response.status === 'queued' || response.status === 'in_progress') {
-    if (Date.now() >= deadline) {
-      throw new Error('OpenAI background analysis did not finish within 15 minutes')
-    }
-
-    // Poll promptly at first, then ease off for longer x-high reasoning runs.
-    const elapsedMs = Date.now() - requestStart
-    await wait(elapsedMs < 60_000 ? 2000 : 5000)
-    response = await openAiSdkRequest(
-      () => client.responses.retrieve(responseId!),
-      onChunk,
-      'checking analysis status',
-    )
-
-    if (Date.now() >= nextStatusAt && (response.status === 'queued' || response.status === 'in_progress')) {
-      onChunk(`[status] ${THINKING_PHRASES[phraseIdx % THINKING_PHRASES.length]}\n`)
-      onChunk(`[diag] background status=${response.status} elapsed=${Math.round((Date.now() - requestStart) / 1000)}s\n`)
-      phraseIdx++
-      nextStatusAt = Date.now() + 4000
-    }
-  }
+  const response = await receiveOpenAiResponse(client, reqObj, onChunk, streaming, isTransientProviderError)
 
   if (response.status === 'failed') {
     throw new Error(`OpenAI background analysis failed: ${response.error?.message ?? 'unknown provider error'}`)
@@ -418,6 +366,8 @@ async function runOpenAI(
     const reason = response.incomplete_details?.reason ?? 'unknown reason'
     throw new Error(`OpenAI response was incomplete: ${reason}`)
   }
+
+  if (response.status !== 'completed') throw new Error(`OpenAI did not complete the coaching report (${response.status ?? 'unknown status'})`)
 
   const functionCall = response.output?.find(
     (item): item is ResponseFunctionToolCall =>
@@ -442,20 +392,4 @@ async function runOpenAI(
   onChunk(`[diag] response complete: ${(full.length / 1024).toFixed(1)}KB in ${((Date.now() - requestStart) / 1000).toFixed(1)}s\n`)
   onChunk('[status] Parsing coaching report…\n')
   return full
-}
-
-async function openAiSdkRequest(
-  request: () => Promise<Response>,
-  onChunk: (text: string) => void,
-  operation: string,
-): Promise<Response> {
-  try {
-    return await request()
-  } catch (error) {
-    onChunk(`[diag] OpenAI failed while ${operation}: ${errorMessage(error)}\n`)
-    if (isTransientProviderError(error)) {
-      throw providerConnectionError('openai', error, OPENAI_TOTAL_ATTEMPTS)
-    }
-    throw error
-  }
 }

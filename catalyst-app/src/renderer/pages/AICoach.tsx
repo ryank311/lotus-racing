@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { NavLink, useNavigation, useRoute } from '../navigation'
 import { reportAnalysisUrl, segment } from '../routes'
 import { api } from '../api'
+import { CoachProgress } from '../components/CoachProgress'
 import type { CoachingSession, CoachAnnotation } from '../../shared/types'
 import { replaceSessionIds, sanitizeCoachingResult, type SessionAliasMap } from '../../shared/sessionIdentity'
 
@@ -146,6 +147,8 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
             </span>
           )}
         </div>
+
+        {(running || busy === 'coach') && <CoachProgress />}
 
         {/* Live log — always visible while running so hangs are diagnosable */}
         {running && (

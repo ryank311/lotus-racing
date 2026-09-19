@@ -9,6 +9,7 @@ import '../../src/renderer/styles.css'
 
 const listeners = new Set<(event: WorkerEvent) => void>()
 let nextReport: CoachingSession
+const emit = (event: WorkerEvent) => { for (const callback of listeners) callback(event) }
 const makeReport = (limit: number | null, id = `report-${limit}`): CoachingSession => ({
   id, created_at: '2026-09-18', session_guids: ['fixture-session'], profile_name: 'Test',
   model_used: 'fixture', title: 'Saved coaching',
@@ -29,7 +30,9 @@ const makeReport = (limit: number | null, id = `report-${limit}`): CoachingSessi
   getCoachSession: async () => nextReport,
   runCoach: async (opts: { lapLimit: number | null }) => {
     nextReport = makeReport(opts.lapLimit, `fresh-${Date.now()}`)
-    setTimeout(() => { for (const callback of listeners) callback({ kind: 'coach', type: 'done', payload: nextReport.id }) }, 50)
+    if (!new URLSearchParams(window.location.search).has('progress')) {
+      setTimeout(() => emit({ kind: 'coach', type: 'done', payload: nextReport.id }), 50)
+    }
   },
   buildAnalysis: async (_guids: string[], _units: string, limit: number | null) => ({
     config: `Fixture · ${limit ?? 'All'} laps`, totalDistM: 1000,
@@ -62,6 +65,11 @@ function Fixture() {
         query({ laps: limit ? `top${limit}` : 'all' }); setSelected(new Set(['fixture-session'])); setSession(makeReport(limit))
       }}>Load {limit ? `Top ${limit}` : 'All'} report</button>)}
       <button className="btn" onClick={() => setSelected(new Set(['another-session']))}>Change sessions</button>
+      {new URLSearchParams(window.location.search).has('progress') && <>
+        <button className="btn" onClick={() => emit({ kind: 'coach', type: 'progress', progress: { current: 2, total: 3, label: 'Model is thinking · 24s elapsed' } })}>Simulate thinking</button>
+        <button className="btn" onClick={() => emit({ kind: 'coach', type: 'progress', progress: { current: 2, total: 3, label: 'Receiving coaching report · 42s elapsed · 1,240 report chars received' } })}>Simulate report stream</button>
+        <button className="btn" onClick={() => emit({ kind: 'coach', type: 'done', payload: nextReport?.id })}>Complete report</button>
+      </>}
       <p role="status">Report invalidations: {cleared}</p>
     </div>
     <Analysis selected={selected} setSelected={setSelected} onBack={() => {}}

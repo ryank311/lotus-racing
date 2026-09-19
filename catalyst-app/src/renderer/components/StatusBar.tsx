@@ -8,10 +8,10 @@ export function StatusBar({ store, busy, signedIn, tokenDaysRemaining }: {
   tokenDaysRemaining: number
 }) {
   // Hidden status bars do not need to subscribe to background activity.
-  return busy ? <ActiveStatusBar store={store} signedIn={signedIn} tokenDaysRemaining={tokenDaysRemaining} /> : null
+  return busy ? <ActiveStatusBar store={store} coaching={busy === 'coach'} signedIn={signedIn} tokenDaysRemaining={tokenDaysRemaining} /> : null
 }
 
-function ActiveStatusBar({ store, signedIn, tokenDaysRemaining }: { store: ActivityStore['statusStore']; signedIn: boolean; tokenDaysRemaining: number }) {
+function ActiveStatusBar({ store, coaching, signedIn, tokenDaysRemaining }: { store: ActivityStore['statusStore']; coaching: boolean; signedIn: boolean; tokenDaysRemaining: number }) {
   const { logLine, logLines, progress } = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [logsExpanded, setLogsExpanded] = useState(false)
   return (
@@ -26,20 +26,20 @@ function ActiveStatusBar({ store, signedIn, tokenDaysRemaining }: { store: Activ
         {progress && progress.total > 0 ? (
           <div className="sync-progress" style={{ flex: 1 }}>
             <div className="sync-progress-row">
-              <span className="sync-progress-counter">{progress.current}/{progress.total}</span>
+              {!coaching && <span className="sync-progress-counter">{progress.current}/{progress.total}</span>}
               <span className="sync-progress-log">
                 {(progress.label || logLine).replace(/^\[\d+\/\d+\]\s*/, '')}
               </span>
               {progress.fileName && (
                 <span className="sync-progress-file">→ {progress.fileName}</span>
               )}
-              <span className="sync-progress-pct">
+              {!coaching && <span className="sync-progress-pct">
                 {Math.round((progress.current / progress.total) * 100)}%
-              </span>
+              </span>}
             </div>
-            <div className="sync-progress-track">
+            {!coaching && <div className="sync-progress-track">
               <div className="sync-progress-fill" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
-            </div>
+            </div>}
           </div>
         ) : (
           <div className="log" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

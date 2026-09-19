@@ -535,7 +535,7 @@ export function registerApiHandlers(
           model: configuredModelFor(cfg.ai?.model, provider),
           reasoningEffort: provider === 'openai' ? 'xhigh' : undefined,
           maxTokens: provider === 'openai' ? 64000 : 32000,
-          stream: provider === 'anthropic',
+          stream: true,
           tools:     [COACHING_TOOL],
           toolChoice: { type: 'tool' as const, name: COACHING_TOOL.name },
         }

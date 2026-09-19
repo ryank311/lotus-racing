@@ -9,6 +9,7 @@ import { useUnits } from '../units'
 import { useNavigation, useRoute } from '../navigation'
 import { humanSessionLabel, sanitizeCoachingResult } from '../../shared/sessionIdentity'
 import { coachingLapFilter, type LapFilter } from '../../shared/coachingScope'
+import { CoachProgress } from '../components/CoachProgress'
 import type { AnalysisData } from '../../garmin/analysisData'
 import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
@@ -280,6 +281,8 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           )}
         </div>
       </header>
+
+      {(coachRunning || busy === 'coach') && <CoachProgress />}
 
       <div
         className={`analysis-split mobile-view-${loading || err ? 'charts' : mobileView}`}
