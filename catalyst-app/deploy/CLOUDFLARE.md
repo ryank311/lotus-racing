@@ -13,8 +13,10 @@ and requires a valid Access token. The private `.env.cloudflare` is the
 production/NAS configuration; it is not committed to Git.
 
 The Mac test uses `dev.kingracing.net` with a separate `catalyst-coach-dev`
-tunnel and private `.env.cloudflare.mac` file. Complete the dev setup below
-before its first run. Both servers can then run at the same time.
+tunnel and private `.env.cloudflare.mac` file, already configured on this Mac.
+Its Access application uses the same two invited emails and email-code login
+as production. Both servers can run at the same time. The dev setup below
+documents how to recreate this configuration on another Mac.
 
 ## One-time Cloudflare setup
 
