@@ -15,6 +15,21 @@ COMMAND = '/bin/bash /usr/local/lib/catalyst-coach/auto-update-synology.sh'
 API = '/usr/syno/bin/synowebapi'
 
 
+class ProgressOutput:
+    """Show progress in the SSH terminal while retaining the installation log."""
+    def __init__(self, terminal, log):
+        self.terminal = terminal
+        self.log = log
+
+    def write(self, text):
+        self.terminal.write(text)
+        return self.log.write(text)
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+
 def api(method, version=4, root=False, **params):
     args = [API, '--exec', 'api=SYNO.Core.TaskScheduler' + ('.Root' if root else ''),
             f'method={method}', f'version={version}']
@@ -45,7 +60,7 @@ def main():
     # Keep a readable record so installation can be verified over key-based SSH.
     with log.open('w', buffering=1) as output:
         original = sys.stdout
-        sys.stdout = output
+        sys.stdout = ProgressOutput(original, output)
         try:
             print('Preparing native DSM task.', flush=True)
             tasks = api('list', version=3).get('tasks', [])
@@ -76,9 +91,13 @@ def main():
             print(api('create' if task_id == -1 else 'set', root=True, **params), flush=True)
             print(subprocess.check_output(['/usr/syno/bin/synoschedtask', '--get', 'owner=root'], text=True), flush=True)
             print('Testing updater now.', flush=True)
-            result = subprocess.run(['/bin/bash', str(target)], stdout=output, stderr=subprocess.STDOUT)
-            print(f'Updater exit: {result.returncode}', flush=True)
-            if result.returncode:
+            with subprocess.Popen(['/bin/bash', str(target)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
+                for line in process.stdout:
+                    print(line, end='', flush=True)
+                returncode = process.wait()
+            print(f'Updater exit: {returncode}', flush=True)
+            if returncode:
                 raise RuntimeError('Updater test failed; inspect setup.log.')
             print('SETUP COMPLETE', flush=True)
         except Exception as error:
