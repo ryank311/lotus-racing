@@ -63,6 +63,7 @@ export interface ConditionOverride { surface: Surface | null; temperatureC: numb
 export interface ProgressFilters {
   vehicleGuid?: string; configurationId?: number; cartographyId?: number
   account?: string; reverse?: boolean; direction?: string | null
+  /** Omit temperatureC to include all temperatures; when set, match within ±5°C. */
   surface?: Surface; temperatureC?: number; anchorSessionGuid?: string
 }
 export interface ProgressResponse {

@@ -7,7 +7,7 @@ import { initSchema, withDb } from './loadToDb.js'
 import { markReviewDirty } from './reviewSchema.js'
 import { decodeMeanLine } from './decodePerformance.js'
 import { loadTrackYaml, resolveTrackYamlPath } from './trackYaml.js'
-import { aggregateLaps, buildComparison, finite, identityKey, inferSurface, measureLap, REVIEW_VERSION } from './reviewMetrics.js'
+import { aggregateLaps, buildComparison, finite, identityKey, inferSurface, measureLap, mean, minimum, REVIEW_VERSION } from './reviewMetrics.js'
 import { SURFACES, type ConditionOverride, type ProgressFilters, type ProgressResponse, type ReviewAggregate, type ReviewConditions, type ReviewLap, type ReviewRegion, type ReviewSnapshot, type ReviewStatus, type ReviewSummary, type SessionReviewResponse, type ReviewCoachingReport } from '../shared/review.js'
 
 export const reviewHash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -292,15 +292,16 @@ export class ReviewService {
       const anchor = available.find(s => s.sessionGuid === (input.anchorSessionGuid ?? last)) ?? available.at(-1)
       const filters: ProgressFilters = { vehicleGuid: anchor?.vehicleGuid ?? undefined, configurationId: anchor?.configurationId ?? undefined,
         cartographyId: anchor?.cartographyId ?? undefined, account: anchor?.account ?? undefined, reverse: anchor?.reverse ?? undefined,
-        direction: anchor?.direction, surface: anchor?.conditions.surface, temperatureC: anchor?.conditions.temperatureC ?? undefined, ...input }
+        direction: anchor?.direction, surface: anchor?.conditions.surface, ...input }
       const sessions = available.filter(s => identityKey(s) && s.vehicleGuid === filters.vehicleGuid && s.configurationId === filters.configurationId
         && s.cartographyId === filters.cartographyId && s.account === filters.account && s.reverse === filters.reverse && s.direction === filters.direction
-        && filters.surface !== 'unknown' && s.conditions.surface === filters.surface && finite(filters.temperatureC)
-        && finite(s.conditions.temperatureC) && Math.abs(s.conditions.temperatureC - filters.temperatureC) <= 5 + 1e-8 && s.fastLapCount > 0)
+        && filters.surface !== 'unknown' && s.conditions.surface === filters.surface
+        && (filters.temperatureC === undefined || finite(s.conditions.temperatureC) && Math.abs(s.conditions.temperatureC - filters.temperatureC) <= 5 + 1e-8) && s.fastLapCount > 0)
       const references = sessions.map(s => {
-        const comparison = buildComparison({ summary: s, laps: [], map: [], version: REVIEW_VERSION, revision: '' }, available,
-          { catalog: 0, downloaded: 0, processed: 0, pending: 0, failed: 0 })
-        return { sessionGuid: s.sessionGuid, baselineMs: comparison.pace.baseline, priorBestMs: comparison.bestLap.personalBest }
+        // Progress references use the same optional filters as the visible history.
+        const history = sessions.filter(other => other.sessionGuid !== s.sessionGuid && other.start && s.start && other.start < s.start)
+          .sort((a, b) => b.start!.localeCompare(a.start!) || a.sessionGuid.localeCompare(b.sessionGuid))
+        return { sessionGuid: s.sessionGuid, baselineMs: mean(history.slice(0, 5).map(other => other.paceMs)), priorBestMs: minimum(history.map(other => other.bestLapMs)) }
       })
       return { filters, available, sessions, references, coverage: await this.coverage(con) }
     })

@@ -128,3 +128,33 @@ test('repeat ingestion preserves review revision and telemetry changes enqueue e
     assert.notEqual(updated[0], first[0]); assert.equal(updated[1], 'pending'); assert.equal(updated[2], first[2] + 1)
   }, dbPath)
 })
+
+test('progress temperature matching is opt-in and references follow the selected history', async t => {
+  const service = new ReviewService({ isBusy: () => true })
+  const summary = (id, start, temperatureC, paceMs, extra = {}) => ({
+    sessionGuid: id, start, account: 'driver', vehicleGuid: 'car', configurationId: 1, cartographyId: 1,
+    reverse: false, direction: 'clockwise', fastLapCount: 3, paceMs, bestLapMs: paceMs - 100,
+    conditions: { surface: 'dry', temperatureC }, ...extra,
+  })
+  const available = [
+    summary('cold', '2026-01-01', 5, 10000),
+    summary('unknown-temp', '2026-01-02', null, 11000),
+    summary('edge', '2026-01-03', 25, 12000),
+    summary('outside', '2026-01-04', 25.01, 13000),
+    summary('other-car', '2026-01-04', 20, 5000, { vehicleGuid: 'other' }),
+    summary('current', '2026-01-05', 20, 14000),
+    summary('future', '2026-01-06', 20, 6000),
+  ]
+  t.mock.method(service, 'db', async fn => fn({ runAndReadAll: async () => ({ getRowObjectsJson: () => [] }) }))
+  t.mock.method(service, 'summaries', async () => [...available])
+  t.mock.method(service, 'coverage', async () => ({}))
+  const all = await service.progress({ anchorSessionGuid: 'current' })
+  assert.equal(all.filters.temperatureC, undefined)
+  assert.deepEqual(all.sessions.map(s => s.sessionGuid), ['cold', 'unknown-temp', 'edge', 'outside', 'current', 'future'])
+  assert.deepEqual(all.references.find(r => r.sessionGuid === 'current'), { sessionGuid: 'current', baselineMs: 11500, priorBestMs: 9900 })
+  const matched = await service.progress({ anchorSessionGuid: 'current', temperatureC: 20 })
+  assert.deepEqual(matched.sessions.map(s => s.sessionGuid), ['edge', 'current', 'future'])
+  assert.deepEqual(matched.references.find(r => r.sessionGuid === 'current'), { sessionGuid: 'current', baselineMs: 12000, priorBestMs: 11900 })
+  assert.equal((await service.progress({ anchorSessionGuid: 'unknown-temp' })).sessions.length, 6)
+  assert.equal((await service.progress({ anchorSessionGuid: 'current' })).sessions.length, 6, 'clearing the filter restores all temperatures')
+})
