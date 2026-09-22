@@ -10,7 +10,9 @@ import { aggregateLaps, buildComparison, measureLap } from '../../src/garmin/rev
 import type { ReviewAggregate, ReviewCoachResult } from '../../src/shared/review'
 import '../../src/renderer/styles.css'
 
+const progressFixture = new URLSearchParams(window.location.search).has('progress')
 const regions = [{ id: 'corner:T1', name: 'T1 · Illustrative corner', kind: 'corner' as const, startM: 20, endM: 60 }]
+if (progressFixture) regions.push({ id: 'corner:T2', name: 'T2 · Hairpin', kind: 'corner', startM: 65, endM: 85 })
 // Several sessions per visit, with months off track between visits.
 const sessionDates = ['2026-04-18 10:00:00', '2026-04-18 14:00:00', '2026-04-19 11:00:00', '2026-08-29 10:00:00', '2026-08-30 10:00:00', '2026-09-19 10:00:00']
 const make = (n: number): ReviewAggregate => {
@@ -24,6 +26,11 @@ const make = (n: number): ReviewAggregate => {
   } }
 }
 const all = [1, 2, 3, 4, 5, 6].map(make)
+if (progressFixture) {
+  all[0].summary.geometryRevision = 'older-definitions'
+  all[2].summary.regions[0].entryMps = null
+  all.forEach((s, i) => { s.summary.regions[1].entryMps = 12 + i; s.summary.regions[1].consistencyMs = 0 })
+}
 const reviewListeners = new Set<Function>(), workerListeners = new Set<Function>()
 let state = 'ready', reports = 0, runCount = 0
 let rerender = () => {}
@@ -62,5 +69,5 @@ function Fixture() {
     <strong>ILLUSTRATIVE QA</strong>{['ready', 'processing', 'needs-download', 'failed', 'network-error', 'partial', 'unknown', 'stale'].map(s => <button key={s} onClick={() => { state = s; setTick(n => n + 1); notify() }}>{s}</button>)}<output>Coach calls: {runCount}</output>
   </div><div className="app-shell" style={{ height: 'calc(100dvh - 80px)', gridTemplateColumns: 'minmax(0, 1fr)' }}><main className="main-pane">{route.page === 'progress' ? <Progress /> : <SessionReview refreshTick={tick} busy={null} />}</main></div></>
 }
-const router = createMemoryRouter([{ path: '*', element: <NavigationProvider><UnitsProvider><Fixture /></UnitsProvider></NavigationProvider> }], { initialEntries: ['/review/fixture-6'] })
+const router = createMemoryRouter([{ path: '*', element: <NavigationProvider><UnitsProvider><Fixture /></UnitsProvider></NavigationProvider> }], { initialEntries: [progressFixture ? '/progress' : '/review/fixture-6'] })
 createRoot(document.getElementById('root')!).render(<RouterProvider router={router} />)

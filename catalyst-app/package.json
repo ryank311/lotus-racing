@@ -25,7 +25,8 @@
     "brief": "tsx src/garmin/cli/brief.ts",
     "corners": "tsx src/garmin/cli/corners.ts",
     "build:main": "node scripts/clean-main.mjs && tsc -p tsconfig.main.json",
-    "build:renderer": "vite build && vite build --mode desktop && node scripts/compress-renderer.mjs"
+    "build:renderer": "vite build && vite build --mode desktop && node scripts/compress-renderer.mjs",
+    "test:progress": "node --import tsx --test tests/progressComparison.test.ts && node tests/progressComparison.mjs"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.2.0-alpha.14",

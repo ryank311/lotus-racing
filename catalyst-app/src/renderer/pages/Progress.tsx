@@ -2,16 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useNavigation, useRoute } from '../navigation'
 import { segment } from '../routes'
-import { SURFACES, type ProgressResponse, type ReviewMetric, type ReviewSummary, type Surface } from '../../shared/review'
+import { SURFACES, type ProgressResponse, type ReviewSummary, type Surface } from '../../shared/review'
 import { ReviewTrend } from '../components/ReviewCharts'
-import { metricLabels, useReviewFormat } from './SessionReview'
+import { ProgressComparison } from '../components/RegionProgressComparison'
+import { useReviewFormat } from './SessionReview'
 
 const layoutKey = (s: ReviewSummary) => JSON.stringify([s.account, s.cartographyId, s.configurationId, s.reverse, s.direction])
 export function Progress() {
   const { params } = useRoute(), { query } = useNavigation(), f = useReviewFormat()
   const anchor = params.get('anchor'), surface = params.get('surface'), temperature = params.get('temp')
   const [data, setData] = useState<ProgressResponse | null>(null), [error, setError] = useState('')
-  const [region, setRegion] = useState(''), [metric, setMetric] = useState<ReviewMetric>('timeMs')
   const [temperatureDraft, setTemperatureDraft] = useState('')
   const sequence = useRef(0)
   const load = useCallback(async () => {
@@ -34,11 +34,8 @@ export function Progress() {
   const layouts = [...new Map(available.filter(s => s.vehicleGuid === data?.filters.vehicleGuid).map(s => [layoutKey(s), s])).values()]
   const chosenLayout = layouts.find(s => s.account === data?.filters.account && s.cartographyId === data?.filters.cartographyId && s.configurationId === data?.filters.configurationId && s.reverse === data?.filters.reverse && s.direction === data?.filters.direction)
   const last = sessions.at(-1)
-  const regionOptions = last?.regions ?? []
-  const selectedRegion = regionOptions.find(r => r.id === region) ?? regionOptions[0]
-  const regionSessions = sessions.filter(s => s.meanLineGuid && s.meanLineGuid === last?.meanLineGuid && s.geometryRevision === last?.geometryRevision)
   const ref = new Map(data?.references.map(r => [r.sessionGuid, r]))
-  const setAnchor = (id: string) => { setRegion(''); query({ anchor: id, surface: null, temp: null }) }
+  const setAnchor = (id: string) => { query({ anchor: id, surface: null, temp: null }) }
   return <><header className="page-header"><div><h1 className="page-title">Progress</h1><p className="muted">Your pace, in comparable conditions.</p></div><NavLink to="/review" className="btn ghost">Review a session →</NavLink></header>
     <div className="page-body review-page">
       {error && <div className="review-error" role="alert">{error}<button className="btn ghost" onClick={() => void load()}>Retry progress</button></div>}
@@ -56,10 +53,8 @@ export function Progress() {
             <ReviewTrend title="Fast-three pace" secondaryLabel="Best lap" format={msToLap} points={sessions.map(s => ({ id: s.sessionGuid, date: s.start ?? '', value: s.paceMs, secondary: s.bestLapMs, baseline: ref.get(s.sessionGuid)?.baselineMs, pb: ref.get(s.sessionGuid)?.priorBestMs }))} />
             <p className="muted">Each historical reference uses only earlier matching sessions within ±5°C of that point. Session means carry equal weight.</p>
           </section>
-          <div className="review-progress-grid"><section className="review-panel"><h2>Consistency</h2><p className="muted">Lap standard deviation, across valid laps within 5% of each session’s best.</p><ReviewTrend title="Lap consistency" format={f.time} points={sessions.map(s => ({ id: s.sessionGuid, date: s.start ?? '', value: s.consistencyMs }))} /></section>
-            <section className="review-panel"><h2>Corner / segment progress</h2><div className="review-filter-row"><label>Region<select value={selectedRegion?.id ?? ''} onChange={e => setRegion(e.target.value)}>{!regionOptions.length && <option value="">No regions</option>}{regionOptions.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}</select></label><label>Metric<select value={metric} onChange={e => setMetric(e.target.value as ReviewMetric)}>{Object.entries(metricLabels).map(([k, name]) => <option key={k} value={k}>{name}</option>)}</select></label></div>
-              <ReviewTrend title={metricLabels[metric]} format={v => f.format(metric, v)} points={regionSessions.map(s => ({ id: s.sessionGuid, date: s.start ?? '', value: s.regions.find(r => r.id === selectedRegion?.id)?.[metric] ?? null }))} /><p className="muted">Regional history uses the latest matching session’s meanline and corner/segment definitions. Speed changes are neutral.</p>
-            </section></div>
+          <ProgressComparison sessions={sessions} scope={JSON.stringify([data.filters.account, data.filters.vehicleGuid, last && layoutKey(last), last?.meanLineGuid, last?.geometryRevision])} />
+          <section className="review-panel"><h2>Consistency</h2><p className="muted">Lap standard deviation, across valid laps within 5% of each session’s best.</p><ReviewTrend title="Lap consistency" format={f.time} points={sessions.map(s => ({ id: s.sessionGuid, date: s.start ?? '', value: s.consistencyMs }))} /></section>
           <details className="review-panel"><summary>Session measurements</summary><div className="review-table-wrap"><table className="tbl"><thead><tr><th>Date</th><th>Fast laps</th><th>Pace</th><th>Best</th><th>Surface</th><th>Temperature</th></tr></thead><tbody>{sessions.map(s => <tr key={s.sessionGuid}><td><NavLink to={`/review/${segment(s.sessionGuid)}`}>{s.start}</NavLink></td><td>{s.fastLapCount}</td><td>{msToLap(s.paceMs)}</td><td>{msToLap(s.bestLapMs)}</td><td>{s.conditions.surface} ({s.conditions.surfaceSource})</td><td>{s.conditions.temperatureC == null ? '—' : `${f.tempFromC(s.conditions.temperatureC).toFixed(1)}${f.tempUnit}`}</td></tr>)}</tbody></table></div></details>
         </>}
       </>}
