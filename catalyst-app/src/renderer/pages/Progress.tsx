@@ -36,28 +36,31 @@ export function Progress() {
   const last = sessions.at(-1)
   const ref = new Map(data?.references.map(r => [r.sessionGuid, r]))
   const setAnchor = (id: string) => { query({ anchor: id, surface: null, temp: null }) }
-  return <><header className="page-header"><div><h1 className="page-title">Progress</h1><p className="muted">Your pace, in comparable conditions.</p></div><NavLink to="/review" className="btn ghost">Review a session →</NavLink></header>
-    <div className="page-body review-page">
+  return <div className="page-body review-page">
+      <header className="review-page-header"><h1 className="page-title">Pro<span className="accent">gress</span></h1></header>
       {error && <div className="review-error" role="alert">{error}<button className="btn ghost" onClick={() => void load()}>Retry progress</button></div>}
       {!data && !error && <p role="status">Loading progress…</p>}
       {data && <>
-        <div className="review-filter-row review-panel">
+        <details className="review-context-picker review-progress-filters" open={!sessions.length}>
+          <summary><span className="review-context-label"><strong>{chosenLayout ? `${chosenLayout.track} · ${chosenLayout.layout}` : 'Choose a comparison'}</strong><span>{vehicles.find(s => s.vehicleGuid === data.filters.vehicleGuid)?.vehicle ?? 'No vehicle'} · {data.filters.surface ?? 'unknown'} · {temperature === null ? 'All temperatures' : `±${f.system === 'imperial' ? '9°F' : '5°C'} around ${f.tempFromC(Number(temperature)).toFixed(1)}${f.tempUnit}`}</span></span><span className="reference">Filters</span></summary>
+          <div className="review-filter-row">
           <label>Vehicle<select value={data.filters.vehicleGuid ?? ''} onChange={e => { const s = [...available].reverse().find(s => s.vehicleGuid === e.target.value); if (s) setAnchor(s.sessionGuid) }}>{!vehicles.length && <option value="">No vehicles yet</option>}{vehicles.map(s => <option key={s.vehicleGuid} value={s.vehicleGuid!}>{s.vehicle}</option>)}</select></label>
           <label>Track / layout<select value={chosenLayout?.sessionGuid ?? ''} onChange={e => setAnchor(e.target.value)}>{!layouts.length && <option value="">No layouts yet</option>}{layouts.map(s => <option key={layoutKey(s)} value={s.sessionGuid}>{s.track} · {s.layout}{s.reverse ? ' · Reverse' : ''}{s.direction ? ` · ${s.direction}` : ''} · {s.account ?? 'Unknown driver'}</option>)}</select></label>
           <label>Surface<select value={data.filters.surface ?? 'unknown'} onChange={e => query({ surface: e.target.value })}>{SURFACES.map(s => <option key={s}>{s}</option>)}</select></label>
           <label>Temperature comparison<select aria-label="Temperature comparison" value={temperature === null ? 'all' : 'matched'} onChange={e => query({ temp: e.target.value === 'all' ? null : String([...sessions].reverse().find(s => s.conditions.temperatureC != null)?.conditions.temperatureC ?? 20) })}><option value="all">All temperatures</option><option value="matched">Within ±{f.system === 'imperial' ? '9°F' : '5°C'}</option></select></label>
           {temperature !== null && <form className="review-temperature-filter" onSubmit={e => { e.preventDefault(); const n = Number(temperatureDraft); if (temperatureDraft.trim() && Number.isFinite(n)) query({ temp: String(f.system === 'imperial' ? (n - 32) * 5 / 9 : n) }) }}><label>Temperature centre ({f.tempUnit})<input aria-label="Progress temperature centre" type="number" required min={f.system === 'imperial' ? -76 : -60} max={f.system === 'imperial' ? 158 : 70} step="0.1" value={temperatureDraft} onChange={e => setTemperatureDraft(e.target.value)} /></label><button className="btn ghost">Apply ±{f.system === 'imperial' ? '9°F' : '5°C'}</button></form>}
-        </div>
-        <p className="review-note">{sessions.length} matching sessions · {data.coverage.processed}/{data.coverage.downloaded} downloaded sessions processed · {data.coverage.catalog - data.coverage.downloaded} overviews without telemetry{data.coverage.failed ? ` · ${data.coverage.failed} processing failures` : ''}. <NavLink to="/sessions">Manage sessions</NavLink></p>
+          </div>
+        </details>
+        <details className="review-coverage"><summary>{sessions.length} matching sessions{(data.coverage.pending > 0 || data.coverage.downloaded < data.coverage.catalog || data.coverage.failed > 0) && <span className="reference"> · Partial history</span>}<span className="muted"> · Data coverage</span></summary><p className="review-note">{data.coverage.processed}/{data.coverage.downloaded} downloaded sessions processed · {data.coverage.catalog - data.coverage.downloaded} overviews without telemetry{data.coverage.failed ? ` · ${data.coverage.failed} processing failures` : ''}. <NavLink to="/sessions">Manage sessions</NavLink></p></details>
         {!sessions.length ? <div className="review-panel"><h2>{data.coverage.pending ? 'Building your progress history' : 'No comparable sessions yet'}</h2><p>Choose a known vehicle, layout and surface, or widen the optional temperature filter. All temperatures includes sessions without a recorded temperature.</p><NavLink to="/review">Review a session and confirm conditions</NavLink></div> : <>
           <section className="review-panel"><div className="review-section-heading"><h2>Lap time progress</h2><span className="muted">Select any point to open its review</span></div>
             <ReviewTrend title="Fast-three pace" secondaryLabel="Best lap" format={msToLap} points={sessions.map(s => ({ id: s.sessionGuid, date: s.start ?? '', value: s.paceMs, secondary: s.bestLapMs, baseline: ref.get(s.sessionGuid)?.baselineMs, pb: ref.get(s.sessionGuid)?.priorBestMs }))} />
-            <p className="muted">Historical references use earlier sessions with the same comparison filters{temperature === null ? ', across all temperatures (including unrecorded temperatures)' : `, within ±${f.system === 'imperial' ? '9°F' : '5°C'} of the selected centre`}. Session means carry equal weight.</p>
+            <details className="review-method"><summary>How comparisons work</summary><p className="muted">Historical references use earlier sessions with the same comparison filters{temperature === null ? ', across all temperatures (including unrecorded temperatures)' : `, within ±${f.system === 'imperial' ? '9°F' : '5°C'} of the selected centre`}. Session means carry equal weight.</p></details>
           </section>
           <ProgressComparison sessions={sessions} scope={JSON.stringify([data.filters.account, data.filters.vehicleGuid, last && layoutKey(last), last?.meanLineGuid, last?.geometryRevision])} />
           <section className="review-panel"><h2>Consistency</h2><p className="muted">Lap standard deviation, across valid laps within 5% of each session’s best.</p><ReviewTrend title="Lap consistency" format={f.time} points={sessions.map(s => ({ id: s.sessionGuid, date: s.start ?? '', value: s.consistencyMs }))} /></section>
           <details className="review-panel"><summary>Session measurements</summary><div className="review-table-wrap"><table className="tbl"><thead><tr><th>Date</th><th>Fast laps</th><th>Pace</th><th>Best</th><th>Surface</th><th>Temperature</th></tr></thead><tbody>{sessions.map(s => <tr key={s.sessionGuid}><td><NavLink to={`/review/${segment(s.sessionGuid)}`}>{s.start}</NavLink></td><td>{s.fastLapCount}</td><td>{msToLap(s.paceMs)}</td><td>{msToLap(s.bestLapMs)}</td><td>{s.conditions.surface} ({s.conditions.surfaceSource})</td><td>{s.conditions.temperatureC == null ? '—' : `${f.tempFromC(s.conditions.temperatureC).toFixed(1)}${f.tempUnit}`}</td></tr>)}</tbody></table></div></details>
         </>}
       </>}
-    </div></>
+    </div>
 }

@@ -3,6 +3,7 @@ import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 import { SessionReview } from '../../src/renderer/pages/SessionReview'
+import { App } from '../../src/renderer/App'
 import { Progress } from '../../src/renderer/pages/Progress'
 import { NavigationProvider, useRoute } from '../../src/renderer/navigation'
 import { UnitsProvider } from '../../src/renderer/units'
@@ -11,6 +12,10 @@ import type { ReviewAggregate, ReviewCoachResult } from '../../src/shared/review
 import '../../src/renderer/styles.css'
 
 const progressFixture = new URLSearchParams(window.location.search).has('progress')
+const appFixture = new URLSearchParams(window.location.search).has('app')
+const test = window as any
+const savedReports = new Map<string, any>()
+let pendingCoach: any
 const regions = [{ id: 'corner:T1', name: 'T1 · Illustrative corner', kind: 'corner' as const, startM: 20, endM: 60 }]
 if (progressFixture) regions.push({ id: 'corner:T2', name: 'T2 · Hairpin', kind: 'corner', startM: 65, endM: 85 })
 // Several sessions per visit, with months off track between visits.
@@ -39,7 +44,22 @@ const result: ReviewCoachResult = { summary: 'Your faster pace repeated across t
 const coverage = () => ({ catalog: 6, downloaded: 6, processed: state === 'partial' ? 4 : 6, pending: state === 'partial' ? 2 : 0, failed: 0 })
 const snapshot = (id: string) => ({ ...buildComparison(all.find(s => s.summary.sessionGuid === id) ?? all[5], all.map(s => s.summary), coverage()), revision: 'current' })
 const notify = () => reviewListeners.forEach(fn => fn({ sessionGuid: 'fixture-6', state: 'ready' }))
+test.finishCoach = () => {
+  const guid = pendingCoach.sessionGuids[0], id = `fixture-report-${runCount}`
+  const report = { id, session_guids: [guid], created_at: '2026-09-06', model_used: 'Offline fixture',
+    review_context: { sessionGuid: guid, revision: 'current', units: 'imperial', evidence: {} },
+    review_result: { ...result, summary: `Completed coaching ${runCount} for ${guid}` } }
+  savedReports.set(guid, report)
+  workerListeners.forEach(fn => fn({ kind: 'coach', type: 'done', payload: id }))
+}
 ;(window as any).reviewFixture = (method: string, args: any[]) => {
+  if (method === 'getAuthState') return Promise.resolve({ tokenValid: false })
+  if (method === 'getSyncStats') return Promise.resolve({ sessionCount: 6 })
+  if (method === 'onLog') return () => {}
+  if (method === 'getCoachSession') {
+    const report = [...savedReports.values()].find(r => r.id === args[0]) ?? null
+    return test.holdReport ? new Promise(resolve => { test.releaseReport = () => resolve(report) }) : Promise.resolve(report)
+  }
   if (method === 'onReviewStatus' || method === 'onWorker') { const set = method === 'onWorker' ? workerListeners : reviewListeners; set.add(args[0]); return () => set.delete(args[0]) }
   if (method === 'getUnits') return Promise.resolve('imperial')
   if (method === 'getActiveProfile') return Promise.resolve('Example')
@@ -48,6 +68,13 @@ const notify = () => reviewListeners.forEach(fn => fn({ sessionGuid: 'fixture-6'
     if (state === 'network-error') return Promise.reject(new Error('Illustrative network failure'))
     if (['processing', 'needs-download', 'failed'].includes(state)) return Promise.resolve({ state, error: state === 'failed' ? 'Illustrative processing failure' : null, snapshot: null, coaching: null, coachingStale: false })
     let s = snapshot(args[0])
+    if (appFixture) {
+      const report = savedReports.get(args[0])
+      return Promise.resolve({ state: 'ready', snapshot: s, error: null, coachingStale: false, coaching: report ? {
+        id: report.id, sessionGuid: args[0], revision: 'current', createdAt: report.created_at, model: report.model_used,
+        units: 'imperial', result: report.review_result, evidence: {}, error: null,
+      } : null })
+    }
     if (state === 'unknown') {
       const current: ReviewAggregate = { ...s.current, summary: { ...s.current.summary, conditions: { ...s.current.summary.conditions, surface: 'unknown' } } }
       s = { ...buildComparison(current, all.map(a => a.summary), coverage()), revision: 'current' }
@@ -59,7 +86,12 @@ const notify = () => reviewListeners.forEach(fn => fn({ sessionGuid: 'fixture-6'
   }
   if (method === 'ensureSessionReview') { if (args[1] || state === 'network-error') { state = 'ready'; notify() }; return Promise.resolve() }
   if (method === 'getProgress') return Promise.resolve({ filters: { vehicleGuid: 'car', account: 'fixture', cartographyId: 1, configurationId: 1, reverse: false, direction: 'clockwise', surface: 'dry', temperatureC: 20 }, available: all.map(s => s.summary), sessions: all.map(s => s.summary), references: [], coverage: coverage() })
-  if (method === 'runCoach') { runCount++; reports++; rerender(); workerListeners.forEach(fn => fn({ kind: 'coach', type: 'done', payload: 'fixture-report' })); return Promise.resolve({ sessionId: null }) }
+  if (method === 'runCoach') {
+    runCount++
+    if (appFixture) { pendingCoach = args[0]; workerListeners.forEach(fn => fn({ kind: 'coach', type: 'progress', progress: { current: 0, total: 3, label: 'Coaching…' } })) }
+    else { reports++; rerender(); workerListeners.forEach(fn => fn({ kind: 'coach', type: 'done', payload: 'fixture-report' })) }
+    return Promise.resolve({ sessionId: null })
+  }
   return Promise.resolve()
 }
 function Fixture() {
@@ -69,5 +101,6 @@ function Fixture() {
     <strong>ILLUSTRATIVE QA</strong>{['ready', 'processing', 'needs-download', 'failed', 'network-error', 'partial', 'unknown', 'stale'].map(s => <button key={s} onClick={() => { state = s; setTick(n => n + 1); notify() }}>{s}</button>)}<output>Coach calls: {runCount}</output>
   </div><div className="app-shell" style={{ height: 'calc(100dvh - 80px)', gridTemplateColumns: 'minmax(0, 1fr)' }}><main className="main-pane">{route.page === 'progress' ? <Progress /> : <SessionReview refreshTick={tick} busy={null} />}</main></div></>
 }
-const router = createMemoryRouter([{ path: '*', element: <NavigationProvider><UnitsProvider><Fixture /></UnitsProvider></NavigationProvider> }], { initialEntries: [progressFixture ? '/progress' : '/review/fixture-6'] })
+const router = createMemoryRouter([{ path: '*', element: <NavigationProvider><UnitsProvider>{appFixture ? <App /> : <Fixture />}</UnitsProvider></NavigationProvider> }], { initialEntries: [progressFixture ? '/progress' : '/review/fixture-6'] })
+test.router = router
 createRoot(document.getElementById('root')!).render(<RouterProvider router={router} />)

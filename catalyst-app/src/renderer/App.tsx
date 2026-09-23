@@ -51,7 +51,9 @@ function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () =
 
 export function App() {
   const [{ addLogEntry, logStore, statusStore }] = useState(createActivityStore)
-  const { page, params, location } = useRoute()
+  const { page, id, params, location } = useRoute()
+  const currentRoute = useRef({ page, id })
+  currentRoute.current = { page, id }
   const { go, query, lastSessions } = useNavigation()
   const navigate = useNavigate()
   const selectionKey = JSON.stringify(params.getAll(page === 'sessions' ? 'selected' : 'session').sort())
@@ -82,7 +84,7 @@ export function App() {
     }).catch(e => { if (!cancelled) setReportError(String(e)) }).finally(() => { if (!cancelled) setReportLoading(false) })
     return () => { cancelled = true }
   }, [reportId, go])
-  const [coachToast, setCoachToast] = useState<{ sessionId: string } | null>(null)
+  const [coachToast, setCoachToast] = useState<{ url: string; reviewSessionGuid?: string } | null>(null)
 
 
   const refresh = useCallback(async () => {
@@ -149,7 +151,17 @@ export function App() {
         statusStore.appendLine(`✓ ${doneMsg}`)
         statusStore.setProgress(null)
         if (evt.kind === 'coach' && evt.payload) {
-          setCoachToast({ sessionId: evt.payload })
+          const fallbackUrl = `/coach/${encodeURIComponent(evt.payload)}`
+          void api.getCoachSession(evt.payload).then(report => {
+            const reviewSessionGuid = report?.review_context?.sessionGuid
+            const viewingReview = reviewSessionGuid && currentRoute.current.page === 'review' && currentRoute.current.id === reviewSessionGuid
+            setCoachToast(viewingReview ? null : {
+              url: report?.review_context ? reportAnalysisUrl(report) : fallbackUrl,
+              reviewSessionGuid,
+            })
+            // Refresh the open review after resolving the saved report as well.
+            setRefreshTick(t => t + 1)
+          }).catch(() => setCoachToast({ url: fallbackUrl }))
         } else {
           refresh()
         }
@@ -373,9 +385,9 @@ export function App() {
         )}
 
         {/* Coach analysis ready toast */}
-        {coachToast && (
+        {coachToast && !(coachToast.reviewSessionGuid && page === 'review' && id === coachToast.reviewSessionGuid) && (
           <CoachToast
-            onView={() => { go(`/coach/${encodeURIComponent(coachToast.sessionId)}`); setCoachToast(null) }}
+            onView={() => { go(coachToast.url); setCoachToast(null) }}
             onDismiss={() => setCoachToast(null)}
           />
         )}
