@@ -1,3 +1,5 @@
+import { useResource } from '../useResource'
+import { InlineLoadStatus, ChartPlaceholder } from '../components/Loading'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useNavigation, useRoute } from '../navigation'
@@ -85,12 +87,13 @@ function LapControls({ snapshot, onSave, disabled }: { snapshot: ReviewSnapshot;
 
 export function SessionReview({ refreshTick, busy }: { refreshTick: number; busy: string | null }) {
   const { id } = useRoute(), { go } = useNavigation(), f = useReviewFormat()
-  const [sessions, setSessions] = useState<DbSessionRow[]>([]), [response, setResponse] = useState<SessionReviewResponse | null>(null)
+  const catalogue = useResource(() => api.listSessions(), '', refreshTick)
+  const sessions = catalogue.data ?? []
+  const [response, setResponse] = useState<SessionReviewResponse | null>(null)
   const [error, setError] = useState(''), [phase, setPhase] = useState('Loading review…'), [saving, setSaving] = useState(false), [coaching, setCoaching] = useState(false)
   const generation = useRef(0), request = useRef(0), mounted = useRef(true), selectedId = useRef(id)
   selectedId.current = id
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-  useEffect(() => { let cancelled = false; void api.listSessions().then(rows => { if (!cancelled) setSessions(rows) }).catch(e => { if (!cancelled) setError(String(e)) }); return () => { cancelled = true } }, [refreshTick])
   const reload = useCallback(async () => {
     if (!id) return
     const current = ++request.current, token = generation.current
@@ -143,23 +146,25 @@ export function SessionReview({ refreshTick, busy }: { refreshTick: number; busy
   const regionGains = snapshot?.regions.filter(r => r.metrics.timeMs.clearChange === 'gain').sort((a, b) => a.metrics.timeMs.delta! - b.metrics.timeMs.delta!) ?? []
   const regionLosses = snapshot?.regions.filter(r => r.metrics.timeMs.clearChange === 'regression').sort((a, b) => b.metrics.timeMs.delta! - a.metrics.timeMs.delta!) ?? []
   return <div className="page-body review-page">
-      <header className="review-page-header"><h1 className="page-title">Session <span className="accent">Review</span></h1></header>
+      <header className="review-page-header"><div className="page-eyebrow">// post-session</div><h1 className="page-title">Session <span className="accent">Review</span></h1></header>
+      <InlineLoadStatus label="sessions" pending={catalogue.pending} error={catalogue.error} hasData={catalogue.data !== undefined} onRetry={catalogue.reload} />
       <div className="review-context">
         <details className="review-picker review-context-picker" key={id ?? 'choose'} open={!summary}>
           <summary><span className="review-context-label"><strong>{summary ? `${summary.track} · ${summary.layout}` : 'Choose a session'}</strong>{summary && <span>{summary.vehicle} · {summary.start?.slice(0, 16) ?? 'Date unavailable'}</span>}</span><span className="reference">Change session</span></summary>
-          <label>Session<select aria-label="Review session" value={id ?? ''} onChange={e => go(e.target.value ? `/review/${segment(e.target.value)}` : '/review')}><option value="">Choose one session</option>{sessions.map(s => <option key={s.session_guid} value={s.session_guid}>{label(s)}</option>)}</select></label>
+          <label>Session<select aria-label="Review session" disabled={catalogue.data === undefined} value={id ?? ''} onChange={e => go(e.target.value ? `/review/${segment(e.target.value)}` : '/review')}><option value="">Choose one session</option>{sessions.map(s => <option key={s.session_guid} value={s.session_guid}>{label(s)}</option>)}</select></label>
         </details>
         {summary && <Conditions key={`conditions:${id}`} summary={summary} onSave={mutate} disabled={saving || busy === 'sync' || busy === 'load'} />}
       </div>
       {error && <div className="review-error" role="alert">{error}<button className="btn ghost" onClick={() => void mutate(async () => { if (id) await api.ensureSessionReview(id, response?.state === 'failed') })}>Retry review</button></div>}
-      {!id && <div className="review-panel"><h2>Your next session starts here</h2><p>Select a session to compare your fastest laps with your recent progress.</p>{sessions[0] ? <NavLink className="btn primary" to={`/review/${segment(sessions[0].session_guid)}`}>Review latest session</NavLink> : <NavLink to="/overview">Sync sessions from Overview</NavLink>}</div>}
-      {id && !error && !snapshot && <div className="review-panel" role={response?.state === 'failed' ? 'alert' : 'status'}><h2>{response?.state === 'failed' ? 'Review processing failed' : response?.state === 'needs-download' ? 'Downloading session telemetry…' : phase}</h2><p>{response?.error ?? 'Your session metrics are prepared in the background. You can keep using the app.'}</p>{response?.state === 'failed' && <button className="btn primary" onClick={() => void mutate(() => api.ensureSessionReview(id, true))}>Retry processing</button>}</div>}
+      {!id && catalogue.data !== undefined && <div className="review-panel"><h2>Your next session starts here</h2><p>Select a session to compare your fastest laps with your recent progress.</p>{sessions[0] ? <NavLink className="btn primary" to={`/review/${segment(sessions[0].session_guid)}`}>Review latest session</NavLink> : <NavLink to="/overview">Sync sessions from Overview</NavLink>}</div>}
+      {id && !error && !snapshot && !response && phase === 'Loading review…' && <><InlineLoadStatus pending label="review" /><ChartPlaceholder title="Session pace" /></>}
+      {id && !error && !snapshot && (response || phase !== 'Loading review…') && <div className="review-panel" role={response?.state === 'failed' ? 'alert' : 'status'}><h2>{response?.state === 'failed' ? 'Review processing failed' : response?.state === 'needs-download' ? 'Downloading session telemetry…' : phase}</h2><p>{response?.error ?? 'Your session metrics are prepared in the background. You can keep using the app.'}</p>{response?.state === 'failed' && <button className="btn primary" onClick={() => void mutate(() => api.ensureSessionReview(id, true))}>Retry processing</button>}</div>}
       {snapshot && summary && <>
         <div className="review-baseline"><strong>Fastest {summary.fastLapCount} valid {summary.fastLapCount === 1 ? 'lap' : 'laps'}</strong><span>vs {snapshot.baseline.length} matched {snapshot.baseline.length === 1 ? 'session' : 'sessions'}</span></div>
         {(snapshot.coverage.pending > 0 || snapshot.coverage.downloaded < snapshot.coverage.catalog || snapshot.coverage.failed > 0) && <details className="review-coverage"><summary><span className="reference" role="status">Partial history · {snapshot.coverage.processed}/{snapshot.coverage.downloaded} sessions processed{snapshot.coverage.failed > 0 && ` · ${snapshot.coverage.failed} failed`}</span></summary><p className="review-note">{snapshot.coverage.catalog - snapshot.coverage.downloaded} overviews without telemetry; {snapshot.coverage.failed} processing failures. <NavLink to="/sessions">Download older sessions</NavLink> · <NavLink to="/overview">Sync archive</NavLink></p></details>}
         <div className="review-stat-grid"><MetricCard title="Fast-three pace" value={msToLap(summary.paceMs)} metric={snapshot.pace} format={f.time} note={snapshot.pace.clearChange ? `Clear ${snapshot.pace.clearChange}` : 'Numerical change · limited evidence for a clear trend'} /><MetricCard title="Best eligible lap" value={msToLap(summary.bestLapMs)} metric={snapshot.bestLap} format={f.time} /><MetricCard title="Top speed" value={summary.topSpeedMps == null ? '—' : f.speed(summary.topSpeedMps)} metric={snapshot.topSpeed} format={f.speed} neutral note={`Mean of lap maximum speeds.${summary.peakSpeedMps == null ? '' : ` Peak ${f.speed(summary.peakSpeedMps)} · L${(summary.peakSpeedLap ?? 0) + 1} · ${summary.peakSpeedDistanceM?.toFixed(0)} m`}`} /><MetricCard title="Consistency" value={summary.consistencyMs == null ? '—' : f.time(summary.consistencyMs)} metric={snapshot.consistency} format={f.time} neutral note={`Lap standard deviation · ${summary.representativeCount} representative laps within 5% of best`} /></div>
         <div className="review-highlights">{[{ title: 'Biggest clear gain', row: regionGains[0], className: 'gain' }, { title: 'Biggest clear regression', row: regionLosses[0], className: 'loss' }].map(item => <article className="review-panel" key={item.title}><span className="review-eyebrow">{item.title}</span><h3>{item.row?.region.name ?? 'No clear change yet'}</h3><strong className={item.className}>{item.row ? `${item.row.metrics.timeMs.delta! > 0 ? '+' : ''}${f.time(item.row.metrics.timeMs.delta!)}` : '—'}</strong><small>{item.row ? 'Repeated time change beyond recent variability' : 'Explore all observed changes below.'}</small></article>)}</div>
-        <section className="review-panel review-coach"><div className="review-section-heading"><div><span className="review-eyebrow">AI Coach</span><h2>Focus for the next session</h2></div><button className="btn primary" disabled={!!busy || coaching || saving || !!snapshot.coverage.pending} onClick={() => void askCoach()}>{coaching ? 'Coaching…' : response?.coaching?.result ? 'Regenerate coaching' : 'Ask Coach'}</button></div>
+        <section className="review-panel review-coach"><div className="review-section-heading"><div><span className="review-eyebrow">AI Coach</span><h2>Focus for the next session</h2></div><button className="btn ask-coach-btn" disabled={!!busy || coaching || saving || !!snapshot.coverage.pending} onClick={() => void askCoach()}>{coaching ? 'Coaching…' : response?.coaching?.result ? 'Regenerate coaching' : 'Ask Coach'}</button></div>
           {snapshot.coverage.pending > 0 && <p className="muted">Coaching becomes available when downloaded history finishes processing.</p>}
           {response?.coachingStale && <p className="review-note">This report uses an older review snapshot. Regenerate for updated conditions, laps, or history.</p>}
           {response?.coaching?.error && <p role="alert">{response.coaching.error}</p>}

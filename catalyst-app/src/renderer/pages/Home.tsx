@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useResource } from '../useResource'
+import { InlineLoadStatus, Skeleton, StatValue } from '../components/Loading'
 import { AI_MODELS, defaultModelFor } from '../../shared/aiModels'
 import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
 import { humaniseBytes, api } from '../api'
@@ -12,17 +14,25 @@ interface Props {
   stats: SyncStats | null
   busy: 'sync' | 'load' | 'coach' | null
   signedIn: boolean
+  statsPending: boolean
+  statsError: string | null
+  onRetryStats: () => void
+  authPending: boolean
+  authError: string | null
+  onRetryAuth: () => void
   onSync: (mode?: 'recent' | 'all') => void
   onRequestSignIn: () => void
   onSessions: () => void
 }
 
-export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onSessions }: Props) {
+export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onSessions, statsPending, statsError, onRetryStats, authPending, authError, onRetryAuth }: Props) {
   const { lastSessions } = useNavigation()
+  const initialLoading = !stats && statsPending
   const [syncMenuOpen, setSyncMenuOpen] = useState(false)
   const [latestSession, setLatestSession] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
+    if (!stats?.sessionCount) setLatestSession(null)
     if ((stats?.sessionCount ?? 0) > 0) void api.listSessions().then(rows => { if (!cancelled) setLatestSession(rows[0]?.session_guid ?? null) }).catch(() => {})
     return () => { cancelled = true }
   }, [stats?.sessionCount, stats?.sampleCount, busy])
@@ -52,7 +62,8 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
           <div className="page-title">Over<span className="accent">view</span></div>
         </div>
         <div className="page-meta">
-          <span className="muted">{signedIn ? `${stats?.lastSyncAgoHuman ?? 'never'} synced` : 'sign in to sync'}</span>
+          <InlineLoadStatus label="overview" pending={statsPending} error={statsError} hasData={!!stats} onRetry={onRetryStats} />
+          {!statsPending && !statsError && stats && <span className="muted">{stats.lastSyncAgoHuman ? `${stats.lastSyncAgoHuman} synced` : 'Not synced yet'}</span>}
         </div>
       </header>
 
@@ -60,18 +71,20 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
         <div className="banner sync-banner">
           <div>
             <div className="banner-headline">
-              {!signedIn
+              {!stats || authPending || authError
+                ? <>Telemetry archive</>
+                : !signedIn
                 ? <>Sign in to sync your Garmin telemetry</>
                 : stats && stats.sessionCount > 0
                   ? <>Telemetry archive · <span style={{ color: 'var(--signal)' }}>{stats.sessionCount}</span> sessions indexed</>
                   : <>No telemetry yet — sync your first session</>}
             </div>
             <div className="banner-sub">
-              {(stats?.sampleCount ?? 0).toLocaleString()} samples · last sync {stats?.lastSyncAgoHuman ?? 'never'}
+              {initialLoading ? <Skeleton /> : stats ? <>{stats.sampleCount.toLocaleString()} samples · last sync {stats.lastSyncAgoHuman ?? 'never'}</> : 'Session summary unavailable'}
             </div>
           </div>
           <div className="btn-row" style={{ margin: 0 }}>
-            {signedIn ? (
+            {authPending ? <button className="btn ghost" disabled>Checking account…</button> : authError ? <InlineLoadStatus label="account" pending={false} error={authError} onRetry={onRetryAuth} /> : signedIn ? (
               <div className="sync-split-button" ref={syncMenuRef}
                 onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setSyncMenuOpen(false) }}>
                 <button className="btn primary" disabled={!!busy} title="Refresh all overviews and download details for the latest 20 sessions"
@@ -98,16 +111,18 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
           </div>
         </div>
 
-        {(stats?.sessionCount ?? 0) > 0 && <NavLink className="workflow-link" to={lastSessions()}>
-          <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
-        </NavLink>}
-        {latestSession && <NavLink className="workflow-link" to={`/review/${segment(latestSession)}`}><span><strong>Review latest session</strong><small>See your gains, regressions, and next-session focus</small></span><span aria-hidden="true">→</span></NavLink>}
+        <div className="home-workflow">
+          <NavLink className="workflow-link" to={lastSessions()}>
+            <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
+          </NavLink>
+          <div className="home-latest-slot">{latestSession && <NavLink to={`/review/${segment(latestSession)}`}>Review latest session →</NavLink>}</div>
+        </div>
 
-        <div className="stat-grid">
-          <Tile label="Sessions in DB" value={String(stats?.sessionCount ?? 0)} />
-          <Tile label="Driven laps" value={(stats?.lapCount ?? 0).toLocaleString()} />
-          <Tile label="Tracks" value={String(stats?.trackCount ?? 0)} />
-          <Tile label="Last sync" value={stats?.lastSyncAgoHuman ?? 'never'} />
+        <div className="stat-grid" aria-label="Telemetry summary" aria-busy={statsPending} data-route-loading={initialLoading || undefined}>
+          <Tile label="Sessions in DB" loading={initialLoading} value={stats ? String(stats.sessionCount) : '—'} />
+          <Tile label="Driven laps" loading={initialLoading} value={stats ? stats.lapCount.toLocaleString() : '—'} />
+          <Tile label="Tracks" loading={initialLoading} value={stats ? String(stats.trackCount) : '—'} />
+          <Tile label="Last sync" loading={initialLoading} value={stats ? stats.lastSyncAgoHuman ?? 'never' : '—'} />
         </div>
 
         <section style={{ marginTop: 32 }}>
@@ -158,26 +173,19 @@ function SettingsCard() {
   )
 }
 
-function Tile({ label, value, mono, valueClass }: { label: string; value: string; mono?: boolean; valueClass?: string }) {
-  return (
-    <div className="stat-tile">
-      <div className="stat-label">{label}</div>
-      <div className={`stat-value ${mono ? 'mono' : ''} ${valueClass ?? ''}`}>{value}</div>
-    </div>
-  )
+function Tile({ label, value, loading }: { label: string; value: string; loading: boolean }) {
+  return <div className="stat-tile"><div className="stat-label">{label}</div><StatValue loading={loading}>{value}</StatValue></div>
 }
 
 function AiSettingsCard() {
-  const [settings, setSettings] = useState<AiSettings | null>(null)
+  const settingsResource = useResource(() => api.getAiSettings())
+  const { data: settings, setData: setSettings } = settingsResource
   const [draftKeys, setDraftKeys] = useState<Pick<AiSettings, 'anthropicApiKey' | 'openAiApiKey'>>({})
   const [saving, setSaving] = useState(false)
   const [editingKey, setEditingKey] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    void api.getAiSettings().then(setSettings).catch(e => setError(String(e)))
-  }, [])
 
   const savePreferences = async (next: AiSettings) => {
     const previous = settings
@@ -206,7 +214,11 @@ function AiSettingsCard() {
     finally { setSaving(false) }
   }
 
-  if (!settings) return error ? <div className="card">{error}</div> : null
+  if (!settings) return <div className="card home-settings-loading">
+    <div className="card-label">AI Coach</div>
+    <InlineLoadStatus label="AI settings" pending={settingsResource.pending} error={settingsResource.error} onRetry={settingsResource.reload} />
+    {settingsResource.pending && <div aria-busy="true"><Skeleton variant="field" /><Skeleton variant="field" /><Skeleton /></div>}
+  </div>
 
   const provider = settings.provider ?? 'anthropic'
   const providerLabel = provider === 'openai' ? 'OpenAI' : 'Anthropic'

@@ -1,3 +1,5 @@
+import { useResource } from '../useResource'
+import { InlineLoadStatus, LoadingRows } from '../components/Loading'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, isRemote } from '../api'
 import { NavLink, useNavigation, useRoute, useUnsavedChanges } from '../navigation'
@@ -20,11 +22,20 @@ function slugify(s: string): string {
 export function Garage() {
   const { id: selected, fileId: selectedFile } = useRoute()
   const { go } = useNavigation()
-  const [loading, setLoading] = useState(true)
+  const fleet = useResource(async () => {
+    const [vehicles, profiles] = await Promise.all([api.listVehicles(), api.listProfiles()])
+    return { vehicles, profiles }
+  })
+  const loading = fleet.initialLoading
+  const vehicles = fleet.data?.vehicles ?? []
+  const profiles = fleet.data?.profiles ?? []
+  const load = fleet.reload
   const [filesOwner, setFilesOwner] = useState<string | null>(null)
   const filesRequest = useRef(0)
-  const [vehicles, setVehicles]   = useState<VehicleSummary[]>([])
-  const [profiles, setProfiles]   = useState<CarProfile[]>([])
+  const [filesError, setFilesError] = useState<string | null>(null)
+  const [fileLoading, setFileLoading] = useState(false)
+  const [fileError, setFileError] = useState<string | null>(null)
+  const [fileAttempt, setFileAttempt] = useState(0)
   const [files, setFiles]         = useState<{ name: string; path: string }[]>([])
   const [content, setContent]     = useState('')
   const [original, setOriginal]   = useState('')
@@ -33,13 +44,6 @@ export function Garage() {
   const [saveError, setSaveError] = useState<string | null>(null)
   const dirty = content !== original
 
-  const load = useCallback(async () => {
-    const [v, p] = await Promise.all([api.listVehicles(), api.listProfiles()])
-    setVehicles(v)
-    setProfiles(p)
-  }, [])
-
-  useEffect(() => { void load().catch(e => setSaveError(String(e))).finally(() => setLoading(false)) }, [load])
 
   const selectedVehicle = vehicles.find(v => v.vehicleGuid === selected) ?? null
   const editPath = filesOwner === selectedVehicle?.profile ? files.find(f => fileId(f.name) === selectedFile)?.path ?? null : null
@@ -47,23 +51,28 @@ export function Garage() {
 
   const refreshFiles = useCallback(async (profileName: string) => {
     const request = ++filesRequest.current
-    const fs = await api.listProfileFiles(profileName)
-    if (request !== filesRequest.current) return
-    setFiles(fs)
-    setFilesOwner(profileName)
+    setFilesError(null)
+    try {
+      const fs = await api.listProfileFiles(profileName)
+      if (request !== filesRequest.current) return
+      setFiles(fs)
+      setFilesOwner(profileName)
+    } catch (error) {
+      if (request === filesRequest.current) setFilesError(String(error))
+    }
   }, [])
 
   useEffect(() => {
-    setFiles([]); setFilesOwner(null)
+    setFiles([]); setFilesOwner(null); setFilesError(null)
     if (!selectedVehicle?.profile) return
     void refreshFiles(selectedVehicle.profile).catch(e => setSaveError(String(e)))
     return () => { filesRequest.current++ }
   }, [selectedVehicle?.profile, refreshFiles])
 
   useEffect(() => {
-    if (!editPath) { setContent(''); setOriginal(''); setSaveError(null); return }
+    if (!editPath) { setContent(''); setOriginal(''); setSaveError(null); setFileLoading(false); setFileError(null); return }
     let cancelled = false
-    setContent(''); setOriginal('')
+    setContent(''); setOriginal(''); setFileLoading(true); setFileError(null)
     void api.readProfileFile(editPath).then(t => {
       if (cancelled) return
       setContent(t)
@@ -71,10 +80,10 @@ export function Garage() {
       setSaveError(null)
     }).catch(e => {
       if (cancelled) return
-      setSaveError(e instanceof Error ? e.message : String(e))
-    })
+      setFileError(e instanceof Error ? e.message : String(e))
+    }).finally(() => { if (!cancelled) setFileLoading(false) })
     return () => { cancelled = true }
-  }, [editPath])
+  }, [editPath, fileAttempt])
 
   const onSelectVehicle = (guid: string) => {
     go(`/garage/${segment(guid)}`)
@@ -167,13 +176,12 @@ export function Garage() {
           <div className="page-title">Gar<span className="accent">age</span></div>
         </div>
         <div className="page-meta">
-          {vehicles.length} vehicles<br />
-          <span className="muted">{profiles.length} profiles</span>
+          <InlineLoadStatus label="garage" pending={fleet.pending} error={fleet.error} hasData={!!fleet.data} onRetry={load} />
+          {fleet.data && <>{vehicles.length} vehicles<br /><span className="muted">{profiles.length} profiles</span></>}
         </div>
       </header>
 
-      <div className="page-body garage-layout" data-stage={selectedFile ? 'editor' : selected ? 'files' : 'vehicles'}>
-        {loading && <div data-route-loading role="status">Loading vehicles…</div>}
+      <div className="page-body garage-layout" data-route-loading={loading || fileLoading || undefined} data-stage={selectedFile ? 'editor' : selected ? 'files' : 'vehicles'}>
         <div className="garage-mobile-navigation">
           {selectedFile && editPath && selectedVehicle ? (
             <span className="text-mono">{vehicleLabel(selectedVehicle)}</span>
@@ -185,8 +193,9 @@ export function Garage() {
           {selected && <span className="muted text-mono">{selectedFile ? 'Edit file' : 'Choose a file'}</span>}
         </div>
         {/* ── Vehicle list ── */}
-        <div className="garage-vehicles">
-          {vehicles.length === 0 && (
+        <div className="garage-vehicles" aria-busy={fleet.pending}>
+          {loading && <LoadingRows />}
+          {fleet.data && vehicles.length === 0 && (
             <div className="garage-empty-hint">No vehicles found — sync sessions first.</div>
           )}
           {vehicles.map(v => (
@@ -207,7 +216,7 @@ export function Garage() {
 
         {/* ── Profile detail ── */}
         <div className="garage-detail">
-          {selected && !selectedVehicle && !loading ? <div role="alert">Vehicle unavailable. <NavLink to="/garage">All vehicles</NavLink></div> : selectedFile && filesOwner && !editPath ? <div role="alert">Document unavailable. <NavLink to={vehicleUrl}>Vehicle files</NavLink></div> : !selectedVehicle ? (
+          {!fleet.data ? null : selectedVehicle?.profile && filesOwner !== selectedVehicle.profile ? <><InlineLoadStatus label="context files" pending={!filesError} error={filesError} onRetry={() => void refreshFiles(selectedVehicle.profile!)} />{!filesError && <LoadingRows />}</> : selectedFile && editPath && (fileLoading || fileError) ? <><InlineLoadStatus label="document" pending={fileLoading} error={fileError} onRetry={() => setFileAttempt(n => n + 1)} />{fileLoading && <LoadingRows count={3} />}</> : selected && !selectedVehicle && !loading ? <div role="alert">Vehicle unavailable. <NavLink to="/garage">All vehicles</NavLink></div> : selectedFile && filesOwner && !editPath ? <div role="alert">Document unavailable. <NavLink to={vehicleUrl}>Vehicle files</NavLink></div> : !selectedVehicle ? (
             <div className="garage-empty-hint" style={{ margin: 'auto' }}>
               Select a vehicle to manage its context files
             </div>

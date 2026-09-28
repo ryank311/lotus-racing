@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useResource } from '../useResource'
+import { InlineLoadStatus, ChartPlaceholder } from '../components/Loading'
+import { useEffect, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useNavigation, useRoute } from '../navigation'
 import { segment } from '../routes'
-import { SURFACES, type ProgressResponse, type ReviewSummary, type Surface } from '../../shared/review'
+import { SURFACES, type ReviewSummary, type Surface } from '../../shared/review'
 import { ReviewTrend } from '../components/ReviewCharts'
 import { ProgressComparison } from '../components/RegionProgressComparison'
 import { useReviewFormat } from './SessionReview'
@@ -11,17 +13,9 @@ const layoutKey = (s: ReviewSummary) => JSON.stringify([s.account, s.cartography
 export function Progress() {
   const { params } = useRoute(), { query } = useNavigation(), f = useReviewFormat()
   const anchor = params.get('anchor'), surface = params.get('surface'), temperature = params.get('temp')
-  const [data, setData] = useState<ProgressResponse | null>(null), [error, setError] = useState('')
+  const resource = useResource(() => api.getProgress({ ...(anchor ? { anchorSessionGuid: anchor } : {}), ...(surface ? { surface: surface as Surface } : {}), ...(temperature !== null ? { temperatureC: Number(temperature) } : {}) }), JSON.stringify([anchor, surface, temperature]))
+  const { data, error, reload: load } = resource
   const [temperatureDraft, setTemperatureDraft] = useState('')
-  const sequence = useRef(0)
-  const load = useCallback(async () => {
-    const seq = ++sequence.current
-    try {
-      const result = await api.getProgress({ ...(anchor ? { anchorSessionGuid: anchor } : {}), ...(surface ? { surface: surface as Surface } : {}), ...(temperature !== null ? { temperatureC: Number(temperature) } : {}) })
-      if (seq === sequence.current) { setData(result); setError('') }
-    } catch (e) { if (seq === sequence.current) setError(e instanceof Error ? e.message : String(e)) }
-  }, [anchor, surface, temperature])
-  useEffect(() => { setData(null); void load(); return () => { sequence.current++ } }, [load])
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
     const off = api.onReviewStatus(() => { clearTimeout(timer); timer = setTimeout(() => void load(), 200) })
@@ -37,9 +31,9 @@ export function Progress() {
   const ref = new Map(data?.references.map(r => [r.sessionGuid, r]))
   const setAnchor = (id: string) => { query({ anchor: id, surface: null, temp: null }) }
   return <div className="page-body review-page">
-      <header className="review-page-header"><h1 className="page-title">Pro<span className="accent">gress</span></h1></header>
-      {error && <div className="review-error" role="alert">{error}<button className="btn ghost" onClick={() => void load()}>Retry progress</button></div>}
-      {!data && !error && <p role="status">Loading progress…</p>}
+      <header className="review-page-header"><div className="page-eyebrow">// performance history</div><h1 className="page-title">Pro<span className="accent">gress</span></h1></header>
+      <InlineLoadStatus label="progress" pending={resource.pending} error={error} hasData={!!data} onRetry={load} />
+      {resource.initialLoading && <ChartPlaceholder title="Lap time progress" />}
       {data && <>
         <details className="review-context-picker review-progress-filters" open={!sessions.length}>
           <summary><span className="review-context-label"><strong>{chosenLayout ? `${chosenLayout.track} · ${chosenLayout.layout}` : 'Choose a comparison'}</strong><span>{vehicles.find(s => s.vehicleGuid === data.filters.vehicleGuid)?.vehicle ?? 'No vehicle'} · {data.filters.surface ?? 'unknown'} · {temperature === null ? 'All temperatures' : `±${f.system === 'imperial' ? '9°F' : '5°C'} around ${f.tempFromC(Number(temperature)).toFixed(1)}${f.tempUnit}`}</span></span><span className="reference">Filters</span></summary>

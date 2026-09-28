@@ -1,3 +1,5 @@
+import { useResource } from '../useResource'
+import { InlineLoadStatus, LoadingRows, ChartPlaceholder } from '../components/Loading'
 // Tracks editor — list every (track, configuration) we have data for, and
 // let the user click on the SVG track map to set / correct the apex point of
 // each named corner. Saves back to tracks/*.yaml so briefs and the Analysis
@@ -96,7 +98,9 @@ export function Tracks() {
   const setSelectedTurn = (turn: string | null) => query({ turn })
   const setSelectedGuid = (guid: string | null) => go(guid ? `/tracks/${segment(guid)}` : '/tracks')
   const [error, setError] = useState<string | null>(null)
-  const [list, setList] = useState<TrackListEntry[]>([])
+  const listResource = useResource(() => api.listTracks())
+  const list = listResource.data ?? []
+  const [detailAttempt, setDetailAttempt] = useState(0)
   const [trackPreviews, setTrackPreviews] = useState<Record<string, TrackPreview>>({})
   const [loaded, setLoaded] = useState<LoadedTrack | null>(null)
   const [loading, setLoading] = useState(false)
@@ -105,15 +109,6 @@ export function Tracks() {
   const [savingMsg, setSavingMsg] = useState<string | null>(null)
 
   // ── data loading ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      const tracks = await api.listTracks()
-      if (cancelled) return
-      setList(tracks)
-    })().catch(e => { if (!cancelled) setError(String(e)) })
-    return () => { cancelled = true }
-  }, [])
 
   const trackGroups = useMemo(() => {
     const groups = new Map<string, TrackListEntry[]>()
@@ -146,7 +141,7 @@ export function Tracks() {
   useEffect(() => {
     let cancelled = false
     setLoaded(null); setError(null); setDirty(false)
-    if (!selectedGuid) return
+    if (!selectedGuid) { setLoading(false); return }
     void (async () => {
       setLoading(true)
       try {
@@ -164,7 +159,7 @@ export function Tracks() {
       }
     })()
     return () => { cancelled = true }
-  }, [selectedGuid])
+  }, [selectedGuid, detailAttempt])
 
   // ── derived ───────────────────────────────────────────────────────────────
   const trackMapInput = useMemo(() => {
@@ -250,7 +245,7 @@ export function Tracks() {
       setSavingMsg(`saved ${res.cornerCount} corners`)
       setDirty(false)
       // refresh list to update yamlExists / cornerCount badges
-      void api.listTracks().then(setList)
+      void listResource.reload()
       setTimeout(() => setSavingMsg(null), 2500)
       return true
     } catch (e: any) {
@@ -293,18 +288,20 @@ export function Tracks() {
           <div className="page-title">Tra<span className="accent">cks</span></div>
         </div>
         <div className="page-meta">
-          {trackGroups.length} {trackGroups.length === 1 ? 'track' : 'tracks'} · {list.length} layouts<br />
+          <InlineLoadStatus label="tracks" pending={listResource.pending} error={listResource.error} hasData={listResource.data !== undefined} onRetry={listResource.reload} />
+          {listResource.data !== undefined && <>{trackGroups.length} {trackGroups.length === 1 ? 'track' : 'tracks'} · {list.length} layouts<br /></>}
           <span className="muted">
             {activeEntry ? `${activeEntry.trackName} · ${activeEntry.configName}` : '—'}
           </span>
         </div>
       </header>
 
-      <div className="page-body tracks-body">
-        {error && <p role="alert">{error} <NavLink to="/tracks">All tracks</NavLink></p>}
+      <div className="page-body tracks-body" data-route-loading={listResource.initialLoading || loading || undefined}>
+        {error && <p role="alert">{error} <button className="btn ghost" onClick={() => setDetailAttempt(n => n + 1)}>Retry track</button> <NavLink to="/tracks">All tracks</NavLink></p>}
         {/* Track and layout pickers */}
-        <section className="tracks-selector" aria-label="Track and layout selector">
-          {list.length === 0 && (
+        <section className="tracks-selector" aria-label="Track and layout selector" aria-busy={listResource.pending}>
+          {listResource.initialLoading && <LoadingRows />}
+          {listResource.data !== undefined && list.length === 0 && (
             <div className="muted small">No track data yet — sync some sessions first.</div>
           )}
           {trackGroups.length > 0 && (
@@ -352,7 +349,7 @@ export function Tracks() {
           )}
         </section>
 
-        {loading && <div data-route-loading className="muted small" style={{ padding: 16 }}>Loading track geometry…</div>}
+        {loading && <div data-route-loading><InlineLoadStatus pending label="track geometry" /><ChartPlaceholder title="Track map" /></div>}
 
         {!loading && loaded && trackMapInput && (
           <div className="tracks-editor">

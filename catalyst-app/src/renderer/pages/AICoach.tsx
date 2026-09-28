@@ -1,3 +1,5 @@
+import { useResource } from '../useResource'
+import { InlineLoadStatus, LoadingRows } from '../components/Loading'
 import { useEffect, useMemo, useState } from 'react'
 import { NavLink, useNavigation, useRoute } from '../navigation'
 import { reportAnalysisUrl, segment } from '../routes'
@@ -24,12 +26,15 @@ interface Props {
 export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }: Props) {
   const { id } = useRoute()
   const { go } = useNavigation()
-  const [sessions, setSessions] = useState<CoachingSession[]>([])
+  const history = useResource(() => api.listCoachSessions(), '', refreshTick)
+  const sessions = history.data ?? []
+  const loadSessions = history.reload
   const [current, setCurrent] = useState<CoachingSession | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [runLog, setRunLog] = useState<string[]>([])
   const [running, setRunning] = useState(false)
-  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(!!id)
+  const [detailAttempt, setDetailAttempt] = useState(0)
   const [detailError, setDetailError] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -40,16 +45,8 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
       else setCurrent(report)
     }).catch(e => { if (!cancelled) setDetailError(String(e)) }).finally(() => { if (!cancelled) setDetailLoading(false) })
     return () => { cancelled = true }
-  }, [id, refreshTick])
+  }, [id, refreshTick, detailAttempt])
 
-  const loadSessions = async () => {
-    try {
-      const list = await api.listCoachSessions()
-      setSessions(list)
-    } catch { /* DB might not exist yet */ }
-  }
-
-  useEffect(() => { void loadSessions() }, [refreshTick])
 
   const runCoach = async () => {
     if (busy || selected.size === 0) return
@@ -123,7 +120,8 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
           <div className="page-title">AI <span className="accent">Coach</span></div>
         </div>
         <div className="page-meta">
-          {sessions.length} sessions<br />
+          <InlineLoadStatus label="coaching history" pending={history.pending} error={history.error} hasData={history.data !== undefined} onRetry={loadSessions} />
+          {history.data !== undefined && <>{sessions.length} sessions<br /></>}
           <span className="muted">{selected.size} selected</span>
         </div>
       </header>
@@ -170,8 +168,9 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
 
         <div className="split coach-history" style={{ flex: 1, minHeight: 400 }}>
           {/* Session list */}
-          <div className="list-pane">
-            {sessions.length === 0 && (
+          <div className="list-pane" aria-busy={history.pending}>
+            {history.initialLoading && <LoadingRows />}
+            {history.data !== undefined && sessions.length === 0 && (
               <div className="muted text-mono" style={{ padding: '14px 12px', fontSize: 11 }}>
                 No coaching sessions yet.
               </div>
@@ -193,7 +192,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
 
           {/* Session detail */}
           <div className="viewer-pane" style={{ padding: 0 }}>
-            {detailLoading ? <div data-route-loading role="status">Loading report…</div> : detailError ? <div role="alert">{detailError} <NavLink to="/coach">All reports</NavLink></div> : current
+            {detailLoading ? <div data-route-loading><InlineLoadStatus pending label="report" /><LoadingRows count={3} /></div> : detailError ? <div role="alert">{detailError} <button className="btn ghost" onClick={() => setDetailAttempt(n => n + 1)}>Retry report</button> <NavLink to="/coach">All reports</NavLink></div> : current
               ? <SessionViewer session={current} onLoad={onLoadSession} onDelete={deleteSession} />
               : <div className="muted" style={{ padding: 28, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
                   Select a coaching session to view it.

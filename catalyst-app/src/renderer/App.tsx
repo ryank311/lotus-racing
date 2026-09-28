@@ -4,6 +4,8 @@ import { NavLink, useNavigation, useOverlay, useRoute } from './navigation'
 import { paths, reportAnalysisUrl, routeUrl } from './routes'
 import { Sidebar, NavKey } from './components/Sidebar'
 import { Home } from './pages/Home'
+import { useResource } from './useResource'
+import { PageLoading } from './components/Loading'
 import { createActivityStore, type LogEntry } from './activityStore'
 import { StatusBar } from './components/StatusBar'
 import { ErrorBoundary } from './components/ErrorBoundary'
@@ -13,7 +15,7 @@ import { SignedOutGate } from './components/SignedOutGate'
 import { SignedOutBanner } from './components/SignedOutBanner'
 import { api, isRemote } from './api'
 import { AccountState, getActiveAccount, loadAccounts, removeAccount, tokenValid, upsertAccount } from './accounts'
-import type { AuthState, SyncStats, WorkerEvent, CoachingSession, SyncOptions } from '../shared/types'
+import type { WorkerEvent, CoachingSession, SyncOptions } from '../shared/types'
 
 const Sessions = lazy(() => import('./pages/Sessions').then(module => ({ default: module.Sessions })))
 const SessionReview = lazy(() => import('./pages/SessionReview').then(module => ({ default: module.SessionReview })))
@@ -25,9 +27,6 @@ const Analysis = lazy(() => import('./pages/Analysis').then(module => ({ default
 const Account = lazy(() => import('./pages/Account').then(module => ({ default: module.Account })))
 const Logs = lazy(() => import('./pages/Logs').then(module => ({ default: module.Logs })))
 
-function PageLoading() {
-  return <div className="page-body" data-route-loading role="status" aria-live="polite">Loading page…</div>
-}
 
 function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () => void }) {
   const timerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -61,8 +60,13 @@ export function App() {
   const setSelected = (next: Set<string>) => query({ [page === 'sessions' ? 'selected' : 'session']: [...next], ...(page === 'analysis' ? { report: null } : {}) })
   const destination = (key: NavKey) => key === 'sessions' ? lastSessions() : ['analysis', 'coach'].includes(key) ? routeUrl(paths[key], { session: [...selected] }) : paths[key]
   const setPage = (key: NavKey) => go(destination(key))
-  const [auth, setAuth] = useState<AuthState | null>(null)
-  const [stats, setStats] = useState<SyncStats | null>(null)
+  const [accountRevision, setAccountRevision] = useState(0)
+  const resourceScope = String(accountRevision)
+  const authResource = useResource(() => api.getAuthState(), resourceScope)
+  const statsResource = useResource(() => api.getSyncStats(), resourceScope)
+  const emailResource = useResource(() => isRemote ? api.getAccountEmail() : Promise.resolve(null), resourceScope)
+  const auth = authResource.data ?? null
+  const stats = statsResource.data ?? null
   const [busy, setBusy] = useState<'sync' | 'load' | 'coach' | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
   const [accounts, setAccounts] = useState<AccountState>(() => isRemote
@@ -87,22 +91,21 @@ export function App() {
   const [coachToast, setCoachToast] = useState<{ url: string; reviewSessionGuid?: string } | null>(null)
 
 
+  const { reload: reloadAuth } = authResource
+  const { reload: reloadStats } = statsResource
+  const { reload: reloadEmail } = emailResource
   const refresh = useCallback(async () => {
-    const [a, s, email] = await Promise.all([
-      api.getAuthState(),
-      api.getSyncStats(),
-      isRemote ? api.getAccountEmail() : Promise.resolve(null),
-    ])
-    setAuth(a)
-    setStats(s)
-    if (isRemote) {
-      const label = email ?? 'Garmin SSO'
-      setAccounts(label && a.tokenExpiresAt ? {
-        accounts: [{ label, token: '', expiresAt: a.tokenExpiresAt, addedAt: Date.now() }],
-        activeLabel: label,
-      } : { accounts: [], activeLabel: null })
-    }
-  }, [])
+    await Promise.all([reloadAuth(), reloadStats(), reloadEmail()])
+  }, [reloadAuth, reloadStats, reloadEmail])
+
+  useEffect(() => {
+    if (!isRemote || !auth || emailResource.pending) return
+    const label = emailResource.data ?? 'Garmin SSO'
+    setAccounts(auth.tokenValid && auth.tokenExpiresAt ? {
+      accounts: [{ label, token: '', expiresAt: auth.tokenExpiresAt, addedAt: Date.now() }],
+      activeLabel: label,
+    } : { accounts: [], activeLabel: null })
+  }, [auth, emailResource.data, emailResource.pending])
 
   // Intercept renderer console → log entries
   useEffect(() => {
@@ -127,7 +130,6 @@ export function App() {
   }, [addLogEntry])
 
   useEffect(() => {
-    refresh()
     const unsub = api.onWorker((evt: WorkerEvent) => {
       if (evt.type === 'log' && evt.payload) {
         statusStore.setLogLine(evt.payload)
@@ -214,12 +216,13 @@ export function App() {
 
   const onAccountsChange = useCallback((next: AccountState) => {
     setAccounts(next)
+    setAccountRevision(value => value + 1)
     setRefreshTick(t => t + 1)
   }, [])
 
   // ── Auth / sign-in modal ────────────────────────────────────────────────
   const signedIn = isRemote
-    ? (!!auth?.tokenValid || tokenValid(getActiveAccount(accounts)))
+    ? !!auth?.tokenValid
     : tokenValid(getActiveAccount(accounts))
   const activeLabel = getActiveAccount(accounts)?.label ?? null
   // Cached telemetry already in the DB. When present, feature pages stay usable
@@ -227,6 +230,18 @@ export function App() {
   // signed-out AND empty DB shows the full sign-in gate.
   const hasData = (stats?.sessionCount ?? 0) > 0
   const canView = signedIn || hasData
+  const authUnknown = isRemote && !auth
+  const authPending = authUnknown && authResource.pending
+  const authError = authUnknown ? authResource.error : null
+  const accessPending = !canView && (authPending || statsResource.initialLoading)
+  const accessError = !canView ? authError || statsResource.error : null
+  const waitingForAccess = !['home', 'tracks', 'logs', 'not-found'].includes(page) && (page === 'account' ? authUnknown : !!(accessPending || accessError))
+  const gateError = page === 'account' ? authError : accessPending ? null : accessError
+  const retryAccess = () => {
+    if (authError) void reloadAuth()
+    if (statsResource.error) void reloadStats()
+  }
+  const pageTitle = ({ home: 'Overview', coach: 'AI Coach', review: 'Session Review', 'sign-in': 'Sign in', 'not-found': 'Page' } as Record<string, string>)[page] ?? page.charAt(0).toUpperCase() + page.slice(1)
   const [loginOpen, setLoginOpen] = useOverlay('garmin-sign-in')
   const [signOutOpen, setSignOutOpen] = useOverlay('sign-out')
   const openLogin = useCallback(() => setLoginOpen(true), [])
@@ -236,22 +251,16 @@ export function App() {
       ? { accounts: [{ label, token: '', expiresAt, addedAt: Date.now() }], activeLabel: label }
       : upsertAccount(label, token, expiresAt))
     setLoginOpen(false)
-    // The sign-in effect syncs once the new account state is available.
-    void refresh()
+    // The new resource scope reloads account data and discards older responses.
   }
 
   const confirmSignOut = () => {
-    if (activeLabel) onAccountsChange(isRemote
-      ? { accounts: [], activeLabel: null }
-      : removeAccount(activeLabel))
     setSignOutOpen(false)
-    // Leave the Account page once signed out (it requires a session).
-    // Keep the account route behind its signed-out gate; closing the dialog
-    // consumes its own history entry without racing a second navigation.
-    // Also wipe the main-process Garmin/Catalyst tokens so the app is truly
-    // signed out everywhere (the cached config token must not keep "LINK" green
-    // or let a stale token sync). Refresh auth state afterwards.
-    void api.clearTokens().then(refresh).catch(() => {})
+    void api.clearTokens().then(() => {
+      onAccountsChange(activeLabel ? (isRemote
+        ? { accounts: [], activeLabel: null }
+        : removeAccount(activeLabel)) : { accounts: [], activeLabel: null })
+    }).catch(error => statusStore.setLogLine(`Sign out failed: ${String(error)}`))
   }
 
   const startLoad = async () => {
@@ -283,28 +292,34 @@ export function App() {
         onChange={setPage}
         destination={destination}
         connected={signedIn}
+        authUnknown={authUnknown}
+        authPending={authPending}
         selectionCount={selected.size}
         signedIn={signedIn}
         email={activeLabel}
         onSignIn={openLogin}
       />
       <div className="main-pane">
-        {!signedIn && hasData && <SignedOutBanner onSignIn={openLogin} />}
+        {!authUnknown && !signedIn && hasData && <SignedOutBanner onSignIn={openLogin} />}
         <ErrorBoundary label={`${page} page`} resetKey={page}>
-          <Suspense fallback={<PageLoading />}>
+          <Suspense fallback={<PageLoading title={pageTitle} />}>
             {page === 'home' && (
               <Home
+                key={resourceScope}
                 auth={auth} stats={stats} busy={busy}
+                statsPending={statsResource.pending} statsError={statsResource.error} onRetryStats={reloadStats}
+                authPending={authPending} authError={authError} onRetryAuth={reloadAuth}
                 signedIn={signedIn}
                 onSync={startSync}
                 onRequestSignIn={openLogin}
                 onSessions={() => setPage('sessions')}
               />
             )}
-            {!auth && !stats && !['home', 'tracks', 'logs', 'not-found'].includes(page) ? <PageLoading /> : <>
+            {waitingForAccess ? <PageLoading title={pageTitle} error={gateError} onRetry={retryAccess} /> : <>
             {page === 'sessions' && (
               canView ? (
                 <Sessions
+                  key={resourceScope}
                   refreshTick={refreshTick}
                   selected={selected}
                   setSelected={setSelected}
@@ -316,7 +331,7 @@ export function App() {
             )}
             {page === 'coach' && (
               canView ? (
-                <AICoach
+                <AICoach key={resourceScope}
                   refreshTick={refreshTick}
                   selected={selected}
                   busy={busy}
@@ -325,13 +340,13 @@ export function App() {
                 />
               ) : <SignedOutGate feature="AI Coach" onSignIn={openLogin} />
             )}
-            {page === 'review' && (canView ? <SessionReview refreshTick={refreshTick} busy={busy} /> : <SignedOutGate feature="Session Review" onSignIn={openLogin} />)}
-            {page === 'progress' && (canView ? <Progress /> : <SignedOutGate feature="Progress" onSignIn={openLogin} />)}
-            {page === 'garage' && (canView ? <Garage /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
+            {page === 'review' && (canView ? <SessionReview key={resourceScope} refreshTick={refreshTick} busy={busy} /> : <SignedOutGate feature="Session Review" onSignIn={openLogin} />)}
+            {page === 'progress' && (canView ? <Progress key={resourceScope} /> : <SignedOutGate feature="Progress" onSignIn={openLogin} />)}
+            {page === 'garage' && (canView ? <Garage key={resourceScope} /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
             {page === 'tracks' && <Tracks />}
             {page === 'analysis' && (
-              canView ? reportLoading || (reportId && !activeCoachSession && !reportError) ? <PageLoading /> : reportError ? <div className="page-body" role="alert">{reportError} <NavLink to={routeUrl('/analysis', { session: [...selected] })}>Open telemetry</NavLink></div> : (
-                <Analysis
+              canView ? reportLoading || (reportId && !activeCoachSession && !reportError) ? <PageLoading title="Analysis" /> : reportError ? <div className="page-body" role="alert">{reportError} <NavLink to={routeUrl('/analysis', { session: [...selected] })}>Open telemetry</NavLink></div> : (
+                <Analysis key={resourceScope}
                   selected={selected}
                   setSelected={setSelected}
                   onBack={backToSessions}
@@ -344,7 +359,7 @@ export function App() {
             )}
             {page === 'account' && (
               signedIn
-                ? <Account email={activeLabel} auth={auth} onSignOut={() => setSignOutOpen(true)} />
+                ? <Account key={resourceScope} email={activeLabel} auth={auth} onSignOut={() => setSignOutOpen(true)} />
                 : <SignedOutGate feature="Account" onSignIn={openLogin} />
             )}
 
@@ -392,7 +407,7 @@ export function App() {
           />
         )}
 
-        <StatusBar store={statusStore} busy={busy} signedIn={signedIn} tokenDaysRemaining={auth?.tokenDaysRemaining ?? 0} />
+        <StatusBar store={statusStore} busy={busy} signedIn={signedIn} tokenDaysRemaining={auth?.tokenDaysRemaining ?? null} />
       </div>
     </div>
   )

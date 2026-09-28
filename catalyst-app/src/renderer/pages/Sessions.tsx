@@ -1,3 +1,5 @@
+import { useResource } from '../useResource'
+import { InlineLoadStatus, LoadingRows, Skeleton } from '../components/Loading'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useDebouncedQuery, useNavigation, useRoute } from '../navigation'
@@ -62,9 +64,12 @@ function compareWith(key: SortKey, dir: SortDir) {
 export function Sessions({ refreshTick, selected, setSelected, onAnalyze, activeAccount, onEnsureSessions }: Props) {
   const { params } = useRoute()
   const { query } = useNavigation()
-  const [rows, setRows] = useState<DbSessionRow[]>([])
-  const [hasDb, setHasDb] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const sessionsResource = useResource(() => api.listSessions(activeAccount), activeAccount ?? '', refreshTick)
+  const dbResource = useResource(() => api.hasDb(), '', refreshTick)
+  const rows = sessionsResource.data ?? []
+  const setRows = sessionsResource.setData
+  const hasDb = dbResource.data
+  const loading = sessionsResource.initialLoading
   const [filter, setFilter] = useDebouncedQuery('q', params.get('q') ?? '')
   const vehicleFilter = params.get('vehicle')
   const setVehicleFilter = (value: string | null) => query({ vehicle: value })
@@ -86,19 +91,6 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     }
   }
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      setLoading(true)
-      try {
-        const [list, db] = await Promise.all([api.listSessions(activeAccount), api.hasDb()])
-        if (!cancelled) { setRows(list); setHasDb(db) }
-      } catch (error) {
-        if (!cancelled) setDownloadError(String(error))
-      } finally { if (!cancelled) setLoading(false) }
-    })()
-    return () => { cancelled = true }
-  }, [refreshTick, activeAccount])
 
   const downloadSelected = () => {
     const missing = rows.filter(row => selected.has(row.session_guid) && !row.details_loaded
@@ -183,15 +175,17 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
           <div className="page-title">Ses<span className="accent">sions</span></div>
         </div>
         <div className="page-meta">
-          {filtered.length} of {rows.length}<br />
-          <span className="muted">{hasDb ? 'duckdb attached' : 'no db — summary only'}</span>
+          <InlineLoadStatus label="sessions" pending={sessionsResource.pending} error={sessionsResource.error} hasData={sessionsResource.data !== undefined} onRetry={sessionsResource.reload} />
+          {sessionsResource.data !== undefined && <><span>{filtered.length} of {rows.length}</span><br /></>}
+          {hasDb !== undefined && <span className="muted">{hasDb ? 'duckdb attached' : 'no db — summary only'}</span>}
+          {dbResource.error && <InlineLoadStatus label="database status" pending={dbResource.pending} error={dbResource.error} onRetry={dbResource.reload} />}
         </div>
       </header>
 
-      <div className="page-body sessions-body">
+      <div className="page-body sessions-body" data-route-loading={loading || undefined}>
         <p className="muted small">Select sessions to compare laps and get coaching.</p>
         {selected.size > 0 && rows.some(r => selected.has(r.session_guid) && !r.details_loaded) && <button className="btn primary" disabled={downloading.size > 0} onClick={downloadSelected}>Download selected telemetry</button>}
-        {!loading && [...selected].some(id => !rows.some(r => r.session_guid === id)) && <p role="alert">Some selected sessions are unavailable. Clear the selection to choose available sessions.</p>}
+        {sessionsResource.data !== undefined && [...selected].some(id => !rows.some(r => r.session_guid === id)) && <p role="alert">Some selected sessions are unavailable. Clear the selection to choose available sessions.</p>}
         {downloading.size > 0 && <p className="small" role="status">Downloading details for {downloading.size} session(s)…</p>}
         {downloadError && (
           <div className="session-download-error" role="alert">
@@ -257,9 +251,9 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
           </select>
           <button className="btn ghost" aria-label={`Sort ${sortDir === 'desc' ? 'ascending' : 'descending'}`} onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}>{sortDir === 'desc' ? '↓ Desc' : '↑ Asc'}</button>
         </div>
-        <div className="session-cards">
-          {loading && <p className="muted" role="status">Loading sessions…</p>}
-          {!loading && !filtered.length && <p className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</p>}
+        <div className="session-cards" aria-busy={sessionsResource.pending}>
+          {loading && <LoadingRows />}
+          {sessionsResource.data !== undefined && !filtered.length && <p className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</p>}
           {filtered.map(r => <label key={r.session_guid} className={`session-card ${selected.has(r.session_guid) ? 'is-selected' : ''}`}>
             <div className="session-card-top">
               <span className="session-card-date">{r.session_start ?? 'Date unavailable'}</span>
@@ -276,7 +270,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
             <NavLink className="btn ghost" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review session →</NavLink>
           </label>)}
         </div>
-        <div className="tbl-wrap sessions-table">
+        <div className="tbl-wrap sessions-table" aria-busy={sessionsResource.pending}>
           <table className="tbl">
             <thead>
               <tr>
@@ -291,11 +285,9 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
               </tr>
             </thead>
             <tbody>
-              {loading && (
-                <tr><td colSpan={8} className="muted">loading…</td></tr>
-              )}
-              {!loading && filtered.length === 0 && (
-                <tr><td colSpan={8} className="muted">no sessions{!hasDb ? ' — sync first' : ''}</td></tr>
+              {loading && Array.from({ length: 5 }, (_, row) => <tr key={row} className="loading-table-row" aria-hidden="true">{Array.from({ length: 8 }, (_, cell) => <td key={cell}><Skeleton /></td>)}</tr>)}
+              {sessionsResource.data !== undefined && filtered.length === 0 && (
+                <tr><td colSpan={8} className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</td></tr>
               )}
               {filtered.map(r => {
                 const on = selected.has(r.session_guid)
@@ -356,7 +348,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
             )}
           </div>
           <button className="btn ghost" onClick={() => setSelected(new Set())}>Clear</button>
-          {selectedNeedsDetails || loading || [...selected].some(id => !rows.some(r => r.session_guid === id))
+          {selectedNeedsDetails || sessionsResource.data === undefined || [...selected].some(id => !rows.some(r => r.session_guid === id))
             ? <button className="btn primary" disabled>{selectedNeedsDetails ? 'Download details first' : 'Sessions unavailable'}</button>
             : <NavLink className="btn primary" to={routeUrl('/analysis', { session: [...selected] })}>Analyze {selected.size} →</NavLink>}
         </div>

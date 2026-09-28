@@ -80,11 +80,13 @@ const UserIcon = () => (
   </svg>
 )
 
-export function Sidebar({ active, onChange, connected, selectionCount = 0, signedIn, email, onSignIn, destination = key => paths[key] }: {
+export function Sidebar({ active, onChange, connected, authUnknown = false, authPending = false, selectionCount = 0, signedIn, email, onSignIn, destination = key => paths[key] }: {
   destination?: (key: NavKey) => string
   active: NavKey
   onChange: (k: NavKey) => void
   connected: boolean
+  authUnknown?: boolean
+  authPending?: boolean
   selectionCount?: number
   signedIn: boolean
   email: string | null
@@ -164,7 +166,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
       </button>
       <span className="brand-title">Catalyst<span className="mobile-brand-slash"> / </span><span className="mobile-page-name">{NAV.find(n => n.key === active)?.label ?? (active === 'logs' ? 'Logs' : 'Account')}</span></span>
-      <span className={`led ${connected ? '' : 'dim'}`} title={connected ? 'Connected' : 'Offline'} />
+      <span className={`led ${connected ? '' : 'dim'}`} title={authUnknown ? (authPending ? 'Checking account' : 'Account unavailable') : connected ? 'Connected' : 'Offline'} />
     </header>
     {mobile && <div className={`mobile-nav-backdrop ${open ? 'is-open' : ''}`} aria-hidden="true" onClick={() => setOpen(false)} />}
     <aside ref={drawerRef} id="workspace-navigation" className={`sidebar ${open ? 'is-open' : ''}`} role={mobile && open ? 'dialog' : undefined} aria-modal={mobile && open ? true : undefined} aria-label="Workspace navigation">
@@ -211,10 +213,10 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
 
       <NavLink to="/account"
         className={`sidebar-account ${active === 'account' ? 'active' : ''}`}
-        title={signedIn ? (email ?? 'Account') : 'Sign in'}
+        title={authUnknown ? 'Account' : signedIn ? (email ?? 'Account') : 'Sign in'}
       >
         <UserIcon />
-        <span className="sidebar-account-label">{signedIn ? email : 'Sign in'}</span>
+        <span className="sidebar-account-label">{authUnknown ? (authPending ? 'Checking account…' : 'Account unavailable') : signedIn ? (email ?? 'Account') : 'Sign in'}</span>
       </NavLink>
 
       <ServerUserSwitcher />
@@ -222,7 +224,7 @@ export function Sidebar({ active, onChange, connected, selectionCount = 0, signe
       <div className="sidebar-footer">
         <div className="row-center">
           <span className={`led ${connected ? '' : 'dim'}`} />
-          <span>{connected ? 'LINK' : 'OFFLINE'}</span>
+          <span>{authUnknown ? (authPending ? 'CHECKING' : 'UNAVAILABLE') : connected ? 'LINK' : 'OFFLINE'}</span>
         </div>
         <div className="row-center" style={{ gap: 8 }}>
           <SidebarClock />

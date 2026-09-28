@@ -5,13 +5,13 @@ export function StatusBar({ store, busy, signedIn, tokenDaysRemaining }: {
   store: ActivityStore['statusStore']
   busy: 'sync' | 'load' | 'coach' | null
   signedIn: boolean
-  tokenDaysRemaining: number
+  tokenDaysRemaining: number | null
 }) {
   // Hidden status bars do not need to subscribe to background activity.
   return busy ? <ActiveStatusBar store={store} coaching={busy === 'coach'} signedIn={signedIn} tokenDaysRemaining={tokenDaysRemaining} /> : null
 }
 
-function ActiveStatusBar({ store, coaching, signedIn, tokenDaysRemaining }: { store: ActivityStore['statusStore']; coaching: boolean; signedIn: boolean; tokenDaysRemaining: number }) {
+function ActiveStatusBar({ store, coaching, signedIn, tokenDaysRemaining }: { store: ActivityStore['statusStore']; coaching: boolean; signedIn: boolean; tokenDaysRemaining: number | null }) {
   const { logLine, logLines, progress } = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [logsExpanded, setLogsExpanded] = useState(false)
   return (
@@ -47,7 +47,7 @@ function ActiveStatusBar({ store, coaching, signedIn, tokenDaysRemaining }: { st
           </div>
         )}
         <div className="tag" style={{ flexShrink: 0 }}>
-          {signedIn ? `TOKEN · ${tokenDaysRemaining}D` : 'NO TOKEN'}
+          {tokenDaysRemaining == null ? 'TOKEN · —' : signedIn ? `TOKEN · ${tokenDaysRemaining}D` : 'NO TOKEN'}
         </div>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-mute)', flexShrink: 0 }}>
           {logsExpanded ? '▼ logs' : '▲ logs'}

@@ -1,3 +1,4 @@
+import { InlineLoadStatus, ChartPlaceholder } from '../components/Loading'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
@@ -43,7 +44,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const { query } = useNavigation()
   const { system } = useUnits()
   const [data, setData] = useState<AnalysisData | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(selected.size > 0)
   const [err, setErr] = useState<string | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const mobileView = params.get('view') === 'map' ? 'map' : 'charts'
@@ -292,14 +293,10 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         {/* LEFT PANE — chart content, scrollable */}
         <div className="analysis-left-pane">
           <div className="analysis-left-body">
-            {loading && (
-              <div className="analysis-empty" style={{ height: 240 }}>
-                <div>
-                  <div className="spinner" style={{ width: 32, height: 32, borderWidth: 2, margin: '0 auto 18px' }} />
-                  <div className="sub">Reading samples · computing splits · building figures</div>
-                </div>
-              </div>
-            )}
+            {loading && <div data-route-loading>
+              <InlineLoadStatus pending label="analysis" />
+              <ChartPlaceholder title="Speed comparison" />
+            </div>}
 
             {err && !loading && (
               <div className="card" role="alert" style={{ padding: 22 }}>
