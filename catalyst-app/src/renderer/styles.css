@@ -2217,32 +2217,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 
 .modal-actions { flex-wrap: wrap; }
 .modal-actions .btn { min-width: 0; }
-.login-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 16px;
-}
-.login-tabs [role="tab"] {
-  min-width: 0;
-  min-height: 44px;
-  padding: 10px 4px;
-  font: 500 12px var(--font-body);
-  color: var(--text-mute);
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-}
-.login-tabs [role="tab"][aria-selected="true"] {
-  color: var(--text);
-  border-bottom-color: var(--text-dim);
-}
-.login-tabs [role="tab"]:hover:not(:disabled) { color: var(--text); }
-.login-tabs [role="tab"]:focus-visible { outline: 2px solid var(--text-dim); outline-offset: -3px; }
-.login-tabs [role="tab"]:disabled { opacity: 0.5; cursor: not-allowed; }
 .login-description { margin-bottom: 12px; color: var(--text-mute); font-size: 12px; }
-.login-experimental { display: block; margin-top: 8px; font-size: 10px; color: var(--text-mute); }
 
 .coach-toast {
   position: fixed;

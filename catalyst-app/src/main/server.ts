@@ -8,8 +8,6 @@ import path from 'node:path'
 import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
 import { serveStaticAsset } from './staticAssets.js'
-import { GarminSsoServer } from './garminSsoServer.js'
-import type { SignInResult } from '../shared/types.js'
 
 export interface CatalystServerOptions {
   host?: string
@@ -292,8 +290,6 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
     return backend
   }
 
-  const garminSso = new GarminSsoServer(async (username, ticket, serviceUrl) =>
-    backendFor(username).call('auth:completeSso', [ticket, serviceUrl]) as Promise<SignInResult>)
   const staticDir = options.staticDir ? path.resolve(options.staticDir) : null
   const server: Server = createServer(async (req, res) => {
     const origin = req.headers.origin
@@ -301,7 +297,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       res.writeHead(204, {
         'Access-Control-Allow-Origin': origin ?? '*',
         'Access-Control-Allow-Credentials': 'true',
-        'Access-Control-Allow-Headers': 'Content-Type, X-Catalyst-Origin',
+        'Access-Control-Allow-Headers': 'Content-Type',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Vary': 'Origin',
       })
@@ -319,7 +315,6 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         return
       }
       const username = verify(parseCookies(req)[COOKIE])
-      if (await garminSso.handle(req, res, url, username)) return
       if (url.pathname === '/api/health') {
         json(res, 200, { ok: true, service: 'catalyst-coach', users: backends.size }, origin)
         return
@@ -364,11 +359,6 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         const body = await readJson(req)
         if (typeof body?.channel !== 'string' || !Array.isArray(body.args)) {
           json(res, 400, { error: 'Invalid RPC request' }, origin)
-          return
-        }
-        // Only a validated, one-use SSO callback may invoke this worker method.
-        if (body.channel === 'auth:completeSso') {
-          json(res, 403, { error: 'Use the Garmin SSO callback to finish sign-in.' }, origin)
           return
         }
         const result = await backendFor(username).call(body.channel, body.args)

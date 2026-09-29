@@ -53,7 +53,7 @@ function setup(t, modelResponse) {
   const handlers = new Map()
   registerApiHandlers((name, handler) => handlers.set(name, handler), () => ({ isDestroyed: () => false, webContents: { send: (channel, event) => {
     events.push({ channel, ...event }); if (event.type === 'done' || event.type === 'error') finish(event)
-  } } }), undefined, undefined, { read: async () => ({ openai: 'fixture' }), write: async () => {} })
+  } } }), undefined, { read: async () => ({ openai: 'fixture' }), write: async () => {} })
   return { handlers, saved, events, calls, terminal, agent, snapshot }
 }
 const result = { summary: 'Establish a repeatable reference', strengths: [], regressions: [], limitations: ['No historical baseline'],

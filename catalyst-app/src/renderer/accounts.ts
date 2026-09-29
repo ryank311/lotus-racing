@@ -1,7 +1,7 @@
 // Renderer-side account state — persisted in localStorage.
 //
-// An account is a labeled Catalyst session token. Sign-in opens the SSO browser
-// window (via main), receives a token, and stores it here. Sync calls pass the
+// An account is a labeled Catalyst session token. Email/password sign-in
+// (via main) returns a token, which is stored here. Sync calls pass the
 // active account's token + label to the main process so synced sessions are
 // tagged with that account in the DB.
 

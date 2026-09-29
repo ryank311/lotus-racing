@@ -399,7 +399,6 @@ export interface CatalystBridge {
   getAccountEmail(): Promise<string | null>
   saveCredentials(email: string, password: string): Promise<void>
   clearTokens(): Promise<void>
-  signIn(): Promise<SignInResult>
   signInWithCreds(email: string, password: string): Promise<SignInCredsResult>
   signInMfa(sessionId: string, code: string): Promise<SignInResult>
   cancelMfa(sessionId: string): Promise<void>

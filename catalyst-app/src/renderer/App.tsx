@@ -100,7 +100,7 @@ export function App() {
 
   useEffect(() => {
     if (!isRemote || !auth || emailResource.pending) return
-    const label = emailResource.data ?? 'Garmin SSO'
+    const label = emailResource.data ?? 'Garmin'
     setAccounts(auth.tokenValid && auth.tokenExpiresAt ? {
       accounts: [{ label, token: '', expiresAt: auth.tokenExpiresAt, addedAt: Date.now() }],
       activeLabel: label,

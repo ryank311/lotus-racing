@@ -186,9 +186,6 @@ export function registerApiHandlers(
   register: ApiRegistrar,
   getMainWindow: () => BackendEventTarget | null,
   revealPath: (filePath: string) => void = () => {},
-  loginViaBrowser: () => Promise<{ accessToken: string; expiresIn: number }> = async () => {
-    throw new Error('Sign in with your Garmin email and password before syncing')
-  },
   aiKeys: AiKeyStore = databaseAiKeyStore(DB_PATH),
 ): { startReviews: () => Promise<void> } {
   const reviews = new ReviewService({ isBusy: () => !!activeWorker, emit: event => {
@@ -222,14 +219,6 @@ export function registerApiHandlers(
     if (fs.existsSync(GARTH_TOKEN_DIR)) fs.rmSync(GARTH_TOKEN_DIR, { recursive: true, force: true })
     if (fs.existsSync(CATALYST_TOKEN_CACHE)) fs.rmSync(CATALYST_TOKEN_CACHE, { force: true })
   })
-  // Hosted Garmin sign-in for the desktop IPC transport. HTTP clients use
-  // the server's one-use callback routes instead.
-  register('auth:signIn', async () => {
-    if (INSTANCE_DIR) throw new Error('Use email/password sign-in when connected to a remote server')
-    const { accessToken, expiresIn } = await loginViaBrowser()
-    return { token: accessToken, expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
-  })
-
   // Headless credentials sign-in — same wire format as garth's login().
   // Returns either a final token or `{ needsMfa: true, sessionId }` so the
   // renderer can prompt for a code and follow up with auth:signInMfa.
@@ -963,12 +952,8 @@ export function registerApiHandlers(
       current: 0, total: 0, label: sessionGuids ? 'Preparing selected sessions…' : 'Fetching session overviews…',
     } })
     const task = reviews.foreground(async () => {
-      let token = opts.token || loadCatalystToken()
-      if (!token) {
-        log('[auth] Sign in to Garmin to download session details')
-        const { accessToken } = await loginViaBrowser()
-        token = accessToken
-      }
+      const token = opts.token || loadCatalystToken()
+      if (!token) throw new Error('Sign in with your Garmin email and password before syncing')
       const api = new CatalystAPI(token)
       api.pageSize = loadConfig().api?.page_size ?? 50
       await syncSessions({

@@ -11,7 +11,6 @@ import type { AiKeyStore, AiKeys } from './aiKeyStore.js'
 import { registerApiHandlers, type ApiHandler, type BackendEventTarget } from './ipc.js'
 import { DB_PATH, seedUserData } from '../garmin/paths.js'
 import { initSchema, openDb } from '../garmin/loadToDb.js'
-import { exchangeTicketForToken } from '../garmin/catalystClient.js'
 
 interface RpcRequest {
   type: 'rpc'
@@ -87,12 +86,8 @@ async function start(): Promise<void> {
     try { await initSchema(db.con) } finally { await db.close() }
   }
 
-  const backend = registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, undefined, aiKeys)
+  const backend = registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, aiKeys)
   void backend.startReviews().catch(error => console.error('[review startup]', error))
-  handlers.set('auth:completeSso', async (_event, ticket: string, serviceUrl: string) => {
-    const { expiresIn } = await exchangeTicketForToken(ticket, serviceUrl)
-    return { token: '', expiresAt: Math.floor(Date.now() / 1000) + expiresIn }
-  })
 
   process.on('message', (message: RpcRequest) => {
     if (!message || message.type !== 'rpc') return

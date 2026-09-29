@@ -52,7 +52,7 @@ async function run(t, response, provider = 'anthropic') {
   } } }
   const handlers = new Map()
   registerApiHandlers((name, handler) => handlers.set(name, handler), () => target,
-    undefined, undefined, { read: async () => ({ [provider]: 'fixture' }), write: async () => {} })
+    undefined, { read: async () => ({ [provider]: 'fixture' }), write: async () => {} })
   await handlers.get('coach:run')(null, { profile: 'Lotus', scope: 'overview', sessionGuids: [guid], lapFilter: 'top10' })
   await terminal
   return { events, saved }

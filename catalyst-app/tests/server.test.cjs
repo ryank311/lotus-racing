@@ -81,9 +81,9 @@ test('sync and async RPC errors are contained; subsequent RPCs and SSE work', { 
   const bad = await rpc(cookie, 'tracks:get', '../invalid')
   assert.equal(bad.status, 500)
   assert.match((await bad.json()).error, /invalid mean-line id/)
-  const asyncBad = await rpc(cookie, 'auth:signIn')
+  const asyncBad = await rpc(cookie, 'auth:signInMfa', 'missing-session', '123456')
   assert.equal(asyncBad.status, 500)
-  assert.match((await asyncBad.json()).error, /email\/password/)
+  assert.match((await asyncBad.json()).error, /MFA session expired/)
   assert.equal((await rpc(cookie, 'unknown:method')).status, 500)
   assert.deepEqual(await (await rpc(cookie, 'units:get')).json(), { result: 'imperial' })
   const abort = new AbortController()
@@ -264,19 +264,4 @@ test('startup migrates legacy AI keys once, removes JSON secrets, and upgrades o
   await migrateAiConfig(configPath('Alice'), store)
   assert.deepEqual(await store.read(), { anthropic: '', openai: 'old-openai' })
   assert.deepEqual(JSON.parse(fs.readFileSync(configPath('Alice'), 'utf8')), { ai: {} })
-})
-
-test('SSO starts via HTTP and its internal exchange method cannot be invoked via public RPC', { timeout: 15000 }, async t => {
-  const { login, rpc, server } = await setup(t)
-  const cookie = await login('SsoTest')
-  assert.equal((await rpc(cookie, 'auth:completeSso', 'ST-forged', 'https://evil.test')).status, 403)
-  const response = await fetch(server.url + '/api/auth/garmin/start', {
-    method: 'POST', headers: { cookie, 'X-Catalyst-Origin': server.url },
-  })
-  assert.equal(response.status, 200)
-  const attempt = await response.json()
-  const callback = new URL(attempt.url).searchParams.get('service')
-  assert.ok(callback.startsWith(server.url + '/api/auth/garmin/callback/'))
-  const cancelled = await fetch(server.url + '/api/auth/garmin/cancel/' + attempt.id, { method: 'POST', headers: { cookie } })
-  assert.equal(cancelled.status, 200)
 })
