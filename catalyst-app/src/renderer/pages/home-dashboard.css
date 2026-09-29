@@ -1,0 +1,169 @@
+/* Latest session: the Overview's main action at the track. */
+.home-latest {
+  position: relative; overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border-strong); border-left: 3px solid var(--signal);
+  border-radius: var(--radius);
+}
+.home-latest::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse at 100% 0%, rgba(255, 94, 58, 0.10), transparent 60%);
+}
+a.home-latest-main {
+  position: relative; display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  padding: 22px 24px 20px; color: var(--text); text-decoration: none;
+}
+a.home-latest-main:hover { background: var(--signal-soft); }
+.home-latest-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.home-latest-eyebrow { font: 10px/1.5 var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--signal); }
+.home-latest-track { font: 700 28px/1.05 var(--font-display); letter-spacing: .02em; text-transform: uppercase; overflow-wrap: anywhere; }
+.home-latest-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px/1.5 var(--font-mono); color: var(--text-dim); }
+.home-latest-meta b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.home-latest-pb { margin-left: 8px; padding: 1px 6px; font-style: normal; font-size: 10px; letter-spacing: .12em; color: var(--green); border: 1px solid currentColor; border-radius: 2px; }
+.home-latest-cta {
+  flex: none; display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 22px;
+  font: 700 12px/1 var(--font-mono); letter-spacing: .16em; text-transform: uppercase;
+  color: #1a0500; background: var(--signal); border-radius: var(--radius);
+}
+.home-latest-cta span { font-size: 16px; }
+a.home-latest-main:hover .home-latest-cta { filter: brightness(1.08); }
+.home-latest-more {
+  position: relative; display: flex; flex-wrap: wrap; gap: 6px 24px;
+  padding: 11px 24px; border-top: 1px solid var(--border);
+  font: 11px/1.6 var(--font-mono); letter-spacing: .04em;
+}
+.home-latest-more a { color: var(--cyan); text-decoration: none; }
+.home-latest-more a:hover { text-decoration: underline; }
+@media (max-width: 700px) {
+  a.home-latest-main { flex-direction: column; align-items: stretch; padding: 18px 18px 16px; gap: 16px; }
+  .home-latest-track { font-size: 24px; }
+  .home-latest-cta { justify-content: center; min-height: 52px; }
+  .home-latest-more { flex-direction: column; padding: 12px 18px; }
+  .home-latest-more a { display: block; padding: 6px 0; }
+}
+
+/* Overview driver dashboard: one card per car and track layout.
+ * This file loads before styles.css, so rules that refine shared classes
+ * (.card, .btn, .chip) use compound selectors to win on specificity. */
+
+.home-dash { margin-top: 28px; }
+.home-dash-heading {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 8px 16px; min-height: 30px; margin-bottom: 14px;
+}
+.home-dash-heading h2 {
+  margin: 0; font: 700 20px/1.1 var(--font-display);
+  letter-spacing: 0.05em; text-transform: uppercase; color: var(--text);
+}
+
+.home-dash-grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
+}
+
+.card.home-dash-card {
+  display: flex; flex-direction: column; gap: 18px; min-width: 0;
+  padding: 20px 22px;
+  container: home-dash-card / inline-size;
+}
+.card.home-dash-card-loading { min-height: 220px; gap: 16px; }
+
+.home-dash-card-head { min-width: 0; }
+.home-dash-card-head h3 {
+  margin: 0; font: 700 22px/1.15 var(--font-display);
+  letter-spacing: 0.03em; text-transform: uppercase; overflow-wrap: anywhere;
+}
+.home-dash-card-head p { margin: 4px 0 0; font: 11px/1.5 var(--font-mono); color: var(--text-dim); overflow-wrap: anywhere; }
+
+.home-dash-card-body { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+
+/* Lap-time readouts; their own container so a narrow column reflows too. */
+.home-dash-times { min-width: 0; container: home-dash-times / inline-size; }
+.home-dash-metrics {
+  display: grid; margin: 0; gap: 14px 16px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+.home-dash-metric { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.home-dash-metric + .home-dash-metric { border-left: 1px solid var(--border); padding-left: 16px; }
+.home-dash-metric dt {
+  margin-bottom: 5px; font: 9px/1.4 var(--font-mono);
+  letter-spacing: 0.22em; text-transform: uppercase; color: var(--text-mute);
+}
+.home-dash-metric-pb dt { color: var(--signal); }
+.home-dash-metric dd { margin: 0; min-width: 0; }
+.home-dash-time {
+  font: 500 22px/1.15 var(--font-mono); letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text);
+}
+.home-dash-metric-pb .home-dash-time { font-size: 30px; }
+.home-dash-sub { font: 11px/1.5 var(--font-mono); color: var(--text-dim); overflow-wrap: anywhere; }
+.home-dash-delta.is-gain { color: var(--green); font-weight: 600; }
+.home-dash-delta.is-loss { color: color-mix(in srgb, var(--red) 75%, var(--text)); }
+.home-dash-potential { color: var(--cyan); }
+
+/* Current coaching focus */
+.home-dash-focus { min-width: 0; padding-top: 16px; border-top: 1px solid var(--border); }
+.home-dash-focus-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px;
+}
+.home-dash-label {
+  font: 9px/1.4 var(--font-mono); letter-spacing: 0.22em; text-transform: uppercase; color: var(--text-mute);
+}
+.home-dash-focus-date { letter-spacing: 0.1em; }
+.home-dash-focus-head a {
+  flex-shrink: 0; font: 11px/1.6 var(--font-mono); color: var(--cyan); text-decoration: none;
+}
+.home-dash-focus-head a:hover { text-decoration: underline; }
+.home-dash-focus-note { margin: 0 0 12px; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+.home-dash-focus-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.home-dash-focus-list li { min-width: 0; padding-left: 12px; border-left: 2px solid var(--border-strong); }
+.home-dash-cue { font-size: 14px; font-weight: 600; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.home-dash-where, .home-dash-target {
+  margin-top: 3px; font: 11px/1.5 var(--font-mono); color: var(--text-dim); overflow-wrap: anywhere;
+}
+.home-dash-target b, .home-dash-check b { font-weight: 600; color: var(--text); }
+.home-dash-was { color: var(--text-mute); }
+.home-dash-check {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px;
+  font: 11px/1.5 var(--font-mono); color: var(--text-dim);
+}
+.chip.home-dash-verdict { padding: 2px 7px; background: transparent; letter-spacing: 0.06em; }
+.chip.home-dash-verdict.is-good { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.chip.home-dash-verdict.is-bad { color: var(--red); border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.chip.home-dash-verdict.is-neutral { color: var(--text-dim); border-color: var(--border-strong); }
+
+/* Actions sit at the bottom so cards in one row line up. */
+.home-dash-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+.home-dash .btn.home-dash-action { gap: 8px; min-height: 38px; padding: 8px 14px; letter-spacing: 0.1em; }
+.home-dash .btn.home-dash-action > span { color: var(--signal); }
+.home-dash .btn.home-dash-action:hover { border-color: var(--signal); background: var(--signal-soft); }
+.home-dash .btn.home-dash-more { margin-top: 14px; padding: 8px 14px; letter-spacing: 0.1em; }
+
+.home-dash-empty {
+  margin: 0; padding: 16px 18px; font-size: 13px; line-height: 1.5; color: var(--text-dim);
+  border: 1px dashed var(--border-strong); border-radius: var(--radius);
+}
+
+/* Narrow readouts (phones, side-by-side card): PB gets its own row. */
+@container home-dash-times (max-width: 460px) {
+  .home-dash-metrics { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .home-dash-metric-pb { grid-column: 1 / -1; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .home-dash-metric + .home-dash-metric { border-left: 0; padding-left: 0; }
+  .home-dash-metric:nth-child(3) { border-left: 1px solid var(--border); padding-left: 14px; }
+}
+
+/* Wide single card: lap times beside the focus. */
+@container home-dash-card (min-width: 760px) {
+  .home-dash-card-body.has-focus { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  .home-dash-focus { padding: 0 0 0 24px; border-top: 0; border-left: 1px solid var(--border); }
+}
+
+@media (max-width: 600px) {
+  .home-dash { margin-top: 20px; }
+  .card.home-dash-card { padding: 16px; gap: 16px; }
+  .home-dash .btn.home-dash-action { flex: 1 1 auto; }
+}
+@media (pointer: coarse) {
+  .home-dash .btn.home-dash-action, .home-dash .btn.home-dash-more { min-height: 44px; }
+  .home-dash-focus-head a { padding: 10px 0; margin: -10px 0; }
+}

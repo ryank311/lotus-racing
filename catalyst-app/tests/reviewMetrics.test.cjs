@@ -100,13 +100,18 @@ test('clear changes require repeatability, sufficient populations and variabilit
 test('coach packet uses the exact comparison and rejects unsupported evidence', () => {
   const snapshot = { ...buildComparison(make('8', 9000), [1, 2, 3].map(n => make(String(n), 10000).summary), coverage), revision: 'snapshot' }
   const pack = buildReviewCoachPrompt(snapshot, 'Driver notes', 'imperial')
-  assert.match(pack.prompt, /mph/); assert.match(pack.prompt, /"delta":-1000/)
+  assert.match(pack.prompt, /mph/); assert.match(pack.prompt, /delta -1\.000 s \(clear gain\)/)
+  assert.match(pack.system, /Answer only by calling submit_session_review/)
   assert.match(pack.evidence.pace, /-1.000 s/)
   const good = { summary: 'T1 improved', strengths: [], regressions: [], limitations: [], priorities: [{ ref: 'corner:T1', advice: 'Repeat the exit', evidence: ['corner:T1'], cue: 'Build speed', successMetric: 'Repeat on two laps' }] }
   assert.equal(parseReviewCoaching(JSON.stringify(good), snapshot, pack.evidence).priorities.length, 1)
   assert.throws(() => parseReviewCoaching(JSON.stringify({ ...good, priorities: [{ ...good.priorities[0], evidence: ['invented'] }] }), snapshot, pack.evidence))
-  assert.throws(() => parseReviewCoaching(JSON.stringify({ ...good, priorities: Array(4).fill(good.priorities[0]) }), snapshot, pack.evidence))
-  assert.ok(reviewCoachingTool(snapshot, pack.evidence).input_schema.properties.priorities.maxItems === 3)
+  // Extra priorities are trimmed to the three most valuable, not rejected.
+  assert.equal(parseReviewCoaching(JSON.stringify({ ...good, priorities: Array(4).fill(good.priorities[0]) }), snapshot, pack.evidence).priorities.length, 3)
+  // Strict-compatible schema: every object closed, no array-length constraints.
+  const item = reviewCoachingTool(snapshot, pack.evidence).input_schema.properties.priorities.items
+  assert.equal(item.additionalProperties, false)
+  assert.deepEqual(item.required.sort(), Object.keys(item.properties).sort())
   assert.match(buildReviewCoachPrompt(snapshot, '', 'metric').prompt, /km\/h/)
 })
 test('override/filter validation rejects nonfinite data and invalid identifiers', () => {

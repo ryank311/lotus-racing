@@ -116,7 +116,8 @@ workspace; use `CATALYST_SERVER_DATA_DIR` to relocate the server's workspaces.
 npm run fetch        # pull all sessions from Garmin
 npm run load         # load downloaded JSON+protobuf into DuckDB
 npm run corners      # detect corners on a meanline
-npm run brief -- --last 5         # generate a coaching brief
+npm run brief -- --last 5         # write the coaching prompt (system prompt, context, packet) as Markdown
+npm run brief -- --last 5 --csv   # also write sessions, laps and per-complex phases as CSV
 ```
 
 ## Package
@@ -148,8 +149,45 @@ values take precedence; otherwise the most recently modified config with a key
 wins per provider. Back up the entire server data directory, including the root
 database, to preserve these shared keys.
 
-Anthropic offers Fable 5.1 (`claude-fable-5-1`), Opus 5 (`claude-opus-5`),
-Sonnet 5 (`claude-sonnet-5`), and Haiku 4.5 (`claude-haiku-4-5-20251001`).
-Older saved Opus/Sonnet selections are upgraded within their family.
+Anthropic offers Fable 5.1 (`claude-fable-5-1`), Opus 5.5 (`claude-opus-5-5`),
+Sonnet 5.5 (`claude-sonnet-5-5`), Opus 5 (`claude-opus-5`), Sonnet 5
+(`claude-sonnet-5`), and Haiku 4.5 (`claude-haiku-4-5-20251001`). Older saved
+Opus/Sonnet 4 selections are upgraded to the 5.5 models.
 OpenAI supports Astra (`gpt-6-astra`), Sol (`gpt-5.6-sol`), and Terra
-(`gpt-5.6-terra`) through the Responses API with x-high reasoning.
+(`gpt-5.6-terra`) through the Responses API.
+
+Every model that has an effort setting runs at x-high. Anthropic models with
+adaptive thinking get auto tool choice (Fable 5.1, Opus 5.5 and Sonnet 5.5
+reject forced tool use), a strict report schema, summarized thinking in the
+progress log, and one retry if they answer in prose instead of calling the
+report tool. Output is capped at 100K tokens for Anthropic (thinking included)
+and 64K for OpenAI; a run may take up to 30 minutes.
+
+## How AI coaching works
+
+Code computes every number; the model interprets. `src/garmin/coachPacket.ts`
+builds a packet from valid laps only (Garmin-flagged and Session Review
+exclusions are dropped), narrowed by the lap filter: Top 10, 5 or 3 overall,
+Session bests, or Top 3 per session:
+
+- **Corner complexes** run from one braking zone to the next. They are derived
+  once from the layout's fastest valid lap and saved in the track YAML
+  (`complexes:`), editable on the Tracks page.
+- **Phases per complex:** braking point, peak deceleration, brake release,
+  minimum speed and where it happens, throttle pickup, coasting distance, and
+  speed 100/200 m after the minimum (`src/garmin/lapPhases.ts`; braking and
+  throttle are inferred from longitudinal g).
+- **References:** fastest lap, ideal lap (plausible complex bests), all-time PB
+  for the car and layout, and Garmin's optimal lap.
+- **Evidence IDs** label every figure. The report schema only accepts those
+  IDs, complex IDs, metric IDs and lap IDs, so the app can render numbers and
+  reject invented ones.
+
+The model returns one to three focus items, each tied to a metric. The app
+turns them into targets (halfway to, or matching, the driver's best pass) and
+checks them automatically on later sessions: on Session Review, on the
+Overview dashboard, and in the next coaching prompt. Garage documents reach the
+coach only when enabled under Garage → AI coach context (Car.md, driver/coach
+notes and the current track guide by default; research sections are
+stripped). Session notes (tires, pressures, setup, traffic) from Session Review
+are included too.

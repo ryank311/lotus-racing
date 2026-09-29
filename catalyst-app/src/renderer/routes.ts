@@ -49,7 +49,7 @@ export function fileId(name: string): string {
 
 const enums: Record<string, [string[], string]> = {
   sort: [['date', 'track', 'config', 'vehicle', 'best', 'laps', 'weather'], 'date'],
-  dir: [['asc', 'desc'], 'desc'], laps: [['top3', 'top5', 'top10', 'all'], 'top10'],
+  dir: [['asc', 'desc'], 'desc'], laps: [['top10', 'top5', 'top3', 'session-best', 'top3-session'], 'top10'],
   view: [['charts', 'map'], 'charts'], follow: [['0', '1'], '1'],
 }
 export function normalizeRoute(pathname: string, search: string): { url: string; error?: string } {
@@ -58,7 +58,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
   if (route.page === 'not-found') return { url: pathname + search }
   const allowed: Partial<Record<Page, string[]>> = {
     progress: ['anchor', 'surface', 'temp'],
-    sessions: ['q', 'vehicle', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report'],
+    sessions: ['q', 'vehicle', 'track', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report', 'focus'],
     coach: ['session'], tracks: ['track', 'turn'], logs: ['q', 'level', 'follow'], 'sign-in': ['returnTo'],
   }
   const input = new URLSearchParams(search), output = new URLSearchParams()
@@ -70,7 +70,8 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
     else values = values.slice(0, 1)
     for (const value of values) {
       if (!value) continue
-      if (key === 'surface' && !['dry', 'damp', 'wet', 'mixed', 'unknown'].includes(value)) { error = 'Invalid surface.'; continue }
+      if (key === 'surface' && !['any', 'dry', 'damp', 'wet', 'mixed', 'unknown'].includes(value)) { error = 'Invalid surface.'; continue }
+      if (key === 'focus' && !/^[A-Za-z0-9-]{1,16}$/.test(value)) { error = 'Invalid corner.'; continue }
       if (key === 'temp' && (!Number.isFinite(Number(value)) || Number(value) < -60 || Number(value) > 70)) { error = 'Invalid temperature.'; continue }
       if (key === 'anchor' && !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) { error = 'Invalid session identifier.'; continue }
       if (enums[key]) {
@@ -78,7 +79,9 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
         if (value === enums[key][1]) continue
       }
       if (key === 'level' && !['log', 'info', 'warn', 'error', 'none'].includes(value)) { error = 'Invalid log level.'; continue }
-      if (['session', 'selected', 'vehicle', 'report'].includes(key) && (value.length > 200 || /[\s/\\\u0000-\u001f]/.test(value))) { error = `Invalid ${key} identifier.`; continue }
+      // Sessions filters by layout key; the Tracks page uses circuit names, which contain spaces.
+      const identifier = ['session', 'selected', 'vehicle', 'report'].includes(key) || (key === 'track' && route.page === 'sessions')
+      if (identifier && (value.length > 200 || /[\s/\\\u0000-\u001f]/.test(value))) { error = `Invalid ${key} identifier.`; continue }
       output.append(key, key === 'returnTo' ? safeReturnTo(value) : value)
     }
   }

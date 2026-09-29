@@ -1,10 +1,11 @@
 import { useResource } from '../useResource'
 import { InlineLoadStatus, LoadingRows } from '../components/Loading'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, isRemote } from '../api'
+import { api, humaniseBytes, isRemote } from '../api'
 import { NavLink, useNavigation, useRoute, useUnsavedChanges } from '../navigation'
 import { fileId, segment } from '../routes'
-import type { CarProfile, VehicleSummary } from '../../shared/types'
+import type { AiContextFile, CarProfile, VehicleSummary } from '../../shared/types'
+import './pages-extras.css'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -259,8 +260,6 @@ function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: 
   onClick: () => void
   onProfileChange: (name: string | null) => Promise<void>
 }) {
-  const [showMap, setShowMap] = useState(false)
-
   return (
     <div className={`garage-vehicle-card ${selected ? 'selected' : ''}`} onClick={onClick}>
       <NavLink className="garage-vehicle-name" to={`/garage/${segment(vehicle.vehicleGuid)}`} onClick={e => e.stopPropagation()}>{vehicleLabel(vehicle)}</NavLink>
@@ -286,10 +285,7 @@ function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: 
           <select
             className="garage-profile-select"
             value={vehicle.profile ?? ''}
-            onChange={async e => {
-              await onProfileChange(e.target.value || null)
-              setShowMap(false)
-            }}
+            onChange={e => { void onProfileChange(e.target.value || null) }}
           >
             <option value="">— unlinked —</option>
             {profiles.map(p => (
@@ -351,7 +347,7 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
   return (
     <div className="garage-detail-inner">
       {/* File list */}
-      <div className="garage-file-list">
+      <div className="garage-file-list with-ai-context">
         <div className="garage-file-list-header">
           <span className="text-mono muted" style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase' }}>
             {vehicle.profile} / context files
@@ -387,6 +383,8 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
         >
           <span>{dropping ? 'Drop to add' : '+ Drop files to add context'}</span>
         </div>
+
+        <AiContextFiles profile={vehicle.profile} filesKey={files.map(f => f.name).join('\n')} />
       </div>
 
       {/* Editor */}
@@ -426,5 +424,87 @@ function ProfileDetail({ vehicle, files, editPath, content, dirty, saving, saveE
         )}
       </div>
     </div>
+  )
+}
+
+// ─── AiContextFiles ──────────────────────────────────────────────────────────
+
+// Which of the profile's Markdown documents the AI coach reads.
+function AiContextFiles({ profile, filesKey }: { profile: string; filesKey: string }) {
+  const [list, setList] = useState<AiContextFile[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [pending, setPending] = useState<string | null>(null)
+  const request = useRef(0)
+
+  const reload = useCallback(async () => {
+    const id = ++request.current
+    try {
+      const next = await api.listAiContextFiles(profile)
+      if (id === request.current) { setList(next); setError(null) }
+    } catch (e) {
+      if (id === request.current) setError(e instanceof Error ? e.message : String(e))
+    }
+  }, [profile])
+
+  // Reload when documents are added or removed (filesKey changes).
+  useEffect(() => {
+    setList(null)
+    void reload()
+    return () => { request.current++ }
+  }, [reload, filesKey])
+
+  const update = async (name: string, included: boolean | null) => {
+    setPending(name)
+    setError(null)
+    try {
+      await api.setAiContextFile(profile, name, included)
+      await reload()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPending(null)
+    }
+  }
+
+  return (
+    <section className="garage-ai-context" aria-label="AI coach context">
+      <div className="garage-ai-context-title">AI coach context</div>
+      <p className="garage-ai-context-note">
+        By default the coach reads Car.md, driver/coach notes and goals, and the guide for the layout being coached.
+        Other documents stay out unless ticked. Research and sources sections are stripped before sending.
+      </p>
+      {error && (
+        <div className="garage-ai-context-error" role="alert">
+          {error} <button className="btn tiny ghost" onClick={() => void reload()}>Reload</button>
+        </div>
+      )}
+      {!list && !error && <LoadingRows count={2} />}
+      {list?.length === 0 && <div className="muted small">No Markdown documents.</div>}
+      {list?.map(file => (
+        <div key={file.name} className="garage-ai-context-row">
+          <span className="garage-ai-context-name">{file.name}</span>
+          <label>
+            <input
+              type="checkbox"
+              checked={file.included}
+              disabled={pending !== null}
+              onChange={e => void update(file.name, e.target.checked)}
+            />
+            Sent to AI coach
+          </label>
+          <span className="garage-ai-context-meta">{humaniseBytes(file.bytes)}</span>
+          {file.included === file.defaultIncluded ? (
+            <span className="garage-ai-context-meta">default</span>
+          ) : (
+            <button
+              className="btn tiny ghost"
+              disabled={pending !== null}
+              title={`Default: ${file.defaultIncluded ? 'sent' : 'not sent'}`}
+              onClick={() => void update(file.name, null)}
+            >Reset</button>
+          )}
+        </div>
+      ))}
+    </section>
   )
 }

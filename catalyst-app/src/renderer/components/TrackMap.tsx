@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisData, RacingLineLap, TrackGeometryPayload, CoachLinePoint } from '../../garmin/analysisData'
 import type { CoachAnnotation } from '../../shared/types'
 import { useUnits } from '../units'
-import { LAP_PALETTE } from './chartTheme'
+import { lapColor, lapName } from './chartSeries'
 import { ChartSurface, ChartExpandButton, useChartSurface } from './ChartSurface'
 import { useChartTouch, TouchHint } from './useChartTouch'
 
@@ -53,8 +53,8 @@ interface Props {
   focusCorner?: string      // turn ID to animate-zoom to (e.g. "T7", "S6")
   hoverRef?: string         // turn/segment ID being hovered in coach notes (shows zone, no zoom)
   focusAnnotation?: CoachAnnotation | null  // annotation to pin in HUD when tip is clicked
-  coachLine?: CoachLinePoint[] | null      // computed optimal line from data
-  aiCoachLine?: CoachLinePoint[] | null   // AI-recommended line (from coach JSON)
+  coachLine?: CoachLinePoint[] | null      // optimal line stitched from segment bests (toggle, off by default)
+  aiCoachLine?: CoachLinePoint[] | null   // AI-recommended line (from v1 coach JSON)
 }
 
 interface ViewBox { x: number; y: number; w: number; h: number }
@@ -129,15 +129,35 @@ function ribbonPath(left: Array<{ x: number; y: number }>, right: Array<{ x: num
 
 type TrackMetric = 'speed_mph' | 'lat_g' | 'long_g'
 
-const METRIC_META: Record<TrackMetric, { label: string; unit: string; abs: boolean }> = {
-  speed_mph: { label: 'Speed',    unit: 'mph', abs: false },
-  lat_g:     { label: 'Lat G',    unit: 'g',   abs: true  },
-  long_g:    { label: 'Long G',   unit: 'g',   abs: true  },
+// Long G is signed so braking and acceleration read differently; lateral G
+// stays absolute (left/right load is the same story on a map).
+const METRIC_META: Record<TrackMetric, { label: string; unit: string; abs: boolean; diverging: boolean }> = {
+  speed_mph: { label: 'Speed',    unit: 'mph', abs: false, diverging: false },
+  lat_g:     { label: 'Lat G',    unit: 'g',   abs: true,  diverging: false },
+  long_g:    { label: 'Long G',   unit: 'g',   abs: false, diverging: true  },
 }
 
 function getMetricValues(lap: RacingLineLap, metric: TrackMetric): number[] {
   const raw = lap[metric] as number[]
   return METRIC_META[metric].abs ? raw.map(Math.abs) : raw
+}
+
+// Diverging ramp for signed Long G: red = braking, neutral = coasting /
+// steady throttle, green = acceleration. Each side is scaled to its own peak
+// because braking (~1 g) is far stronger than a road car's acceleration.
+const BRAKE_COLOR = '#ff4757'
+const NEUTRAL_COLOR = '#8a8a94'
+const ACCEL_COLOR = '#5dd17f'
+const LONG_G_LEGEND = [BRAKE_COLOR, lerpColor(BRAKE_COLOR, NEUTRAL_COLOR, 0.5), NEUTRAL_COLOR, lerpColor(NEUTRAL_COLOR, ACCEL_COLOR, 0.5), ACCEL_COLOR]
+
+function longGColor(value: number, vmin: number, vmax: number): string {
+  if (value < 0) return lerpColor(NEUTRAL_COLOR, BRAKE_COLOR, Math.min(1, value / Math.min(-1e-6, vmin)))
+  return lerpColor(NEUTRAL_COLOR, ACCEL_COLOR, Math.min(1, value / Math.max(1e-6, vmax)))
+}
+
+function metricColor(metric: TrackMetric, value: number, vmin: number, vmax: number): string {
+  if (METRIC_META[metric].diverging) return longGColor(value, vmin, vmax)
+  return speedColor((value - vmin) / Math.max(1e-6, vmax - vmin))
 }
 
 // Nearest index in a sorted dist[] array for a given distance value.
@@ -153,19 +173,17 @@ function nearestDistIdx(dist: number[], target: number): number {
 }
 
 // Per-lap heatmap — many short line segments coloured by the chosen metric.
-function HeatmapPath({ lap, values, vmin, vmax }: {
-  lap: RacingLineLap; values: number[]; vmin: number; vmax: number
+function HeatmapPath({ lap, values, metric, vmin, vmax }: {
+  lap: RacingLineLap; values: number[]; metric: TrackMetric; vmin: number; vmax: number
 }) {
   const segments = []
-  const range = Math.max(1e-6, vmax - vmin)
   for (let i = 1; i < lap.x.length; i++) {
-    const t = ((values[i] + values[i - 1]) / 2 - vmin) / range
     segments.push(
       <line
         key={i}
         x1={lap.x[i - 1]} y1={-lap.y[i - 1]}
         x2={lap.x[i]}     y2={-lap.y[i]}
-        stroke={speedColor(t)}
+        stroke={metricColor(metric, (values[i] + values[i - 1]) / 2, vmin, vmax)}
         strokeWidth={1.4}
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"
@@ -205,7 +223,11 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
   // Layer toggles + metric selector
   const [showCenter,      setShowCenter]    = useState(false)
   const [showGMeter,      setShowGMeter]    = useState(true)
+  // The data-derived optimal line is available on demand, with or without a
+  // coach report; the AI line (old reports only) shows whenever present.
+  const [showOptimalLine, setShowOptimalLine] = useState(false)
   const [showCoachLine,   setShowCoachLine] = useState(true)
+  const hasOptimalLine = !!coachLine && coachLine.length > 1
   // Index 0 = best lap; indices 1+ = comparison laps. Best lap selected by default.
   const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set([0]))
   const [metric,          setMetric]        = useState<TrackMetric>('speed_mph')
@@ -670,8 +692,11 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
         <MetricDropdown metric={metric} onChange={setMetric} />
         <LayerToggle on={showCenter} onChange={setShowCenter}>centerline</LayerToggle>
         <LayerToggle on={showGMeter} onChange={setShowGMeter}>g-meter</LayerToggle>
-        {(coachLine || aiCoachLine) && (
-          <LayerToggle on={showCoachLine} onChange={setShowCoachLine}>coach line</LayerToggle>
+        {hasOptimalLine && (
+          <LayerToggle on={showOptimalLine} onChange={setShowOptimalLine}>optimal line</LayerToggle>
+        )}
+        {aiCoachLine && aiCoachLine.length > 1 && (
+          <LayerToggle on={showCoachLine} onChange={setShowCoachLine}>AI line</LayerToggle>
         )}
         {racingLines.length > 0 && (
           <LapPickerDropdown
@@ -762,13 +787,14 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
           )
         })}
 
-        {/* L4 — selected comparison laps (indices 1+) as solid coloured traces */}
-        {racingLines.slice(1).map((lap, i) => selectedLapIdxs.has(i + 1) && (
+        {/* L4 — selected comparison laps (indices 1+) as solid coloured traces,
+             in the same colour each lap has on the charts */}
+        {racingLines.map((lap, i) => i > 0 && selectedLapIdxs.has(i) && (
           <path
             key={`cmp-${lap.sg}-${lap.lapIdx}`}
             d={pathFromPoints(lap.x.map((x, k) => ({ x, y: lap.y[k] })))}
             fill="none"
-            stroke={LAP_PALETTE[i % LAP_PALETTE.length]}
+            stroke={lapColor(lap)}
             strokeOpacity={0.75}
             strokeWidth={1.2}
             vectorEffect="non-scaling-stroke"
@@ -777,16 +803,16 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
 
         {/* L5 — best lap (index 0) heatmap, shown when selected */}
         {!edit && selectedLapIdxs.has(0) && bestLap && (
-          <HeatmapPath lap={bestLap} values={getMetricValues(bestLap, metric)} vmin={vmin} vmax={vmax} />
+          <HeatmapPath lap={bestLap} values={getMetricValues(bestLap, metric)} metric={metric} vmin={vmin} vmax={vmax} />
         )}
 
         {/* Exact per-corner V-min samples. Visible only for the speed map and
             placed on each selected lap's measured racing line. */}
         {!edit && metric === 'speed_mph' && racingLines.flatMap((lap, lapIndex) => {
           if (!selectedLapIdxs.has(lapIndex)) return []
-          const color = lapIndex === 0 ? '#ff5e3a' : LAP_PALETTE[(lapIndex - 1) % LAP_PALETTE.length]
+          const color = lapColor(lap)
           return cornerVMinsByLap[lapIndex].map(vminPoint => {
-            const lapLabel = `L${lap.lapIdx + 1}${lapIndex === 0 ? ' ★' : ''}`
+            const lapLabel = `${lapName(lap)}${lap.isBest ? ' ★' : ''}`
             const setHover = (e: React.MouseEvent<SVGGElement>) => {
               e.stopPropagation()
               setHoverIdx(null)
@@ -824,10 +850,10 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
           })
         })}
 
-        {/* L5c — coach's line (data-derived optimal from per-segment PBs) */}
-        {showCoachLine && coachLine && coachLine.length > 1 && (
+        {/* L5c — optimal line (data-derived, stitched from per-segment PBs) */}
+        {showOptimalLine && hasOptimalLine && (
           <path
-            d={pathFromPoints(coachLine.map(p => ({ x: p.x, y: p.y })))}
+            d={pathFromPoints(coachLine!.map(p => ({ x: p.x, y: p.y })))}
             fill="none"
             stroke="#7dd3fc"
             strokeOpacity={0.7}
@@ -959,26 +985,33 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
           )
         })()}
 
-        {/* Analysis-chart corner hover — independent of AI annotations. */}
+        {/* Analysis-chart corner hover — independent of AI annotations. A
+            focused corner (View on map, or ?focus=T11) keeps a fainter zone so
+            it stays identifiable without a coach report. */}
         {(() => {
-          if (!hoverRef || !/^T\d+/i.test(hoverRef)) return null
-          const corner = ((data as AnalysisData).corners ?? []).find(c => c.turn === hoverRef)
-          if (!corner) return null
-          const lo = Math.max(0, Math.round(corner.dist_idx_start))
-          const hi = Math.min(geom.centerline.length - 1, Math.round(corner.dist_idx_end))
-          const slice = geom.centerline.slice(lo, hi + 1)
-          if (slice.length < 2) return null
-          return (
-            <path
-              d={pathFromPoints(slice)}
-              fill="none"
-              stroke="#22d3ee"
-              strokeOpacity={0.55}
-              strokeWidth={Math.max(5, geom.widthM * 0.9)}
-              strokeLinecap="round"
-              pointerEvents="none"
-            />
-          )
+          const ref = hoverRef ?? focusCorner
+          if (!ref || !/^T\d+/i.test(ref)) return null
+          const corners = (data as AnalysisData).corners ?? []
+          return expandRef(ref).map(turn => {
+            const corner = corners.find(c => c.turn === turn)
+            if (!corner) return null
+            const lo = Math.max(0, Math.round(corner.dist_idx_start))
+            const hi = Math.min(geom.centerline.length - 1, Math.round(corner.dist_idx_end))
+            const slice = geom.centerline.slice(lo, hi + 1)
+            if (slice.length < 2) return null
+            return (
+              <path
+                key={`corner-zone-${turn}`}
+                d={pathFromPoints(slice)}
+                fill="none"
+                stroke="#22d3ee"
+                strokeOpacity={hoverRef ? 0.55 : 0.3}
+                strokeWidth={Math.max(5, geom.widthM * 0.9)}
+                strokeLinecap="round"
+                pointerEvents="none"
+              />
+            )
+          })
         })()}
 
         {/* L8 — coach annotation markers */}
@@ -1102,15 +1135,22 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
 
       <div className="track-map-legend">
         <div className="track-map-legend-bar">
-          {SPEED_RAMP.map(([t, c]) => (
-            <div key={t} style={{ background: c, flex: 1 }} />
-          ))}
+          {METRIC_META[metric].diverging
+            ? LONG_G_LEGEND.map(c => <div key={c} style={{ background: c, flex: 1 }} />)
+            : SPEED_RAMP.map(([t, c]) => (
+              <div key={t} style={{ background: c, flex: 1 }} />
+            ))}
         </div>
         <div className="track-map-legend-labels">
           {(() => {
-            const { unit: rawUnit, abs } = METRIC_META[metric]
+            const { unit: rawUnit, abs, diverging } = METRIC_META[metric]
             const unit = metric === 'speed_mph' ? speedUnit : rawUnit
             const fmt = (v: number) => metric === 'speed_mph' ? `${Math.round(v)} ${unit}` : `${v.toFixed(2)}${unit}`
+            if (diverging) return <>
+              <span>{fmt(Math.min(0, vmin))}</span>
+              <span>0</span>
+              <span>+{fmt(Math.max(0, vmax))}</span>
+            </>
             return <>
               <span>{fmt(vmin)}</span>
               <span>{fmt((vmin + vmax) / 2)}</span>
@@ -1118,9 +1158,15 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
             </>
           })()}
         </div>
+        {METRIC_META[metric].diverging && (
+          <div className="track-map-legend-labels">
+            <span style={{ color: BRAKE_COLOR }}>braking</span>
+            <span style={{ color: ACCEL_COLOR }}>accel</span>
+          </div>
+        )}
         {bestLap && (
           <div className="track-map-legend-best">
-            ⭐ L{bestLap.lapIdx + 1} · {msToLapTime(bestLap.durationMs)}
+            ⭐ {lapName(bestLap)} · {msToLapTime(bestLap.durationMs)}
           </div>
         )}
         {crosshair && hoverDistanceM != null && (
@@ -1128,12 +1174,12 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
             {Math.round(hoverDistanceM)} m · {crosshair.speed.toFixed(1)} {speedUnit}
           </div>
         )}
-        {showCoachLine && coachLine && (
+        {showOptimalLine && hasOptimalLine && (
           <div className="track-map-legend-best" style={{ color: '#7dd3fc' }}>
-            ── coach line (data)
+            ── optimal line (segment bests)
           </div>
         )}
-        {showCoachLine && aiCoachLine && (
+        {showCoachLine && aiCoachLine && aiCoachLine.length > 1 && (
           <div className="track-map-legend-best" style={{ color: '#c4b5fd' }}>
             ── coach line (AI)
           </div>
@@ -1155,8 +1201,8 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
             .map(({ lap, i }) => {
               const distM = bestLap.dist[hoverIdx]
               const idx = i === 0 ? hoverIdx : nearestDistIdx(lap.dist, distM)
-              const color = i === 0 ? '#ff5e3a' : LAP_PALETTE[(i - 1) % LAP_PALETTE.length]
-              const label = `L${lap.lapIdx + 1}${i === 0 ? ' ★' : ''}`
+              const color = lapColor(lap)
+              const label = `${lapName(lap)}${lap.isBest ? ' ★' : ''}`
               const unit = metric === 'speed_mph' ? speedUnit : METRIC_META[metric].unit
               const raw = (lap[metric] as number[])[idx]
               const val = raw != null
@@ -1380,7 +1426,7 @@ function LayerToggle({
 function msToLapTime(ms: number): string {
   const m = Math.floor(ms / 60000)
   const s = ((ms % 60000) / 1000).toFixed(3)
-  return `${m}:${s.padStart(7, '0')}`
+  return `${m}:${s.padStart(6, '0')}`
 }
 
 function LapPickerDropdown({ laps, selected, onChange }: {
@@ -1389,6 +1435,9 @@ function LapPickerDropdown({ laps, selected, onChange }: {
   onChange: (s: Set<number>) => void
 }) {
   const [open, setOpen] = useState(false)
+  // Lap labels ("May 24 16:15 · L3") make the menu wide; open it leftwards
+  // when the button sits near the map's right edge.
+  const [alignRight, setAlignRight] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1399,6 +1448,13 @@ function LapPickerDropdown({ laps, selected, onChange }: {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [open])
+
+  const openMenu = () => {
+    const button = ref.current?.getBoundingClientRect()
+    const map = ref.current?.closest('.track-map')?.getBoundingClientRect()
+    if (button && map) setAlignRight(button.left + 260 > map.right && button.right - 260 >= map.left)
+    setOpen(o => !o)
+  }
 
   const toggle = (i: number) => {
     const next = new Set(selected)
@@ -1413,7 +1469,7 @@ function LapPickerDropdown({ laps, selected, onChange }: {
       <button
         className={`layer-toggle ${anyOn ? 'on' : ''}`}
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={openMenu}
       >
         <span className="dot" />
         <span>compare laps{anyOn ? ` (${selected.size})` : ''}</span>
@@ -1421,10 +1477,10 @@ function LapPickerDropdown({ laps, selected, onChange }: {
       </button>
 
       {open && (
-        <div className="lap-picker-menu">
+        <div className="lap-picker-menu" style={alignRight ? { left: 'auto', right: 0 } : undefined}>
           {laps.map((lap, i) => {
             const on = selected.has(i)
-            const color = LAP_PALETTE[i % LAP_PALETTE.length]
+            const color = lapColor(lap)
             return (
               <button
                 key={`${lap.sg}-${lap.lapIdx}`}
@@ -1434,7 +1490,7 @@ function LapPickerDropdown({ laps, selected, onChange }: {
               >
                 <span className="lap-picker-swatch" style={{ background: color, opacity: on ? 1 : 0.3 }} />
                 <span className="lap-picker-label">
-                  L{lap.lapIdx + 1}
+                  {lap.isBest ? '★ ' : ''}{lapName(lap)}
                   <span className="lap-picker-time">{msToLapTime(lap.durationMs)}</span>
                 </span>
                 <span className="lap-picker-check">{on ? '✓' : ''}</span>

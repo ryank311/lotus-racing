@@ -8,7 +8,6 @@ export type NavKey = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 
 interface NavSpec {
   key: NavKey
   label: string
-  k: string
   icon: JSX.Element
 }
 
@@ -51,15 +50,16 @@ const TracksIcon = () => (
   </svg>
 )
 
+// ⌘1–⌘8 follow this order.
 const NAV: NavSpec[] = [
-  { key: 'home',     label: 'Overview',  k: '1', icon: <HomeIcon /> },
-  { key: 'sessions', label: 'Sessions',  k: '2', icon: <SessionsIcon /> },
-  { key: 'review', label: 'Session Review', k: '7', icon: <SessionsIcon /> },
-  { key: 'progress', label: 'Progress', k: '8', icon: <AnalysisIcon /> },
-  { key: 'analysis', label: 'Analysis',  k: '3', icon: <AnalysisIcon /> },
-  { key: 'coach',    label: 'AI Coach',  k: '4', icon: <CoachIcon /> },
-  { key: 'garage',   label: 'Garage',    k: '5', icon: <GarageIcon /> },
-  { key: 'tracks',   label: 'Tracks',    k: '6', icon: <TracksIcon /> },
+  { key: 'home',     label: 'Overview',       icon: <HomeIcon /> },
+  { key: 'sessions', label: 'Sessions',       icon: <SessionsIcon /> },
+  { key: 'review',   label: 'Session Review', icon: <SessionsIcon /> },
+  { key: 'progress', label: 'Progress',       icon: <AnalysisIcon /> },
+  { key: 'analysis', label: 'Analysis',       icon: <AnalysisIcon /> },
+  { key: 'coach',    label: 'AI Coach',       icon: <CoachIcon /> },
+  { key: 'garage',   label: 'Garage',         icon: <GarageIcon /> },
+  { key: 'tracks',   label: 'Tracks',         icon: <TracksIcon /> },
 ]
 
 const BugIcon = () => (
@@ -151,7 +151,7 @@ export function Sidebar({ active, onChange, connected, authUnknown = false, auth
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) {
         e.preventDefault()
-        const destination = NAV.find(item => item.k === e.key)
+        const destination = NAV[Number(e.key) - 1]
         if (destination) onChange(destination.key)
       }
     }
@@ -175,13 +175,13 @@ export function Sidebar({ active, onChange, connected, authUnknown = false, auth
         <div className="brand-mark" />
         <div className="brand-text">
           <div className="brand-title">Catalyst</div>
-          <div className="brand-sub">// telemetry · vir</div>
+          <div className="brand-sub">// telemetry · coach</div>
         </div>
       </div>
 
       <nav className="nav" aria-label="Main navigation">
         <div className="nav-section-label">Workspace</div>
-        {NAV.map(n => (
+        {NAV.map((n, index) => (
           <NavLink
             to={destination(n.key)}
             aria-current={active === n.key ? 'page' : undefined}
@@ -206,7 +206,7 @@ export function Sidebar({ active, onChange, connected, authUnknown = false, auth
                 {selectionCount}
               </span>
             )}
-            <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{n.k}</span>
+            <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{index + 1}</span>
           </NavLink>
         ))}
       </nav>

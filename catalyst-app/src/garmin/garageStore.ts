@@ -268,3 +268,68 @@ export async function resolveGarageProfile(name?: string | null, dbPath = DB_PAT
   if (profile) return profile
   throw new Error(selected ? `no Garage profile '${selected}'` : 'no Garage profile found')
 }
+
+// ─── AI context selection ────────────────────────────────────────────────────
+
+export interface AiContextFile { name: string; included: boolean; defaultIncluded: boolean; bytes: number }
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+// Car.md, driver/coach notes and the guide for this layout go to the coach by
+// default; general guides and research stay out unless the driver opts in,
+// so background reading does not outweigh the telemetry.
+export function defaultAiContext(fileName: string, trackLabel = ''): boolean {
+  if (fileName.toLowerCase() === 'car.md') return true
+  const config = slug(trackLabel.split('·').pop() ?? '')
+  const file = slug(fileName.replace(/\.md$/i, ''))
+  if (config.length > 3 && file.includes(config)) return true
+  if (/guide|research|reference|manual/i.test(fileName)) return false
+  return /driver|coach|notes?\b|goal/i.test(fileName)
+}
+
+export async function listAiContextFiles(profileName: string, trackLabel = ''): Promise<AiContextFile[]> {
+  await ensureGarageSeeded()
+  const name = safeName(profileName, 'profile name')
+  return withDb(async con => {
+    const files = (await con.runAndReadAll(
+      `SELECT f.file_name, length(f.content) AS bytes, c.included FROM garage_files f
+       LEFT JOIN garage_ai_context c ON c.profile_name = f.profile_name AND c.file_name = f.file_name
+       WHERE f.profile_name = ? AND lower(f.file_name) LIKE '%.md'
+       ORDER BY CASE WHEN lower(f.file_name) = 'car.md' THEN 0 ELSE 1 END, lower(f.file_name)`,
+      [name] as any,
+    )).getRowsJson()
+    return files.map(([fileName, bytes, included]) => {
+      const defaultIncluded = defaultAiContext(String(fileName), trackLabel)
+      return { name: String(fileName), bytes: Number(bytes ?? 0), defaultIncluded, included: included == null ? defaultIncluded : included === true || included === 'true' }
+    })
+  })
+}
+
+export async function setAiContextIncluded(profileName: string, fileName: string, included: boolean | null): Promise<void> {
+  await ensureGarageSeeded()
+  const name = safeName(profileName, 'profile name')
+  const file = safeName(fileName, 'file name')
+  await withDb(async con => {
+    if (included === null) await con.run('DELETE FROM garage_ai_context WHERE profile_name = ? AND file_name = ?', [name, file] as any)
+    else await con.run('INSERT OR REPLACE INTO garage_ai_context VALUES (?, ?, ?)', [name, file, included] as any)
+  })
+}
+
+// The included documents' text, for the coaching prompt.
+export async function aiContextDocuments(profileName: string, trackLabel = '', dbPath = DB_PATH): Promise<Array<{ name: string; content: string }>> {
+  await ensureGarageSeeded(dbPath)
+  return withDb(async con => {
+    const rows = (await con.runAndReadAll(
+      `SELECT f.file_name, f.content, c.included FROM garage_files f
+       LEFT JOIN garage_ai_context c ON c.profile_name = f.profile_name AND c.file_name = f.file_name
+       WHERE f.profile_name = ? AND lower(f.file_name) LIKE '%.md'
+       ORDER BY CASE WHEN lower(f.file_name) = 'car.md' THEN 0 ELSE 1 END, lower(f.file_name)`,
+      [profileName] as any,
+    )).getRowsJson()
+    return rows
+      .filter(([fileName, , included]) => included == null ? defaultAiContext(String(fileName), trackLabel) : included === true || included === 'true')
+      .map(([fileName, content]) => ({ name: String(fileName), content: String(content ?? '') }))
+  }, dbPath)
+}

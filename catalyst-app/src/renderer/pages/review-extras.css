@@ -1,0 +1,54 @@
+/* Session Review / Progress additions: evidence-aware colour, focus tracking, notes. */
+.review-page .neutral, .review-delta-legend .neutral { color: var(--text-dim); }
+.review-header-actions { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.review-header-actions > .btn, .review-region-detail .review-section-heading .btn { text-decoration: none; display: inline-flex; align-items: center; }
+.review-region-detail .review-section-heading h3 { margin: 0; }
+.review-regions { scroll-margin-top: 16px; }
+
+.review-delta-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 10px 0 0; color: var(--text-dim); font: 10px/1.6 var(--font-mono); }
+.review-delta-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.review-delta-legend > span:last-child { color: var(--text-mute); }
+.review-delta-legend i { display: inline-block; width: 10px; height: 10px; background: currentColor; opacity: .8; }
+.review-delta-legend .gain { color: var(--green); }
+.review-delta-legend .loss { color: var(--red); }
+.review-scatter-note { margin: 0; color: var(--text-mute); font: 10px/1.6 var(--font-mono); }
+
+.review-stat-title { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.review-badge { padding: 1px 6px; border: 1px solid var(--green); border-radius: var(--radius); color: var(--green); font: 600 9px/1.6 var(--font-mono); letter-spacing: .1em; }
+
+.review-verdict { white-space: nowrap; }
+.review-verdict.gain { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, transparent); }
+.review-verdict.loss { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.review-verdict.neutral { color: var(--text-dim); }
+.review-focus-card { border-top: 2px solid var(--cyan); }
+.review-focus-card .review-section-heading a { font-size: 12px; }
+.review-focus-list { list-style: none; margin: 8px 0 0; padding: 0 !important; display: grid; gap: 0; }
+.review-focus-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.review-focus-row:first-child { border-top: 0; }
+.review-focus-row > span:last-child { display: flex; flex-direction: column; gap: 3px; min-width: 0; line-height: 1.5; }
+.review-focus-row small { font: 11px/1.6 var(--font-mono); overflow-wrap: anywhere; }
+.review-focus-row small strong { color: var(--text); font-weight: 600; }
+.review-focus-targets { list-style: none; margin: 4px 0 10px; padding: 0 !important; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 10px; }
+.review-focus-target { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--border); border-left: 2px solid var(--green); background: var(--bg-elev); line-height: 1.5; }
+.review-focus-target > span:nth-child(2) { font: 12px/1.6 var(--font-mono); color: var(--text-dim); }
+.review-focus-target strong { color: var(--text); font-weight: 600; }
+.review-focus-target q { color: var(--text); font-size: 13px; }
+.review-focus-target small { font: 10px/1.6 var(--font-mono); }
+.review-priority-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.review-show-map { min-height: 36px !important; padding: 4px 12px; font-size: 11px; }
+
+.review-notes-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; margin-top: 10px; }
+.review-notes-form .wide { grid-column: 1 / -1; }
+.review-notes-form textarea { color: var(--text); background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 10px 12px; font: 12px/1.6 var(--font-body); resize: vertical; min-height: 72px; max-width: 100%; }
+.review-notes-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.review-notes-actions [role=status] { font: 11px var(--font-mono); }
+.review-notes > summary > span + span { overflow-wrap: anywhere; }
+
+.review-filter-row .review-temperature-source { color: var(--text-dim); font: 11px/1.6 var(--font-mono); margin: 4px 0 0; flex-basis: 100%; }
+.progress-hidden-note { margin: 6px 0 0; color: var(--text-mute); font-size: 12px; line-height: 1.6; }
+.progress-controls .review-tabs button:disabled { opacity: .4; cursor: not-allowed; }
+
+@media (max-width: 600px) {
+  .review-notes-form { grid-template-columns: 1fr; }
+  .review-focus-row { flex-direction: column; gap: 6px; }
+}

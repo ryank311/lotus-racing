@@ -1,19 +1,20 @@
-import { InlineLoadStatus, ChartPlaceholder } from '../components/Loading'
+import { PreparingPanel } from '../components/Preparing'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
 import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart } from '../components/Charts'
-import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, longGSeries } from '../components/chartSeries'
+import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
 import { useNavigation, useRoute } from '../navigation'
 import { humanSessionLabel, sanitizeCoachingResult } from '../../shared/sessionIdentity'
-import { coachingLapFilter, type LapFilter } from '../../shared/coachingScope'
+import { coachingLapFilter, DEFAULT_LAP_FILTER, isLapFilter, LAP_FILTERS, lapFilterLabel, lapFilterPhrase, type LapFilter } from '../../shared/coachingScope'
 import { CoachProgress } from '../components/CoachProgress'
 import type { AnalysisData } from '../../garmin/analysisData'
-import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec } from '../../shared/types'
+import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec, FocusVerdict } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
+import './analysis-extras.css'
 
 interface Props {
   selected: Set<string>
@@ -31,13 +32,10 @@ function guidKey(guids: Iterable<string>): string {
   return [...guids].sort().join(',')
 }
 
-const LAP_FILTERS: Array<{ value: LapFilter; label: string; limit: 3 | 5 | 10 | null }> = [
-  { value: 'all', label: 'All', limit: null },
-  { value: 'top3', label: 'Top 3', limit: 3 },
-  { value: 'top5', label: 'Top 5', limit: 5 },
-  { value: 'top10', label: 'Top 10', limit: 10 },
-]
-const lapLimitFor = (filter: LapFilter) => LAP_FILTERS.find(item => item.value === filter)?.limit ?? null
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// The sessions and lap filter a loaded coach report was generated for.
+interface CoachScope { guids: string[]; filter: LapFilter }
 
 export function Analysis({ selected, setSelected, onBack, activeCoachSession, onClearCoachSession, busy, setBusy }: Props) {
   const { params } = useRoute()
@@ -45,6 +43,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const { system } = useUnits()
   const [data, setData] = useState<AnalysisData | null>(null)
   const [loading, setLoading] = useState(selected.size > 0)
+  const [loadStartedAt, setLoadStartedAt] = useState(() => Date.now())
   const [err, setErr] = useState<string | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const mobileView = params.get('view') === 'map' ? 'map' : 'charts'
@@ -52,14 +51,16 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const [splitPct, setSplitPct] = useState(62)
   const [hoverDistanceM, setHoverDistanceM] = useState<number | null>(null)
   const [coachResult, setCoachResult] = useState<CoachingResult | null>(null)
-  // Order-independent key of the session set the current coaching corresponds to.
-  // When the selection diverges from this, the coaching no longer matches the
-  // analysis and is cleared automatically.
-  const [coachedKey, setCoachedKey] = useState<string | null>(null)
+  // What the loaded report was generated for. Changing the sessions or lap
+  // filter afterwards keeps the report on screen with a stale banner rather
+  // than silently discarding it.
+  const [coachScope, setCoachScope] = useState<CoachScope | null>(null)
   const [coachRunning, setCoachRunning] = useState(false)
   const [coachError, setCoachError] = useState<string | null>(null)
-  const lapFilter = (params.get('laps') ?? 'top10') as LapFilter
+  const lapParam = params.get('laps')
+  const lapFilter: LapFilter = isLapFilter(lapParam) && lapParam !== 'all' ? lapParam : DEFAULT_LAP_FILTER
   const setLapFilter = (laps: LapFilter) => query({ laps, report: null })
+  const focusParam = params.get('focus')
   const [coachMenuOpen, setCoachMenuOpen] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
@@ -67,34 +68,40 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const containerRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const loadedCoachId = useRef<string | null>(null)
+  const appliedFocus = useRef<string | null>(null)
 
-  // Restore the report's actual scope before checking for stale coaching. Keep
-  // these in one effect so loading a report cannot clear it using the previous
-  // render's filter/result (including when switching between saved reports).
+  const resetMapFocus = () => {
+    setFocusedRef(null)
+    setHoveredRef(null)
+    setFocusedAnnotation(undefined)
+  }
+
+  // Load a saved report (opened from AI Coach or a report link) with the
+  // scope it was generated for.
   useEffect(() => {
-    if (activeCoachSession && loadedCoachId.current !== activeCoachSession.id) {
-      loadedCoachId.current = activeCoachSession.id
-      const filter = coachingLapFilter(activeCoachSession)
-      setCoachResult(activeCoachSession.parsed_result)
-      setCoachedKey(`${guidKey(activeCoachSession.session_guids)}|${filter}`)
-      setFocusedRef(null)
-      setHoveredRef(null)
-      setFocusedAnnotation(undefined)
-      return
-    }
-    if (!activeCoachSession) loadedCoachId.current = null
+    if (!activeCoachSession) { loadedCoachId.current = null; return }
+    if (loadedCoachId.current === activeCoachSession.id) return
+    loadedCoachId.current = activeCoachSession.id
+    setCoachResult(activeCoachSession.parsed_result)
+    setCoachScope({ guids: activeCoachSession.session_guids, filter: coachingLapFilter(activeCoachSession) })
+    resetMapFocus()
+  }, [activeCoachSession])
 
-    // User changes to sessions or lap filter still invalidate the report.
-    if (!coachResult || coachedKey == null) return
-    if (`${guidKey(selected)}|${lapFilter}` !== coachedKey) {
-      setCoachResult(null)
-      setCoachedKey(null)
-      setFocusedRef(null)
-      setHoveredRef(null)
-      setFocusedAnnotation(undefined)
-      onClearCoachSession?.()
-    }
-  }, [activeCoachSession, selected, lapFilter, coachResult, coachedKey, onClearCoachSession])
+  const clearCoach = () => {
+    setCoachResult(null)
+    setCoachScope(null)
+    resetMapFocus()
+    onClearCoachSession?.()
+  }
+
+  // ?focus=T11 (e.g. from Session Review or Progress): once telemetry has
+  // loaded, focus that corner or segment exactly like "View on map".
+  useEffect(() => {
+    if (!data || !focusParam || appliedFocus.current === focusParam) return
+    appliedFocus.current = focusParam
+    setFocusedRef(focusParam)
+    setMobileView('map')
+  }, [data, focusParam])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const askCoach = async (coachFilter: LapFilter = lapFilter) => {
     if (!data || coachRunning || busy) return
@@ -114,8 +121,11 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     setBusy?.('coach')
     // The set submitted to the coach — the result will correspond to exactly this.
     const submitted = [...selected]
-    const submittedKey = `${guidKey(submitted)}|${coachFilter}`
-    const profile = await api.getActiveProfile() ?? 'Lotus'
+    // Coaching a different lap filter from the menu: show those laps too, so
+    // the report does not arrive already out of step with the charts.
+    if (coachFilter !== lapFilter) setLapFilter(coachFilter)
+    // The server resolves the car's profile from the vehicle when this is empty.
+    const profile = (await api.getActiveProfile()) ?? ''
     const unsub = api.onWorker(evt => {
       if (evt.kind !== 'coach') return
       if (evt.type === 'done') {
@@ -126,7 +136,8 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           void api.getCoachSession(evt.payload).then(s => {
             if (s) {
               setCoachResult(s.parsed_result)
-              setCoachedKey(submittedKey)
+              setCoachScope({ guids: submitted, filter: coachFilter })
+              resetMapFocus()
             }
           })
         }
@@ -139,7 +150,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       }
     })
     try {
-      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted, lapLimit: lapLimitFor(coachFilter) })
+      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted, lapFilter: coachFilter })
     } catch (e: any) {
       unsub()
       setCoachRunning(false)
@@ -172,7 +183,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       setData(null); setErr(null); setLoading(false)
       return
     }
-    setLoading(true); setErr(null); setData(null)
+    setLoading(true); setErr(null); setData(null); setLoadStartedAt(Date.now())
     // A tunnel can stall without rejecting fetch. Stop waiting after two
     // minutes, and ignore any late result after cancellation or a retry.
     const fail = (message: string) => {
@@ -189,7 +200,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         const requested = sessions.filter(s => selected.has(s.session_guid))
         if (requested.length !== selected.size) throw new Error('Some sessions are unavailable. Return to Sessions to update your selection.')
         if (requested.some(s => !s.details_loaded)) throw new Error('Telemetry is missing. Return to Sessions and download the selected telemetry.')
-        const d = (await api.buildAnalysis([...selected], system, lapLimitFor(lapFilter))) as AnalysisData
+        const d = (await api.buildAnalysis([...selected], system, lapFilter)) as AnalysisData
         if (!d) throw new Error('The server returned no analysis. Please try again.')
         if (!cancelled) setData(d)
       } catch (e: any) {
@@ -211,6 +222,31 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     )
     return sanitizeCoachingResult(coachResult, aliases)
   }, [coachResult, data?.sessions])
+
+  // The report stays visible when the selection moves away from what it was
+  // generated for; say so plainly and offer to clear or re-run it.
+  const staleNotice = (() => {
+    if (!coachResult || !coachScope) return null
+    const sameSessions = guidKey(coachScope.guids) === guidKey(selected)
+    if (sameSessions && coachScope.filter === lapFilter) return null
+    const now = `${lapFilterPhrase(lapFilter)} of ${plural(selected.size, sameSessions || coachScope.guids.length !== selected.size ? 'session' : 'different session')}`
+    return (
+      <div className="coach-stale-banner" role="status">
+        <div>
+          <strong>Coach report is out of date for these charts</strong>
+          <span>
+            This report was generated for {lapFilterPhrase(coachScope.filter)} of {plural(coachScope.guids.length, 'session')}; the charts now show {now}.
+          </span>
+        </div>
+        <div className="coach-stale-actions">
+          <button type="button" className="btn ghost" onClick={clearCoach}>Clear report</button>
+          <button type="button" className="btn primary" disabled={!data || coachRunning || !!busy} onClick={() => void askCoach(lapFilter)}>
+            {coachRunning ? 'Coaching…' : 'Re-run coach'}
+          </button>
+        </div>
+      </div>
+    )
+  })()
 
   if (selected.size === 0) {
     return (
@@ -241,7 +277,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       <header className="analysis-toolbar">
         <div className="analysis-context">
           <strong title={data?.config}>{data?.config || 'Analysis'}</strong>
-          <span>{selected.size} session{selected.size === 1 ? '' : 's'} · {loading ? 'Loading…' : data ? `${data.laps.length} ${lapFilter === 'all' ? 'driven' : 'filtered'} laps` : 'Telemetry'}</span>
+          <span>{selected.size} session{selected.size === 1 ? '' : 's'} · {loading ? 'Loading…' : data ? plural(data.laps.length, 'lap') : 'Telemetry'}</span>
         </div>
 
         <div className="analysis-mobile-tabs" role="group" aria-label="Analysis view">
@@ -250,15 +286,16 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         </div>
 
         <select className="analysis-lap-select" aria-label="Laps included in analysis"
+          title="Which valid laps the charts and the coach use"
           value={lapFilter} disabled={loading} onChange={e => setLapFilter(e.target.value as LapFilter)}>
-          {LAP_FILTERS.map(item => <option key={item.value} value={item.value}>{item.label} laps</option>)}
+          {LAP_FILTERS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
         </select>
 
         <div className="ask-coach-split">
           <button
-            className={`btn ask-coach-btn${coachResult ? ' clearing' : ''}`}
+            className={`btn ask-coach-btn${coachResult ? ' clearing' : ''}${coachRunning ? ' is-running' : ''}`}
             disabled={!data || !!busy}
-            onClick={coachResult ? () => { setCoachResult(null); onClearCoachSession?.() } : () => void askCoach(lapFilter)}
+            onClick={coachResult ? clearCoach : () => void askCoach(lapFilter)}
           >
             {coachRunning ? 'Coaching…' : coachResult ? '✕ Clear Coach' : '✦ Ask Coach'}
           </button>
@@ -271,11 +308,11 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             <div className="ask-coach-menu">
               <div className="ask-coach-menu-label">Coach using</div>
               <button type="button" onClick={() => { setCoachMenuOpen(false); void askCoach(lapFilter) }}>
-                Current filter · {LAP_FILTERS.find(item => item.value === lapFilter)?.label}
+                Current filter · {lapFilterLabel(lapFilter)}
               </button>
               {LAP_FILTERS.map(item => (
                 <button key={item.value} type="button" onClick={() => { setCoachMenuOpen(false); void askCoach(item.value) }}>
-                  {item.label} laps
+                  {item.label}
                 </button>
               ))}
             </div>
@@ -285,20 +322,30 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
       {(coachRunning || busy === 'coach') && <CoachProgress />}
 
-      <div
-        className={`analysis-split mobile-view-${loading || err ? 'charts' : mobileView}`}
+      {loading ? <div className="analysis-preparing">
+        <PreparingPanel
+          standalone
+          eyebrow="analysis"
+          title="Preparing analysis"
+          detail={`${plural(selected.size, 'session')} · ${lapFilterLabel(lapFilter)}`}
+          startedAt={loadStartedAt}
+          status="Crunching telemetry…"
+          stepsLabel="Being prepared"
+          steps={[
+            { label: 'Valid laps', detail: 'Garmin-flagged and excluded laps are left out', state: 'todo' },
+            { label: 'Splits and braking', detail: 'Timestamped splits, braking points, corner minimums', state: 'todo' },
+            { label: 'Lap comparisons', detail: 'Deltas to your fastest, theoretical and Garmin optimal laps', state: 'todo' },
+          ]}
+        />
+      </div> : <div
+        className={`analysis-split mobile-view-${err ? 'charts' : mobileView}`}
         ref={containerRef}
         style={{ gridTemplateColumns: `minmax(0, ${splitPct}fr) 6px minmax(0, ${100 - splitPct}fr)` }}
       >
         {/* LEFT PANE — chart content, scrollable */}
         <div className="analysis-left-pane">
           <div className="analysis-left-body">
-            {loading && <div data-route-loading>
-              <InlineLoadStatus pending label="analysis" />
-              <ChartPlaceholder title="Speed comparison" />
-            </div>}
-
-            {err && !loading && (
+            {err && (
               <div className="card" role="alert" style={{ padding: 22 }}>
                 <div className="card-label" style={{ color: 'var(--red)' }}>Error</div>
                 <div className="card-corner-marks"><i /></div>
@@ -310,8 +357,8 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
               </div>
             )}
 
-            {data && !loading && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} onFocusRef={ref => { setFocusedRef(ref); if (ref) setMobileView('map') }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
+            {data && !err && (
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} coachNotice={staleNotice} onFocusRef={ref => { setFocusedRef(ref); if (ref) setMobileView('map') }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
             )}
           </div>
         </div>
@@ -321,12 +368,12 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
-          {data && !loading && !err
+          {data && !err
             ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={displayCoachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} focusAnnotation={focusedAnnotation} coachResult={displayCoachResult} />
             : <div className="analysis-map-placeholder" />
           }
         </div>
-      </div>
+      </div>}
 
       {coachError && (
         <CoachErrorModal message={coachError} onDismiss={() => setCoachError(null)} />
@@ -417,7 +464,9 @@ function waypointsToXY(
   return result
 }
 
-// TrackMapPanel — right pane content, full height, no extra chrome
+// TrackMapPanel — right pane content, full height, no extra chrome. The
+// stitched optimal line is always offered (map toggle); the AI waypoint line
+// exists only on old (v1) reports that carry coach_line.
 function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, hoverRef, focusAnnotation, coachResult }: {
   data: AnalysisData
   hoverDistanceM: number | null
@@ -446,29 +495,39 @@ function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, ho
       focusCorner={focusCorner ?? undefined}
       hoverRef={hoverRef ?? undefined}
       focusAnnotation={focusAnnotation}
-      coachLine={coachResult && !aiCoachLine ? data.coachLine : null}
+      coachLine={data.coachLine ?? null}
       aiCoachLine={coachResult ? aiCoachLine : null}
     />
   )
 }
 
-function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResult, onFocusRef, onHoverRef, onFocusAnnotation }: {
+function AnalysisBody({ data, selected, setSelected, hoverDistanceM, onHoverDistance, coachResult, coachNotice, onFocusRef, onHoverRef, onFocusAnnotation }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
+  hoverDistanceM: number | null
   onHoverDistance: (d: number | null) => void
   coachResult?: CoachingResult | null
+  coachNotice?: React.ReactNode
   onFocusRef?: (ref: string) => void
   onHoverRef?: (ref: string | null) => void
   onFocusAnnotation?: (a: CoachAnnotation | null) => void
 }) {
   const [speedMode, setSpeedMode] = useState<'absolute' | 'delta'>('absolute')
-  const [timeDeltaMode, setTimeDeltaMode] = useState<'fastest' | 'optimal'>('fastest')
+  const [timeDeltaMode, setTimeDeltaMode] = useState<'fastest' | 'optimal' | 'garmin'>('fastest')
+  const hasGarminDelta = (data.garminOptimalTimeDeltaTraces?.length ?? 0) > 0
+  const deltaMode = timeDeltaMode === 'garmin' && !hasGarminDelta ? 'fastest' : timeDeltaMode
+  // One zoom window shared by the distance charts (speed, time Δ, long G).
+  const [xRange, setXRange] = useState<[number, number] | null>(null)
   // Hover updates the linked map through this parent. Keep the chart's data
   // identity stable so inspecting a point does not reset its zoom window.
   const speedPlotSeries = useMemo(() => speedMode === 'delta' ? speedDeltaSeries(data) : speedSeries(data), [data, speedMode])
-  const timePlotSeries = useMemo(() => timeDeltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data), [data, timeDeltaMode])
+  const timePlotSeries = useMemo(() => deltaMode === 'garmin' ? garminOptimalTimeDeltaSeries(data)
+    : deltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data), [data, deltaMode])
   const longPlotSeries = useMemo(() => longGSeries(data), [data])
+  const hasIgnoredSplits = useMemo(() => !!data.heatmap?.z.some(row => row.some(v => v != null && v < 0)), [data.heatmap])
+  const excludedLaps = data.excludedLapCount ?? 0
+  const avgLapCount = data.avgLapCount ?? data.laps.length
   const sessionsSorted = useMemo(
     () => [...data.sessions].sort((a, b) => (b.start ?? '').localeCompare(a.start ?? '')),
     [data.sessions],
@@ -501,14 +560,23 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
 
       {/* STAT STRIP */}
       <div className="analysis-stat-strip-container">
-      <div className="analysis-stat-strip">
-        <Stat label="Best lap" value={msToLap(data.bestLap?.durationMs)} sub={data.bestLap ? `Lap ${data.bestLap.lapIdx + 1}` : undefined} featured />
+      <div className={`analysis-stat-strip${data.garminOptimalMs != null ? ' four-up' : ''}`}>
+        <Stat label="Best lap" value={msToLap(data.bestLap?.durationMs)} sub={data.bestLap ? lapName(data.bestLap) : undefined} featured />
         <Stat label="Theoretical" value={msToLap(data.theoreticalBestMs)} sub="Segment bests" />
-        <Stat label="Average" value={msToLap(data.avgLapMs)} sub={`${data.laps.length} laps`} />
+        {data.garminOptimalMs != null && (
+          <Stat label="Garmin optimal" value={msToLap(data.garminOptimalMs)} sub="From the device" />
+        )}
+        <Stat label="Average" value={msToLap(data.avgLapMs)} sub={plural(avgLapCount, 'representative lap')} />
       </div>
+      {excludedLaps > 0 && (
+        <p className="analysis-excluded-note" title="Laps Garmin flagged invalid, or that you excluded on Session Review, are left out of every chart.">
+          {plural(excludedLaps, 'flagged or excluded lap')} hidden
+        </p>
+      )}
       </div>
 
       {/* COACH NOTES */}
+      {coachNotice}
       {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} onHoverRef={onHoverRef} onFocusAnnotation={onFocusAnnotation} />}
 
       {/* RECOMMENDED PRACTICE */}
@@ -545,11 +613,14 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
             segments={data.segments}
             zeroLine={speedMode === 'delta'}
             onHoverX={onHoverDistance}
+            hoverX={hoverDistanceM}
+            xRange={xRange}
+            onXRangeChange={setXRange}
           />
         </ChartCard>
 
         {data.heatmap && (
-          <ChartCard channel="SEGMENT Δ" meta="seconds · best per segment = 0">
+          <ChartCard channel="SEGMENT Δ" meta={`seconds · best per segment = 0${hasIgnoredSplits ? ' · hatched = ignored (implausibly fast)' : ''}`}>
             <HeatmapGrid hm={data.heatmap} onHoverSegment={onHoverRef} />
           </ChartCard>
         )}
@@ -563,10 +634,16 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
           meta="Seconds · negative = ahead"
           controls={(
             <div className="chart-mode-toggle" role="group" aria-label="Cumulative time delta reference">
-              <button type="button" className={timeDeltaMode === 'fastest' ? 'active' : ''}
-                aria-pressed={timeDeltaMode === 'fastest'} onClick={() => setTimeDeltaMode('fastest')}>Vs fastest lap</button>
-              <button type="button" className={timeDeltaMode === 'optimal' ? 'active' : ''}
-                aria-pressed={timeDeltaMode === 'optimal'} onClick={() => setTimeDeltaMode('optimal')}>Vs optimal lap</button>
+              <button type="button" className={deltaMode === 'fastest' ? 'active' : ''}
+                aria-pressed={deltaMode === 'fastest'} onClick={() => setTimeDeltaMode('fastest')}>Vs fastest lap</button>
+              <button type="button" className={deltaMode === 'optimal' ? 'active' : ''}
+                aria-pressed={deltaMode === 'optimal'} onClick={() => setTimeDeltaMode('optimal')}
+                title="Theoretical best: your best time in every segment">Vs theoretical best</button>
+              {hasGarminDelta && (
+                <button type="button" className={deltaMode === 'garmin' ? 'active' : ''}
+                  aria-pressed={deltaMode === 'garmin'} onClick={() => setTimeDeltaMode('garmin')}
+                  title="The optimal lap the Catalyst device recorded">Vs Garmin optimal</button>
+              )}
             </div>
           )}
         >
@@ -578,6 +655,9 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
             segments={data.segments}
             zeroLine
             onHoverX={onHoverDistance}
+            hoverX={hoverDistanceM}
+            xRange={xRange}
+            onXRangeChange={setXRange}
           />
         </ChartCard>
 
@@ -590,6 +670,9 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
             segments={data.segments}
             zeroLine
             onHoverX={onHoverDistance}
+            hoverX={hoverDistanceM}
+            xRange={xRange}
+            onXRangeChange={setXRange}
           />
         </ChartCard>
 
@@ -611,8 +694,8 @@ function AnalysisBody({ data, selected, setSelected, onHoverDistance, coachResul
         )}
 
         {data.cornerRows.length > 0 && (
-          <ChartCard channel="CORNER STATS" meta="entry · V-min · exit">
-            <CornerChart data={data} height={480} speedUnit={data.speedUnit} />
+          <ChartCard channel="CORNER STATS" meta="brake-point speed · V-min · +100 m">
+            <CornerChart data={data} height={480} speedUnit={data.speedUnit} onHoverCorner={onHoverRef} />
           </ChartCard>
         )}
       </div>
@@ -653,9 +736,10 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
     return null
   }
 
-  // Extract the ref from a tip's section label, preserving ranges like "T7-T9".
+  // Version-2 tips carry their map ref (T11 / S3). Older tips only have it in
+  // the section label, which may be a range like "T7-T9".
   const refForTip = (tip: CoachingResult['tips'][0]): string | null => {
-    // Prefer section label — it may be a range like "T7-T9" or "S3"
+    if (tip.ref) return tip.ref
     const m = tip.section.match(/^([TS]\d+[a-z]?(?:-[TS]?\d+[a-z]?)*)/i)
     if (m) return m[1]
     if (tip.annotations.length > 0) return tip.annotations[0].ref
@@ -680,12 +764,16 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
               </div>
               {result.consistency_loss_ms > 0 && (
                 <div className="coach-gap-metric">
-                  <span>Consistency gap</span>
+                  <span>{result.version === 2 ? 'Best lap vs ideal' : 'Consistency gap'}</span>
                   <strong>+{(result.consistency_loss_ms / 1000).toFixed(3)}s</strong>
                   <small>measured opportunity</small>
                 </div>
               )}
             </section>
+          )}
+
+          {(result.previous_focus_review?.length ?? 0) > 0 && (
+            <LastFocusSection items={result.previous_focus_review!} onFocusRef={onFocusRef} onHoverRef={onHoverRef} onFocusAnnotation={onFocusAnnotation} />
           )}
 
           {(result.strengths?.length ?? 0) > 0 && (
@@ -733,7 +821,7 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
                     <div className="coach-tip-header">
                       <div className="coach-tip-rank">{String(i + 1).padStart(2, '0')}</div>
                       <div className="coach-tip-title">
-                        <span>{tip.section}</span>
+                        <span>{tip.section}{tip.ref && !tip.section.includes(tip.ref) ? ` · ${tip.ref}` : ''}</span>
                         <small>{tip.priority ? `Priority ${tip.priority}` : 'Coaching opportunity'}</small>
                       </div>
                       <div className="coach-tip-metrics">
@@ -763,7 +851,7 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
                     {(tip.cue || tip.success_metric) && (
                       <div className="coach-tip-actions">
                         {tip.cue && <div className="coach-action coach-action-cue"><span>In-car cue</span><strong>{tip.cue}</strong></div>}
-                        {tip.success_metric && <div className="coach-action coach-action-verify"><span>Verify in Catalyst</span><strong>{tip.success_metric}</strong></div>}
+                        {tip.success_metric && <div className="coach-action coach-action-verify"><span>{result.version === 2 ? 'Success metric' : 'Verify in Catalyst'}</span><strong>{tip.success_metric}</strong></div>}
                       </div>
                     )}
                   </div>
@@ -784,6 +872,72 @@ function CoachNotesPanel({ result, onFocusRef, onHoverRef, onFocusAnnotation }: 
   )
 }
 
+// LAST FOCUS — how last session's focus items fared. The app measures each
+// one from telemetry (baseline → current against the target); the model adds
+// a short comment. The chip shows the measured verdict when there is one.
+const VERDICT_LABEL: Record<FocusVerdict, string> = {
+  met: 'Target met', improved: 'Improved', no_change: 'No change', worse: 'Worse', not_measured: 'Not measured',
+}
+function verdictTone(verdict: string): 'good' | 'bad' | 'neutral' {
+  if (verdict === 'met' || verdict === 'improved') return 'good'
+  if (verdict === 'worse') return 'bad'
+  return 'neutral'
+}
+
+function LastFocusSection({ items, onFocusRef, onHoverRef, onFocusAnnotation }: {
+  items: NonNullable<CoachingResult['previous_focus_review']>
+  onFocusRef?: (ref: string) => void
+  onHoverRef?: (ref: string | null) => void
+  onFocusAnnotation?: (a: CoachAnnotation | null) => void
+}) {
+  return (
+    <section className="coach-last-focus">
+      <div className="coach-section-heading">
+        <span>Last focus</span>
+        <small>Measured from these laps · baseline → now (target)</small>
+      </div>
+      <div className="coach-last-focus-list">
+        {items.map(item => {
+          const measured = item.measured
+          const verdict = measured?.verdict ?? item.verdict
+          const title = measured?.cue || measured?.complexName || 'Previous focus'
+          const ref = measured?.ref || null
+          const place = measured?.cue ? measured.complexName : ''
+          const subtitle = [place, ref && !`${title} ${place}`.includes(ref) ? ref : ''].filter(Boolean).join(' · ')
+          return (
+            <div key={item.focusId} className="coach-last-focus-item"
+              onMouseEnter={() => ref && onHoverRef?.(ref)}
+              onMouseLeave={() => onHoverRef?.(null)}>
+              <div className="coach-last-focus-head">
+                <div className="coach-last-focus-title">
+                  <strong>{title}</strong>
+                  {subtitle && <small>{subtitle}</small>}
+                </div>
+                <span className={`coach-verdict coach-verdict-${verdictTone(verdict)}`}>
+                  {VERDICT_LABEL[verdict as FocusVerdict] ?? verdict.replace(/_/g, ' ')}
+                </span>
+                {ref && onFocusRef && (
+                  <button className="coach-map-link" type="button" onClick={() => { onFocusRef(ref); onFocusAnnotation?.(null) }}>
+                    View on map ↗
+                  </button>
+                )}
+              </div>
+              {measured && (
+                <div className="coach-last-focus-metric">
+                  <span>{measured.metricLabel}</span>
+                  <strong>{measured.display.baseline} → {measured.display.current}</strong>
+                  <small>target {measured.display.target}{measured.laps > 0 ? ` · ${plural(measured.laps, 'lap')}` : ''}</small>
+                </div>
+              )}
+              {item.comment && <div className="coach-last-focus-comment">{item.comment}</div>}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function NextSessionPlanPanel({ plan }: { plan: NonNullable<CoachingResult['next_session_plan']> }) {
   const [open, setOpen] = useState(true)
   return (
@@ -799,7 +953,7 @@ function NextSessionPlanPanel({ plan }: { plan: NonNullable<CoachingResult['next
             <div key={index} style={{ background: 'var(--bg-elev)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '11px 13px' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--cyan)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{step.run}</div>
               <div style={{ marginTop: 5, fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.5 }}>{step.focus}</div>
-              <div style={{ marginTop: 6, fontSize: 9.5, color: 'var(--text-mute)', lineHeight: 1.45 }}><b>VERIFY</b> · {step.success_metric}</div>
+              {step.success_metric && <div style={{ marginTop: 6, fontSize: 9.5, color: 'var(--text-mute)', lineHeight: 1.45 }}><b>VERIFY</b> · {step.success_metric}</div>}
             </div>
           ))}
         </div>
@@ -850,7 +1004,7 @@ function RecommendedPracticePanel({ drills }: { drills: string[] }) {
 
 // CAR SETUP — mechanical/configuration recommendations the telemetry supports.
 // Deliberately allows an empty state: if the coach found no setup signature,
-// we say so rather than inventing advice.
+// we say so rather than inventing advice — without implying the setup is right.
 function CarSetupPanel({ setup }: { setup?: CoachSetupRec[] }) {
   const [open, setOpen] = useState(true)
   const recs = setup ?? []
@@ -868,9 +1022,8 @@ function CarSetupPanel({ setup }: { setup?: CoachSetupRec[] }) {
         <div style={{ padding: '28px 16px 16px' }}>
           {recs.length === 0 ? (
             <div className="car-setup-empty">
-              No setup changes indicated — the telemetry doesn't show a clear mechanical
-              signature, so the current configuration looks well matched to this data. Focus
-              on the driving tips and drills above.
+              No setup change recommended — these laps don't show a repeated balance
+              problem. That's not proof the setup is optimal.
             </div>
           ) : (
             <div className="car-setup-list">

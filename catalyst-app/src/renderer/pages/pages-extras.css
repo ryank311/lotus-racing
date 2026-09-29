@@ -1,0 +1,198 @@
+/* Additions for Sessions, AI Coach, Garage and Tracks. Kept apart from
+   styles.css; uses its tokens and component classes. */
+
+/* ── Sessions: toolbar, results line, phone cards ──────────────────────── */
+
+.session-toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.session-search { flex: 1 1 280px; min-width: 0; }
+.session-search input, .session-filters select {
+  width: 100%; min-width: 0; height: 40px; padding: 0 12px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font: 12px var(--font-mono);
+}
+.session-search input::placeholder { color: var(--text-mute); }
+.session-search input:focus, .session-filters select:focus { border-color: var(--border-strong); outline: none; }
+.session-filters { display: flex; flex-wrap: wrap; gap: 10px; flex: 0 1 auto; min-width: 0; }
+.session-filters select { width: auto; max-width: 320px; text-overflow: ellipsis; cursor: pointer; }
+.session-filters select:disabled { opacity: .6; cursor: default; }
+/* The table's column headers sort on wider screens. */
+.session-filters .session-sort { display: none; }
+
+.session-results {
+  display: flex; align-items: center; gap: 16px; min-height: 32px; margin-bottom: 12px;
+  font: 10px/1.4 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--text-mute);
+}
+.session-link {
+  padding: 6px 0; background: none; border: 0; cursor: pointer;
+  font: 11px/1.4 var(--font-mono); letter-spacing: .04em; text-transform: none; color: var(--cyan);
+}
+.session-link:hover { text-decoration: underline; }
+.session-select-all { margin-left: auto; }
+.session-download { margin-bottom: 12px; }
+.sessions-table .session-review-cell { width: 1%; white-space: nowrap; text-align: right; }
+.sessions-table .session-review-link { display: inline-block; padding: 6px 0; font: 11px var(--font-mono); }
+
+.session-pb { margin-left: 6px; color: var(--amber); }
+.session-pb-gap { margin-left: 6px; font: 10px var(--font-mono); color: var(--text-mute); }
+
+@media (max-width: 800px) {
+  .session-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-bottom: 6px; }
+  .session-search input, .session-filters select { height: 44px; font-size: 13px; }
+  .session-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .session-filters select { width: 100%; max-width: none; }
+  .session-filters .session-sort { display: block; }
+  .session-results { margin-bottom: 8px; }
+  .session-link { min-height: 40px; }
+
+  /* Three lines per session: where, when and the time that matters. */
+  .session-cards { display: grid; gap: 10px; }
+  .session-card {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr) auto;
+    grid-template-areas: "check main time" "check foot foot";
+    gap: 10px 12px; padding: 14px 14px 4px;
+    background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .session-card.is-selected { border-color: var(--signal); background: linear-gradient(120deg, var(--signal-soft), var(--panel) 70%); box-shadow: inset 3px 0 var(--signal); }
+  .session-card:focus-within { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .session-card-check { grid-area: check; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--signal); }
+  .session-card-main { grid-area: main; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .session-card-track { font-size: 15px; font-weight: 600; line-height: 1.3; color: var(--text); }
+  .session-card-sub { font-size: 12px; line-height: 1.4; color: var(--text-dim); overflow-wrap: anywhere; }
+  .session-card-time { grid-area: time; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; text-align: right; }
+  .session-card-time strong { font: 500 18px/1.2 var(--font-mono); color: var(--signal); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .session-card-time small { font: 11px/1.4 var(--font-mono); color: var(--text-dim); }
+  .session-card .session-pb-gap { display: block; margin: 2px 0 0; }
+  .session-card-foot {
+    grid-area: foot; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    min-width: 0; border-top: 1px solid var(--border);
+  }
+  .session-card-when { min-width: 0; padding: 10px 0; font: 11px/1.5 var(--font-mono); color: var(--text-mute); }
+  .session-card-when em { display: block; font-style: normal; color: var(--amber); }
+  .session-card-review {
+    flex: none; display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px 0 12px;
+    font: 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--cyan); text-decoration: none;
+  }
+}
+.selection-warning {
+  flex: 0 1 280px;
+  margin: 0;
+  color: var(--amber);
+  font: 11px/1.4 var(--font-mono);
+}
+
+/* ── AI Coach: version 2 report sections ───────────────────────────────── */
+
+.coach-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+.coach-card-kicker {
+  font: 10px var(--font-mono);
+  color: var(--signal);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.coach-review-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 6px; }
+.coach-review-head .coach-card-kicker { margin-bottom: 0; }
+.coach-cue { font-size: 14px; font-weight: 700; line-height: 1.45; color: var(--text); margin-bottom: 6px; }
+.coach-body { font-size: 13px; line-height: 1.55; color: var(--text-dim); }
+.coach-metric { margin-top: 8px; font: 11px/1.5 var(--font-mono); color: var(--cyan); }
+.coach-meta { margin-top: 6px; font: 10px var(--font-mono); color: var(--text-mute); letter-spacing: 0.06em; }
+.coach-evidence { margin-top: 8px; font-size: 12px; color: var(--text-dim); }
+.coach-evidence summary {
+  cursor: pointer;
+  font: 10px var(--font-mono);
+  color: var(--text-mute);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.coach-evidence ul { margin: 6px 0 0; padding-left: 18px; line-height: 1.5; }
+.coach-verdict {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  font: 9px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.coach-verdict.good { border-color: var(--green); color: var(--green); }
+.coach-verdict.bad { border-color: var(--red); color: var(--red); }
+
+/* ── Garage: AI coach context ──────────────────────────────────────────── */
+
+.garage-file-list.with-ai-context { overflow-y: auto; }
+.garage-ai-context { flex-shrink: 0; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
+.garage-ai-context-title {
+  font: 9px var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.garage-ai-context-note { margin: 6px 0 8px; font-size: 11px; line-height: 1.5; color: var(--text-mute); }
+.garage-ai-context-error { margin-bottom: 8px; font-size: 11px; color: var(--red); overflow-wrap: anywhere; }
+.garage-ai-context-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font: 10px var(--font-mono);
+  color: var(--text-dim);
+}
+.garage-ai-context-name { flex: 1 1 100%; min-width: 0; color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.garage-ai-context-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.garage-ai-context-row input { accent-color: var(--signal); }
+.garage-ai-context-meta { color: var(--text-mute); }
+
+/* ── Tracks: corner complexes ──────────────────────────────────────────── */
+
+.tracks-complexes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.tracks-complexes-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.tracks-complexes-title {
+  font: 11px var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.tracks-complexes-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-mute); }
+.tracks-complexes .tracks-complexes-num { width: 104px; min-width: 104px; padding-right: 24px; }
+.tracks-complexes-table .tracks-corner-name { min-width: 180px; }
+.tracks-complexes-errors { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.5; color: var(--red); }
+.tracks-complexes-error { color: var(--red); overflow-wrap: anywhere; }
+.tracks-complexes-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tracks-complexes-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  font-size: 12px;
+  color: var(--amber);
+}
+.tracks-complexes-confirm > span { flex: 1 1 260px; }
+
+@media (max-width: 800px) {
+  .selection-bar:has(.selection-warning) { flex-wrap: wrap; }
+  .selection-warning { order: 1; flex-basis: 100%; }
+  .garage-file-list.with-ai-context { overflow: visible; }
+  .garage-ai-context-row { min-height: 44px; }
+}

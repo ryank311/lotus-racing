@@ -118,19 +118,33 @@ interface LineChartProps {
   segments?: TrackSegment[]
   zeroLine?: boolean
   onHoverX?: (x: number | null) => void
+  // Linked hover: another chart (or the G-G plot) is inspecting this x. Drawn
+  // only while the pointer is not over this chart.
+  hoverX?: number | null
+  // Optional controlled zoom so several distance charts share one window.
+  // Omit xRange to let the chart keep its own zoom.
+  xRange?: [number, number] | null
+  onXRangeChange?: (range: [number, number] | null) => void
 }
 
 const LP = { l: 36, r: 10, t: 18, b: 24 } as const
 
-export function LineChart({ series, height, yUnit = '', yRange, corners, segments, zeroLine, onHoverX }: LineChartProps) {
+export function LineChart({ series, height, yUnit = '', yRange, corners, segments, zeroLine, onHoverX, hoverX = null, xRange, onXRangeChange }: LineChartProps) {
   const canvasRef  = useRef<HTMLCanvasElement>(null)
   const wrapRef    = useRef<HTMLDivElement>(null)
   const rafRef     = useRef(0)
   const hoverXRef  = useRef<number | null>(null)
+  const linkedHoverRef = useRef<number | null>(hoverX)
   // live zoom/pan while dragging — avoids React re-renders during drag
   const liveZoomRef = useRef<[number, number] | null>(null)
   // committed zoom triggers a re-render + draw re-creation
-  const [xZoom, setXZoom] = useState<[number, number] | null>(null)
+  const [ownZoom, setOwnZoom] = useState<[number, number] | null>(null)
+  const controlled = xRange !== undefined
+  const xZoom = controlled ? xRange : ownZoom
+  const setXZoom = (next: [number, number] | null) => {
+    if (!controlled) setOwnZoom(next)
+    onXRangeChange?.(next)
+  }
   const [tooltip, setTooltip] = useState<Tip | null>(null)
 
   // drag state
@@ -139,7 +153,8 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     for (const s of series) for (const x of s.xs) { lo = Math.min(lo, x); hi = Math.max(hi, x) }
     return Number.isFinite(lo) ? [lo, Math.max(lo + 1, hi)] : [0, 1]
   }, [series])
-  useEffect(() => { setXZoom(null); liveZoomRef.current = null; hoverXRef.current = null; setTooltip(null); onHoverX?.(null) }, [series])
+  // A shared window survives a mode switch on one chart; the owner resets it.
+  useEffect(() => { if (!controlled) setOwnZoom(null); liveZoomRef.current = null; hoverXRef.current = null; setTooltip(null); onHoverX?.(null) }, [series])
 
   const dragRef = useRef<{
     mode: 'select' | 'pan'
@@ -149,6 +164,13 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     // for select: pixel of the other end (updated on move)
     selEnd?: number
   } | null>(null)
+
+  // Another chart moved the shared window: drop any stale local live range.
+  useEffect(() => {
+    const live = liveZoomRef.current
+    if (!controlled || !live || dragRef.current) return
+    if (!xRange || xRange[0] !== live[0] || xRange[1] !== live[1]) liveZoomRef.current = null
+  }, [xRange])
 
   // bounds ref so event handlers get current transform without stale closures
   const boundsRef = useRef<{
@@ -275,14 +297,15 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     }
     ctx.globalAlpha = 1
 
-    // Hover crosshair + dots
-    if (hoverXRef.current !== null) {
-      const hpx = toX(hoverXRef.current)
+    // Hover crosshair + dots — this chart's pointer wins over a linked hover.
+    const hx = hoverXRef.current ?? linkedHoverRef.current
+    if (hx !== null) {
+      const hpx = toX(hx)
       ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1
       ctx.beginPath(); ctx.moveTo(hpx, LP.t); ctx.lineTo(hpx, LP.t + plotH); ctx.stroke()
       for (const s of series) {
         if (!s.xs.length) continue
-        const idx = nearestIdx(s.xs, hoverXRef.current!)
+        const idx = nearestIdx(s.xs, hx)
         ctx.fillStyle = s.color; ctx.globalAlpha = Math.min(1, s.opacity + 0.3)
         ctx.beginPath(); ctx.arc(toX(s.xs[idx]), toY(s.ys[idx]), 3.5, 0, Math.PI * 2); ctx.fill()
       }
@@ -332,6 +355,14 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
   }, [draw])
 
   const schedRedraw = () => { cancelAnimationFrame(rafRef.current); rafRef.current = requestAnimationFrame(draw) }
+
+  // Linked hover changes on every pointer move elsewhere; redraw without
+  // re-creating draw (which would re-attach the resize observer).
+  useEffect(() => {
+    if (linkedHoverRef.current === hoverX) return
+    linkedHoverRef.current = hoverX
+    if (hoverXRef.current === null) schedRedraw()
+  }, [hoverX])
 
   const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return
@@ -491,6 +522,7 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     // shows more of the axis range — the circle stays circular.
     const padL = 38, padR = 16, padT = 20, padB = 28
     const plotW = w - padL - padR, plotH = h - padT - padB
+    if (plotW <= 0 || plotH <= 0) return  // collapsed pane: a negative radius would throw
     const sc = Math.min(plotW / 2, plotH / 2) / gMax * view.scale
     const cx = padL + plotW / 2 + view.x * plotW, cy = padT + plotH / 2 + view.y * plotH
     // Axis ranges differ per dimension so the plot fills available space
@@ -668,8 +700,13 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
 // ─── HeatmapGrid ─────────────────────────────────────────────────────────────
 
+// Negative z marks a split ignored as implausibly fast (a cut or timing
+// glitch). It is not on the colour scale, so it gets a neutral hatch instead.
+const IGNORED_CELL = 'repeating-linear-gradient(135deg, rgba(160,160,168,0.14) 0 3px, rgba(160,160,168,0.04) 3px 6px)'
+
 function cellColor(val: number | null, zmax: number): string {
   if (val === null) return 'transparent'
+  if (val < 0) return IGNORED_CELL
   if (val === 0) return 'rgba(93,209,127,0.2)'
   const t = Math.min(1, val / (zmax || 1))
   const r = Math.round(93 + (255 - 93) * t)
@@ -705,8 +742,10 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
                 const val = hm.z[ri][ci]
                 const rawText = hm.text[ri][ci]
                 const isPb = ri === hm.z.length - 1
+                const ignored = val != null && val < 0
                 const display = val == null || rawText === '—' ? ''
                   : isPb ? rawText.replace(' PB', '')
+                  : ignored ? 'ignored'
                   : val === 0 ? 'PB' : `+${val.toFixed(2)}`
                 // Tooltip: show full text + column label
                 const tipText = rawText && rawText !== '—' ? `${col}: ${rawText}` : undefined
@@ -718,7 +757,8 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
                     padding: '3px 4px',
                     background: cellColor(val, hm.zmax),
                     textAlign: 'center',
-                    color: val === 0 ? 'var(--green)' : 'var(--text-dim)',
+                    color: val === 0 ? 'var(--green)' : ignored ? 'var(--text-mute)' : 'var(--text-dim)',
+                    fontStyle: ignored ? 'italic' : undefined,
                     fontWeight: val === 0 ? 700 : 400,
                     letterSpacing: '0.04em',
                     border: '1px solid rgba(255,255,255,0.03)',
@@ -754,10 +794,19 @@ interface CornerHitInfo {
   vminHigh: number
 }
 
-export function CornerChart({ data, height, speedUnit = 'mph' }: { data: AnalysisData; height: number; speedUnit?: string }) {
+// Per-corner speed profile: "brake point" is the speed where braking starts
+// (or the corner-zone start when the lap did not brake), V-min is the corner's
+// own minimum, and "+100 m" is the speed 100 m after that minimum.
+export function CornerChart({ data, height, speedUnit = 'mph', onHoverCorner }: {
+  data: AnalysisData
+  height: number
+  speedUnit?: string
+  onHoverCorner?: (turn: string | null) => void
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef(0)
   const hitRowsRef = useRef<CornerHitInfo[]>([])
+  const hoveredTurnRef = useRef<string | null>(null)
   const [tooltip, setTooltip] = useState<Tip | null>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
 
@@ -786,9 +835,9 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
     const rowHeight = plotH / n
     const rowY = (i: number) => CP.t + (i + 0.5) * rowHeight
     const SERIES = [
-      { key: 'entry_mph' as const, color: PALETTE.cyan, label: 'Entry', dy: -4 },
+      { key: 'entry_mph' as const, color: PALETTE.cyan, label: 'Brake point', dy: -4 },
       { key: 'apex_mph' as const, color: PALETTE.signal, label: 'V-min', dy: 0 },
-      { key: 'exit_mph' as const, color: PALETTE.green, label: 'Exit', dy: 4 },
+      { key: 'exit_mph' as const, color: PALETTE.green, label: '+100 m', dy: 4 },
     ]
 
     // Vertical speed grid makes each corner a compact horizontal speed profile.
@@ -852,7 +901,7 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
     for (const { color, label } of SERIES) {
       ctx.fillStyle = color; ctx.beginPath(); ctx.arc(lx + 4, 14, 3.5, 0, Math.PI * 2); ctx.fill()
       ctx.fillStyle = PALETTE.textDim; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-      ctx.fillText(label, lx + 12, 14); lx += 58
+      ctx.fillText(label, lx + 12, 14); lx += 12 + ctx.measureText(label).width + 16
     }
     ctx.fillStyle = PALETTE.textMute; ctx.font = '8px "JetBrains Mono", monospace'
     ctx.fillText('DOT = FASTEST LAP  ·  LINE = ALL-LAP RANGE', CP.l, 29)
@@ -874,6 +923,8 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
     const rect = canvasRef.current!.getBoundingClientRect()
     const mx = e.clientX - rect.left, my = e.clientY - rect.top
     const nearRow = hitRowsRef.current.find(row => Math.abs(row.py - my) <= row.rowHeight / 2)
+    const turn = nearRow?.turn ?? null
+    if (turn !== hoveredTurnRef.current) { hoveredTurnRef.current = turn; onHoverCorner?.(turn) }
     if (!nearRow) { setTooltip(null); return }
     const best = nearRow.best
     const spread = nearRow.vminHigh - nearRow.vminLow
@@ -881,15 +932,18 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
       px: mx, py: my,
       header: `${nearRow.turn}${nearRow.name ? ` · ${nearRow.name}` : ''}  ${best.lapLbl} ★`,
       rows: [
-        { label: 'Entry', value: `${best.entry_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan },
+        { label: 'Brake-point speed', value: `${best.entry_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan },
         { label: 'V-min', value: `${best.apex_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.signal },
-        { label: 'Exit', value: `${best.exit_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
+        { label: '+100 m after V-min', value: `${best.exit_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
         { label: 'V-min range', value: `${nearRow.vminLow.toFixed(1)}–${nearRow.vminHigh.toFixed(1)} ${speedUnit} (Δ${spread.toFixed(1)})`, color: PALETTE.textMute },
       ],
     })
   }
 
-  const touch = useChartTouch<HTMLCanvasElement>({ inspect: onMouseMove, clear: () => setTooltip(null) })
+  const clearHover = () => {
+    hoveredTurnRef.current = null; onHoverCorner?.(null); setTooltip(null)
+  }
+  const touch = useChartTouch<HTMLCanvasElement>({ inspect: onMouseMove, clear: clearHover })
   const cw = wrapRef.current?.clientWidth ?? 600
 
   return (
@@ -897,7 +951,7 @@ export function CornerChart({ data, height, speedUnit = 'mph' }: { data: Analysi
       <canvas ref={canvasRef} style={{ width: '100%', height, display: 'block', cursor: 'crosshair' }}
         className="chart-touch-canvas" {...touch} />
       <TouchHint />
-      {tooltip && <ChartTooltip tip={tooltip} cw={cw} onDismiss={() => setTooltip(null)} />}
+      {tooltip && <ChartTooltip tip={tooltip} cw={cw} onDismiss={clearHover} />}
     </div>
   )
 }
@@ -965,6 +1019,10 @@ export function CornerBrakingChart({
     }
     ctx.fillStyle = PALETTE.textMute; ctx.textAlign = 'right'
     ctx.fillText('METRES RELATIVE TO APEX · TRIANGLE = ONSET · CIRCLE = RELEASE', BP.l + plotW, 17)
+    if (brakingRows.some(row => row.stages > 1)) {
+      ctx.fillStyle = PALETTE.amber
+      ctx.fillText('DOUBLE TRIANGLE = BRAKE–COAST–RE-BRAKE', BP.l + plotW, 30)
+    }
     ctx.fillStyle = PALETTE.signal; ctx.textAlign = 'left'
     ctx.fillText('BRIGHT = FASTEST LAP', BP.l, 30)
 
@@ -990,6 +1048,13 @@ export function CornerBrakingChart({
         ctx.beginPath(); ctx.moveTo(onsetX, y); ctx.lineTo(releaseX, y); ctx.stroke()
         ctx.fillStyle = row.isBest ? PALETTE.signal : PALETTE.textMute
         ctx.beginPath(); ctx.moveTo(onsetX, y - 3); ctx.lineTo(onsetX + 5, y); ctx.lineTo(onsetX, y + 3); ctx.closePath(); ctx.fill()
+        // Multi-stage braking (brake, coast, brake again) gets a second amber
+        // triangle so repeated applications stand out from one clean stop.
+        if (row.stages > 1) {
+          ctx.fillStyle = PALETTE.amber
+          ctx.beginPath(); ctx.moveTo(onsetX + 5, y - 3); ctx.lineTo(onsetX + 10, y); ctx.lineTo(onsetX + 5, y + 3); ctx.closePath(); ctx.fill()
+          ctx.fillStyle = row.isBest ? PALETTE.signal : PALETTE.textMute
+        }
         ctx.beginPath(); ctx.arc(releaseX, y, row.isBest ? 3.5 : 2, 0, Math.PI * 2); ctx.fill()
       })
       ctx.globalAlpha = 1
@@ -1018,6 +1083,7 @@ export function CornerBrakingChart({
     const onsetOffsets = hit.rows.map(row => row.onset_dist_m - row.apex_dist_m)
     const releaseOffsets = hit.rows.map(row => row.release_dist_m - row.apex_dist_m)
     const signed = (value: number) => `${value > 0 ? '+' : ''}${Math.round(value)} m`
+    const multiStage = hit.rows.filter(row => row.stages > 1).length
     setTooltip({
       px: mx, py: my,
       header: `${hit.turn}${hit.name ? ` · ${hit.name}` : ''}  ${hit.rows.length} laps`,
@@ -1026,6 +1092,8 @@ export function CornerBrakingChart({
         { label: 'Fastest release', value: signed(best.release_dist_m - best.apex_dist_m), color: PALETTE.green },
         { label: 'Brake zone', value: `${Math.round(best.release_dist_m - best.onset_dist_m)} m`, color: PALETTE.cyan },
         { label: 'Peak braking', value: `${best.peak_brake_g.toFixed(2)} g`, color: PALETTE.signal },
+        { label: 'Fastest stages', value: best.stages > 1 ? `${best.stages} · brake–coast–re-brake` : '1 · single application', color: best.stages > 1 ? PALETTE.amber : PALETTE.textMute },
+        ...(multiStage > 0 ? [{ label: 'Multi-stage laps', value: `${multiStage} of ${hit.rows.length}`, color: PALETTE.amber }] : []),
         { label: 'Onset range', value: `${signed(Math.min(...onsetOffsets))} to ${signed(Math.max(...onsetOffsets))}`, color: PALETTE.textMute },
         { label: 'Release range', value: `${signed(Math.min(...releaseOffsets))} to ${signed(Math.max(...releaseOffsets))}`, color: PALETTE.textMute },
       ],
@@ -1099,7 +1167,8 @@ export function CornerConsistencyChart({
       if (!rows.length) return []
       const values = rows.map(r => r.apex_mph)
       const avg = values.reduce((sum, value) => sum + value, 0) / values.length
-      const stdDev = Math.sqrt(values.reduce((sum, value) => sum + (value - avg) ** 2, 0) / values.length)
+      // Sample standard deviation (n − 1), matching Session Review.
+      const stdDev = values.length > 1 ? Math.sqrt(values.reduce((sum, value) => sum + (value - avg) ** 2, 0) / (values.length - 1)) : 0
       const locations = rows.map(r => r.vmin_dist_m).filter(Number.isFinite)
       const spreadPct = avg > 0 ? (Math.max(...values) - Math.min(...values)) / avg * 100 : 0
       return [{
@@ -1188,7 +1257,7 @@ export function CornerConsistencyChart({
         { label: 'Normalized spread', value: `${hit.spreadPct.toFixed(1)}%`, color: PALETTE.signal },
         { label: 'Avg V-min', value: `${hit.avg.toFixed(1)} ${speedUnit}`, color: PALETTE.signal },
         { label: 'Raw spread', value: `${rawSpread.toFixed(1)} ${speedUnit}`, color: PALETTE.cyan },
-        { label: 'Std dev', value: `${hit.stdDev.toFixed(2)} ${speedUnit} (${stdDevPct.toFixed(1)}%)`, color: PALETTE.cyan },
+        { label: 'Std dev', value: hit.laps > 1 ? `${hit.stdDev.toFixed(2)} ${speedUnit} (${stdDevPct.toFixed(1)}%)` : '— (one lap)', color: PALETTE.cyan },
         { label: 'V-min range', value: `${hit.low.toFixed(1)}–${hit.high.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
         { label: 'Location range', value: `${Math.round(hit.locationLow)}–${Math.round(hit.locationHigh)} m`, color: PALETTE.textMute },
       ],

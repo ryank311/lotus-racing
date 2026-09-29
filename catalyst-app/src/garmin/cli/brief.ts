@@ -24,7 +24,7 @@ async function main() {
     lastN: lastNStr ? parseInt(lastNStr, 10) : 5,
     sessionGuids: sessions.length ? sessions : undefined,
     csv: flag('--csv'),
-    includeGuides: flag('--include-guides'),
+    includeGuides: !flag('--no-context'),
     outPath: arg('--output'),
   })
   console.log(`[ok] wrote ${result.outPath} for ${result.sessions} session(s)`)

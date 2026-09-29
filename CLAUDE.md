@@ -27,10 +27,12 @@ Navigate by clicking sidebar items or footer buttons:
 |------|-------------|
 | Overview | Sidebar — "Overview" (⌘1) |
 | Sessions | Sidebar — "Sessions" (⌘2) |
-| Analysis | Sidebar — "Analysis" (⌘3) |
-| AI Coach | Sidebar — "AI Coach" (⌘4) |
-| Garage | Sidebar — "Garage" (⌘5) |
-| Tracks | Sidebar — "Tracks" (⌘6) |
+| Session Review | Sidebar — "Session Review" (⌘3) |
+| Progress | Sidebar — "Progress" (⌘4) |
+| Analysis | Sidebar — "Analysis" (⌘5) |
+| AI Coach | Sidebar — "AI Coach" (⌘6) |
+| Garage | Sidebar — "Garage" (⌘7) |
+| Tracks | Sidebar — "Tracks" (⌘8) |
 | Logs | Sidebar footer — bug icon button ("Debug logs") |
 
 To click a sidebar item: take a snapshot, find the `uid` for the button/link, then use `mcp__chrome-devtools__click`.

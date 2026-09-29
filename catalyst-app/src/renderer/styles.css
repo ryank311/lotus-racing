@@ -914,11 +914,13 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .coach-progress strong { display: block; color: var(--text); }
 .coach-progress span { display: block; color: var(--text-mute); }
 
-/* Pulse the border while coaching to signal activity */
-.ask-coach-btn:disabled {
+/* Pulse only while a coaching run is in progress; otherwise a disabled
+   button (data still loading, history still measuring) simply reads as off. */
+.ask-coach-btn.is-running:disabled {
   box-shadow: none;
   animation: coach-pulse 1.4s ease-in-out infinite;
 }
+.ask-coach-btn:disabled:not(.is-running) { opacity: .4; box-shadow: none; cursor: not-allowed; }
 @keyframes coach-pulse {
   0%, 100% { opacity: 0.55; }
   50%       { opacity: 0.9; box-shadow: 0 0 24px rgba(125,211,252,0.5); }
@@ -4199,7 +4201,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 /* Responsive workspace. Keep these after component rules so desktop defaults
    cannot override the phone layout. 800px also covers narrow desktop windows. */
 .mobile-topbar, .mobile-nav-close, .mobile-nav-backdrop,
-.session-cards, .session-mobile-sort, .analysis-mobile-tabs { display: none; }
+.session-cards, .analysis-mobile-tabs { display: none; }
 .nav-item { background: transparent; border: 0; text-align: left; width: 100%; }
 .main-pane, .home-settings-grid > *, .viewer-pane, .garage-detail { min-width: 0; }
 .home-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: stretch; }
@@ -4214,7 +4216,6 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .workflow-link small { display: block; margin-top: 5px; color: var(--text-dim); font-size: 12px; }
 .workflow-link > span:last-child { color: var(--signal); font-size: 24px; }
 .workflow-link:hover { background: var(--signal-soft); border-color: var(--signal); }
-.session-search input { min-width: 0; }
 
 @media (min-width: 801px) and (max-width: 1100px) {
   .app-shell { grid-template-columns: 185px minmax(0, 1fr); }
@@ -4297,30 +4298,6 @@ input, textarea, select { font-family: inherit; color: inherit; }
 
   /* Session cards keep selection and lap times visible without a table pan. */
   .sessions-table { display: none; }
-  .session-vehicle-filters { flex-wrap: nowrap !important; overflow-x: auto; padding-bottom: 6px; }
-  .session-vehicle-filters .chip { white-space: nowrap; min-height: 44px; }
-  .session-search { flex-wrap: wrap; }
-  .session-search input { flex-basis: 100% !important; }
-  .session-search .btn { width: 100%; }
-  .session-mobile-sort { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
-  .session-mobile-sort label { font: 10px var(--font-mono); color: var(--text-mute); }
-  .session-mobile-sort select { flex: 1; background: var(--panel); color: var(--text); border: 1px solid var(--border); padding: 8px; }
-  .session-cards { display: grid; gap: 12px; }
-  .session-card { display: flex; flex-direction: column; min-width: 0; padding: 16px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); cursor: pointer; }
-  .session-card.is-selected { border-color: var(--signal); background: linear-gradient(120deg, var(--signal-soft), var(--panel) 70%); box-shadow: inset 3px 0 var(--signal); }
-  .session-card:focus-within { outline: 2px solid var(--cyan); outline-offset: 2px; }
-  .session-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-  .session-card-date { font: 11px var(--font-mono); color: var(--text-dim); overflow-wrap: anywhere; }
-  .session-card-track { font-size: 17px; line-height: 1.4; }
-  .session-card-config { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
-  .session-card-stats { display: grid; grid-template-columns: 1.3fr .5fr 1fr; gap: 10px; margin-top: 18px; }
-  .session-card-stats > div { min-width: 0; }
-  .session-card-stats small { display: block; color: var(--text-mute); font: 9px var(--font-mono); text-transform: uppercase; letter-spacing: .1em; margin-bottom: 5px; }
-  .session-card-stats strong { font: 19px var(--font-mono); }
-  .session-card-stats > div:first-child strong { color: var(--signal); }
-  .session-card-stats span { font-size: 12px; overflow-wrap: anywhere; }
-  .session-card-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--text-mute); font: 10px var(--font-mono); }
-  .session-card-footer > span:last-child { color: var(--cyan); }
   .session-download-error { flex-wrap: wrap; overflow-wrap: anywhere; }
   .selection-bar {
     /* Reserve footer space inside the dynamic-height shell, including when
@@ -4532,12 +4509,12 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .loading-chart h2 { margin: 0 0 14px; font: 700 27px/1.15 var(--font-display); }
 .loading-chart-frame { min-height: 220px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .loading-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-.home-workflow { display: flex; align-items: center; gap: 20px; min-height: 80px; }
-.home-workflow .workflow-link { flex: 1; margin: 0; }
-.home-latest-slot { width: 19ch; min-height: 24px; font: 11px/1.6 var(--font-mono); }
+/* Reserve the entry card's height while the session list loads. */
+.home-workflow { min-height: 80px; margin-top: 20px; }
+.home-workflow .workflow-link { margin: 0; }
 .home-settings-loading { min-height: 245px; padding: 20px 22px 18px; }
 .sync-banner .banner-sub { min-height: 18px; }
 @keyframes inline-load-pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .inline-load-mark { animation: none; opacity: 1; } }
-@media (max-width: 600px) { .home-workflow { flex-wrap: wrap; gap: 0; padding: 14px 0; } .home-workflow .workflow-link { flex-basis: 100%; } .home-latest-slot { margin-top: 8px; width: 100%; } }
+@media (max-width: 600px) { .home-workflow { margin-top: 0; padding: 14px 0; } }
 @media (pointer: coarse) { .inline-load-retry.btn { min-height: 44px; } }

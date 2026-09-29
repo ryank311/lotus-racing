@@ -5,12 +5,13 @@ import { InlineLoadStatus, LoadingRows, ChartPlaceholder } from '../components/L
 // each named corner. Saves back to tracks/*.yaml so briefs and the Analysis
 // page pick up the cleaned-up corners on their next run.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { NavLink, useNavigation, useRoute, useUnsavedChanges } from '../navigation'
 import { routeUrl, segment } from '../routes'
 import { TrackMap } from '../components/TrackMap'
-import type { TrackListEntry } from '../../shared/types'
+import type { TrackComplexesResponse, TrackComplexPayload, TrackListEntry } from '../../shared/types'
+import './pages-extras.css'
 
 interface EditableCorner {
   _key: number  // stable React key — never changes after creation
@@ -90,6 +91,223 @@ function TrackSilhouette({ preview }: { preview?: TrackPreview }) {
   )
 }
 
+// ── corner complexes ─────────────────────────────────────────────────────────
+
+const COMPLEX_SOURCE: Record<TrackComplexesResponse['source'], string> = {
+  track: 'From the track file',
+  derived: 'Derived from the fastest valid lap',
+  segments: 'Garmin segments (fallback until the layout has corners and a valid lap)',
+}
+
+// Blocking problems: every complex runs forwards, in lap order, on the lap.
+// Lap distance runs a little past the mean line, so allow some slack at the end.
+function complexErrors(complexes: TrackComplexPayload[], totalM: number): string[] {
+  const errors: string[] = []
+  const maxM = totalM > 0 ? totalM + Math.max(50, totalM * 0.03) : Infinity
+  complexes.forEach((c, i) => {
+    const label = c.name.trim() || `Complex ${i + 1}`
+    if (!Number.isFinite(c.startM) || !Number.isFinite(c.endM)) { errors.push(`${label}: enter a start and end distance.`); return }
+    if (c.startM >= c.endM) errors.push(`${label}: start must be before end.`)
+    if (c.startM < 0 || c.endM > maxM) errors.push(`${label}: must lie within 0–${Math.round(totalM)} m.`)
+    const prev = complexes[i - 1]
+    if (prev && Number.isFinite(prev.endM) && c.startM < prev.endM) errors.push(`${label}: starts before the previous complex ends.`)
+  })
+  return errors
+}
+
+function useTrackComplexes(meanLineGuid: string | null) {
+  const [saved, setSaved] = useState<TrackComplexesResponse | null>(null)
+  const [draft, setDraft] = useState<TrackComplexPayload[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const current = useRef(meanLineGuid)
+  current.current = meanLineGuid
+
+  const apply = (response: TrackComplexesResponse) => {
+    setSaved(response)
+    setDraft(response.complexes)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    setSaved(null); setDraft([]); setLoadError(null); setMessage(null)
+    if (!meanLineGuid) { setLoading(false); return }
+    setLoading(true)
+    api.getTrackComplexes(meanLineGuid)
+      .then(response => { if (!cancelled) apply(response) })
+      .catch(e => { if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [meanLineGuid, attempt])
+
+  const dirty = saved != null && JSON.stringify(draft) !== JSON.stringify(saved.complexes)
+
+  // Keep the lap tiled: moving a boundary moves the neighbour that shared it.
+  const update = (index: number, patch: Partial<TrackComplexPayload>) => {
+    setDraft(list => list.map((c, i) => {
+      if (i === index) return { ...c, ...patch }
+      if (patch.startM !== undefined && i === index - 1 && Object.is(c.endM, list[index].startM)) return { ...c, endM: patch.startM }
+      if (patch.endM !== undefined && i === index + 1 && Object.is(c.startM, list[index].endM)) return { ...c, startM: patch.endM }
+      return c
+    }))
+  }
+
+  const run = async (action: () => Promise<TrackComplexesResponse>, done: (response: TrackComplexesResponse) => string) => {
+    const guid = current.current
+    setBusy(true)
+    setMessage(null)
+    try {
+      const response = await action()
+      if (current.current !== guid) return false
+      apply(response)
+      setMessage({ text: done(response) })
+      return true
+    } catch (e) {
+      if (current.current === guid) setMessage({ text: e instanceof Error ? e.message : String(e), error: true })
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const save = async (totalM: number) => {
+    const guid = current.current
+    if (!guid) return false
+    const errors = complexErrors(draft, totalM)
+    if (errors.length) { setMessage({ text: 'Fix the complex ranges before saving.', error: true }); return false }
+    return run(
+      () => api.saveTrackComplexes(guid, draft.map(c => ({ ...c, name: c.name.trim(), startM: Math.round(c.startM), endM: Math.round(c.endM) }))),
+      response => `Saved ${response.complexes.length} complexes`,
+    )
+  }
+
+  const regenerate = async () => {
+    const guid = current.current
+    if (!guid) return false
+    return run(
+      () => api.regenerateTrackComplexes(guid),
+      response => response.source === 'segments'
+        ? 'No usable braking data on the fastest lap; showing Garmin segments'
+        : `Regenerated ${response.complexes.length} complexes from the fastest lap`,
+    )
+  }
+
+  return {
+    saved, draft, loading, loadError, message, busy, dirty,
+    update, save, regenerate,
+    revert: () => { if (saved) setDraft(saved.complexes); setMessage(null) },
+    reload: () => setAttempt(n => n + 1),
+  }
+}
+
+function ComplexesPanel({ state, totalM, cornersDirty }: {
+  state: ReturnType<typeof useTrackComplexes>
+  totalM: number
+  cornersDirty: boolean
+}) {
+  const { saved, draft, loading, loadError, message, busy, dirty } = state
+  const [confirming, setConfirming] = useState(false)
+  const errors = useMemo(() => complexErrors(draft, totalM), [draft, totalM])
+  const gaps = draft.slice(1).filter((c, i) => Number.isFinite(c.startM) && c.startM > draft[i].endM).length
+  const hasTrackFile = !!saved?.yamlPath
+  const numberValue = (n: number) => (Number.isFinite(n) ? n : '')
+  const parse = (value: string) => (value.trim() === '' ? NaN : Number(value))
+
+  return (
+    <section className="tracks-complexes" aria-label="Corner complexes" aria-busy={loading || busy}>
+      <div className="tracks-complexes-header">
+        <span className="tracks-complexes-title">Corner complexes</span>
+        {saved && <span className="muted small">{COMPLEX_SOURCE[saved.source]} · {saved.complexes.length} complexes</span>}
+      </div>
+      <p className="tracks-complexes-note">
+        A complex runs from one braking zone to the next. The AI coach and focus targets measure time and phases per complex;
+        changing boundaries does not move old focus targets, which keep measuring on the boundaries saved with them.
+      </p>
+
+      {loading && <><InlineLoadStatus pending label="corner complexes" /><LoadingRows count={3} /></>}
+      {loadError && <p role="alert">{loadError} <button className="btn tiny ghost" onClick={state.reload}>Retry</button></p>}
+
+      {saved && !loading && (
+        <>
+          {draft.length === 0 ? (
+            <div className="muted small">No complexes yet. Save corners for this layout, then regenerate from the fastest lap.</div>
+          ) : (
+            <div className="tbl-wrap">
+              <table className="tbl tracks-complexes-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Name</th>
+                    <th style={{ textAlign: 'right' }}>Start m</th>
+                    <th style={{ textAlign: 'right' }}>End m</th>
+                    <th style={{ textAlign: 'right' }}>Length</th>
+                    <th>Corners</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {draft.map((c, i) => (
+                    <tr key={c.id + i}>
+                      <td className="small">{i + 1}</td>
+                      <td>
+                        <input className="tracks-corner-name" aria-label={`Complex ${i + 1} name`} value={c.name}
+                          onChange={e => state.update(i, { name: e.target.value })} disabled={busy || !hasTrackFile} />
+                      </td>
+                      <td>
+                        <input className="tracks-corner-zone tracks-complexes-num" type="number" min={0} step={10}
+                          aria-label={`Complex ${i + 1} start (m)`} value={numberValue(c.startM)}
+                          onChange={e => state.update(i, { startM: parse(e.target.value) })} disabled={busy || !hasTrackFile} />
+                      </td>
+                      <td>
+                        <input className="tracks-corner-zone tracks-complexes-num" type="number" min={0} step={10}
+                          aria-label={`Complex ${i + 1} end (m)`} value={numberValue(c.endM)}
+                          onChange={e => state.update(i, { endM: parse(e.target.value) })} disabled={busy || !hasTrackFile} />
+                      </td>
+                      <td className="num muted">{Number.isFinite(c.endM - c.startM) ? `${Math.round(c.endM - c.startM)} m` : '—'}</td>
+                      <td className="small">{c.corners.join(', ') || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {errors.length > 0 && <ul className="tracks-complexes-errors" role="alert">{errors.map(e => <li key={e}>{e}</li>)}</ul>}
+          {errors.length === 0 && gaps > 0 && (
+            <p className="tracks-complexes-note">{gaps} {gaps === 1 ? 'gap' : 'gaps'} between complexes: time spent there is not measured.</p>
+          )}
+          {!hasTrackFile && <p className="tracks-complexes-note">Save this layout's corners first; complexes are stored in its track file.</p>}
+
+          {confirming && (
+            <div className="tracks-complexes-confirm" role="group" aria-label="Confirm regenerating complexes">
+              <span>
+                Replace the complexes with boundaries derived from this layout's fastest valid lap?
+                {dirty && ' Unsaved edits will be lost.'}
+                {cornersDirty && ' It uses the saved corners, so save corner changes first.'}
+              </span>
+              <button className="btn tiny primary" disabled={busy} onClick={async () => { setConfirming(false); await state.regenerate() }}>Regenerate</button>
+              <button className="btn tiny ghost" onClick={() => setConfirming(false)}>Cancel</button>
+            </div>
+          )}
+
+          <div className="tracks-complexes-actions">
+            <button className="btn primary" disabled={!dirty || busy || errors.length > 0 || !hasTrackFile} onClick={() => void state.save(totalM)}>
+              {busy ? 'Working…' : dirty ? 'Save complexes' : 'Saved'}
+            </button>
+            <button className="btn ghost" disabled={!dirty || busy} onClick={state.revert}>Revert</button>
+            <button className="btn ghost" disabled={busy || !hasTrackFile || confirming} onClick={() => setConfirming(true)}>
+              Regenerate from fastest lap
+            </button>
+            {message && <span className={`small ${message.error ? 'tracks-complexes-error' : 'muted'}`} role={message.error ? 'alert' : 'status'}>{message.text}</span>}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 export function Tracks() {
   const { id: selectedGuid, params } = useRoute()
   const { go, query } = useNavigation()
@@ -107,6 +325,7 @@ export function Tracks() {
   const [corners, setCorners] = useState<EditableCorner[]>([])
   const [dirty, setDirty] = useState(false)
   const [savingMsg, setSavingMsg] = useState<string | null>(null)
+  const complexes = useTrackComplexes(loaded && selectedGuid ? selectedGuid : null)
 
   // ── data loading ──────────────────────────────────────────────────────────
 
@@ -246,6 +465,8 @@ export function Tracks() {
       setDirty(false)
       // refresh list to update yamlExists / cornerCount badges
       void listResource.reload()
+      // A new track file lets complexes be derived and saved.
+      if (!complexes.dirty) complexes.reload()
       setTimeout(() => setSavingMsg(null), 2500)
       return true
     } catch (e: any) {
@@ -253,7 +474,13 @@ export function Tracks() {
       return false
     }
   }
-  useUnsavedChanges(dirty, save)
+  const totalM = Number(loaded?.geometry?.totalDistM) || 0
+  const saveAll = async () => {
+    if (dirty && !(await save())) return false
+    if (complexes.dirty && !(await complexes.save(totalM))) return false
+    return true
+  }
+  useUnsavedChanges(dirty || complexes.dirty, saveAll)
 
   const revert = async () => {
     if (!selectedGuid) return
@@ -468,6 +695,10 @@ export function Tracks() {
               </div>
             </aside>
           </div>
+        )}
+
+        {!loading && loaded && selectedGuid && (
+          <ComplexesPanel state={complexes} totalM={totalM} cornersDirty={dirty} />
         )}
       </div>
     </>

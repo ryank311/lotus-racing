@@ -1,0 +1,154 @@
+/* Analysis page additions: Garmin optimal tile, hidden-lap note, stale coach
+ * report banner and the "Last focus" review in version-2 coach reports.
+ * Kept out of styles.css so the page's newer pieces live together. */
+
+/* ── stat strip ─────────────────────────────────────────────────────────── */
+
+.analysis-stat-strip.four-up { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@container (max-width: 460px) {
+  .analysis-stat-strip.four-up { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+/* Lap labels ("May 24 16:15 · L3") are longer than the old "Lap 3". */
+.analysis-stat .sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-excluded-note {
+  margin: 6px 0 0;
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  cursor: help;
+}
+
+/* ── stale coach report ─────────────────────────────────────────────────── */
+
+.coach-stale-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--amber) 10%, transparent), transparent 60%),
+    var(--bg-elev);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--border));
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius);
+}
+.coach-stale-banner > div:first-child { flex: 1 1 260px; min-width: 0; }
+.coach-stale-banner strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.coach-stale-banner span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.coach-stale-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* ── last focus (version-2 reports) ─────────────────────────────────────── */
+
+.coach-last-focus { margin-bottom: 22px; }
+.coach-last-focus-list { display: flex; flex-direction: column; gap: 8px; }
+.coach-last-focus-item {
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.coach-last-focus-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+.coach-last-focus-title strong {
+  display: block;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.coach-last-focus-title small {
+  display: block;
+  margin-top: 2px;
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.coach-last-focus-metric {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 9px;
+  font-family: var(--font-mono);
+}
+.coach-last-focus-metric span {
+  color: var(--text-mute);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.coach-last-focus-metric strong { color: var(--text); font-size: 12px; font-weight: 500; }
+.coach-last-focus-metric small { color: var(--text-mute); font-size: 10px; }
+.coach-last-focus-comment {
+  margin-top: 8px;
+  color: #b8b8c0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.coach-verdict {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text-dim);
+  background: var(--panel-soft);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.coach-verdict-good {
+  color: var(--green);
+  background: rgba(93,209,127,0.08);
+  border-color: rgba(93,209,127,0.35);
+}
+.coach-verdict-bad {
+  color: var(--red);
+  background: rgba(255,71,87,0.08);
+  border-color: rgba(255,71,87,0.35);
+}
+
+/* ── track map ──────────────────────────────────────────────────────────── */
+
+.lap-picker-label { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .coach-last-focus-head { grid-template-columns: minmax(0, 1fr) auto; }
+  .coach-last-focus-head .coach-map-link { grid-column: 1 / -1; width: fit-content; }
+  .coach-stale-actions .btn { min-height: 44px; }
+}
+
+/* Coaching needs finished laps: the caret dims with the button. */
+.ask-coach-split .ask-coach-caret:disabled { opacity: .4; cursor: not-allowed; }

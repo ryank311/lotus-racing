@@ -2,8 +2,10 @@ import { useNavigation } from '../navigation'
 import { useEffect, useRef, useState } from 'react'
 import { segment } from '../routes'
 import type { ReviewAggregate, ReviewMetric, ReviewRegionComparison, ReviewCoachResult, ReviewLap } from '../../shared/review'
+import type { FocusCheck, FocusItem, FocusVerdict } from '../../shared/types'
 import { msToLap } from '../api'
 import { reviewTimeline } from './reviewTimeline'
+import '../pages/review-extras.css'
 
 export function ReviewMarkers({ current, baseline, format }: { current: number | null; baseline: number | null; format: (v: number) => string }) {
   if (current == null || baseline == null) return null
@@ -16,17 +18,23 @@ export function ReviewMarkers({ current, baseline, format }: { current: number |
 }
 
 export function ReviewLapScatter({ laps }: { laps: ReviewLap[] }) {
-  const values = laps.map(l => l.durationMs).filter(v => Number.isFinite(v) && v > 0)
-  if (!values.length) return <p>No lap times available.</p>
+  const timed = laps.filter(l => Number.isFinite(l.durationMs) && l.durationMs > 0)
+  if (!timed.length) return <p>No lap times available.</p>
+  // Scale to eligible laps so out-laps and in-laps do not compress the fast ones; the rest are pinned to an edge.
+  const values = (timed.some(l => l.eligible) ? timed.filter(l => l.eligible) : timed).map(l => l.durationMs)
   const min = Math.min(...values), range = Math.max(Math.max(...values) - min, 1000)
   const width = Math.max(330, laps.length * 40 + 90), y = (v: number) => 165 - (v - min) / range * 125
-  return <div className="review-lap-scatter"><svg viewBox={`0 0 ${width} 210`} style={{ minWidth: width }} role="group" aria-label="Lap time scatter. Orange marks selected fast laps.">
+  const off = (l: ReviewLap) => !Number.isFinite(l.durationMs) || l.durationMs <= 0 ? null : l.durationMs > min + range ? 'slower' : l.durationMs < min ? 'faster' : null
+  const clipped = laps.filter(off).length
+  return <><div className="review-lap-scatter"><svg viewBox={`0 0 ${width} 210`} style={{ minWidth: width }} role="group" aria-label={`Lap time scatter scaled to eligible laps. Orange marks selected fast laps.${clipped ? ` ${clipped} laps outside that range are pinned to the edge.` : ''}`}>
     {[min, min + range].map(v => <g key={v}><text x="72" y={y(v) + 4} textAnchor="end">{msToLap(v)}</text><line x1="80" x2={width - 10} y1={y(v)} y2={y(v)} stroke="var(--border)" /></g>)}
-    {laps.map((l, i) => <g key={l.index}><title>{`Lap ${l.index + 1}: ${msToLap(l.durationMs)}. ${l.reasons.join(', ') || (l.selected ? 'Fast sample' : 'Eligible')}`}</title>
-      {Number.isFinite(l.durationMs) && l.durationMs > 0 && <circle cx={100 + i * 40} cy={y(l.durationMs)} r="5" fill={l.selected ? 'var(--signal)' : l.eligible ? 'var(--cyan)' : 'var(--text-mute)'} />}
-      <text x={100 + i * 40} y="194" textAnchor="middle">L{l.index + 1}</text>
-    </g>)}
-  </svg></div>
+    {laps.map((l, i) => { const cx = 100 + i * 40, edge = off(l)
+      return <g key={l.index}><title>{`Lap ${l.index + 1}: ${msToLap(l.durationMs)}${edge ? ` · off scale, ${edge} than the eligible laps` : ''}. ${l.reasons.join(', ') || (l.selected ? 'Fast sample' : 'Eligible')}`}</title>
+        {edge ? <path d={edge === 'slower' ? `M${cx - 7},35 l7,-12 l7,12 z` : `M${cx - 7},171 l7,12 l7,-12 z`} fill={l.eligible ? 'var(--cyan)' : 'var(--text-mute)'} stroke="var(--text-dim)" strokeWidth="1" />
+          : Number.isFinite(l.durationMs) && l.durationMs > 0 && <circle cx={cx} cy={y(l.durationMs)} r="5" fill={l.selected ? 'var(--signal)' : l.eligible ? 'var(--cyan)' : 'var(--text-mute)'} />}
+        <text x={cx} y="199" textAnchor="middle">L{l.index + 1}</text>
+      </g> })}
+  </svg></div>{clipped > 0 && <p className="review-scatter-note">▲ {clipped} {clipped === 1 ? 'lap' : 'laps'} outside the eligible range (out-laps, in-laps, flagged laps) pinned to the edge · hover for time and reason</p>}</>
 }
 
 export interface TrendPoint { id: string; date: string; value: number | null; secondary?: number | null; baseline?: number | null; pb?: number | null }
@@ -95,9 +103,11 @@ export function ReviewMap({ data, regions, selected, onSelect }: { data: ReviewA
     <polyline points={data.map.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="var(--border-strong)" strokeWidth={stroke} />
     {regions.map(({ region, metrics }) => {
       const pts = data.map.filter(p => p.dist >= region.startM && p.dist <= region.endM)
-      const delta = metrics.timeMs.delta, color = delta == null ? 'var(--text-mute)' : delta < 0 ? 'var(--green)' : delta > 0 ? 'var(--red)' : 'var(--cyan)'
-      return <g key={region.id} role="button" tabIndex={0} aria-label={`${region.name}, ${delta == null ? 'no baseline' : `${(delta / 1000).toFixed(2)} seconds change`}`} onClick={() => onSelect(region.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(region.id) } }}>
-        <title>{region.name}</title><polyline points={pts.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="transparent" strokeWidth={stroke * 4} />
+      // Colour only clear changes; limited evidence stays neutral like the rest of the page.
+      const { delta, clearChange } = metrics.timeMs, color = delta == null ? 'var(--text-mute)' : clearChange === 'gain' ? 'var(--green)' : clearChange === 'regression' ? 'var(--red)' : 'var(--text-dim)'
+      const change = delta == null ? 'no baseline' : `${delta > 0 ? '+' : ''}${(delta / 1000).toFixed(2)} s${clearChange ? `, clear ${clearChange}` : ', within recent variability'}`
+      return <g key={region.id} role="button" tabIndex={0} aria-label={`${region.name}, ${change}`} onClick={() => onSelect(region.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(region.id) } }}>
+        <title>{`${region.name} · ${change}`}</title><polyline points={pts.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="transparent" strokeWidth={stroke * 4} />
         <polyline points={pts.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke={color} strokeWidth={stroke * (selected === region.id ? 2 : 1)} opacity={selected === region.id ? 1 : .75} />
       </g>
     })}
@@ -112,8 +122,8 @@ export function ReviewDeltaBars({ rows, metric, selected, onSelect, format }: {
   return <div className="review-delta-bars" role="list" aria-label="Region changes versus recent baseline">
     <div className="review-bar-caption">{timed ? '← Faster · baseline · Slower →' : '← Lower · baseline · Higher →'}</div>
     {rows.map(r => {
-      const d = r.metrics[metric].delta, className = timed && d !== null ? d < 0 ? 'gain' : d > 0 ? 'loss' : 'reference' : 'reference'
-      return <button type="button" key={r.region.id} className={`review-bar-row ${selected === r.region.id ? 'selected' : ''}`} aria-pressed={selected === r.region.id} onClick={() => onSelect(r.region.id)}>
+      const { delta: d, clearChange } = r.metrics[metric], className = !timed ? 'reference' : clearChange === 'gain' ? 'gain' : clearChange === 'regression' ? 'loss' : 'neutral'
+      return <button type="button" key={r.region.id} className={`review-bar-row ${selected === r.region.id ? 'selected' : ''}`} aria-pressed={selected === r.region.id} title={timed && d !== null ? clearChange ? `Clear ${clearChange}` : 'Within recent variability' : undefined} onClick={() => onSelect(r.region.id)}>
         <span>{r.region.name}</span><span className="review-bar-track"><i className={className} style={{ left: `${d !== null && d < 0 ? 50 - Math.abs(d) / extent * 48 : 50}%`, width: `${d == null ? 0 : Math.abs(d) / extent * 48}%` }} /></span>
         <strong className={className}>{d === null ? '—' : `${d > 0 ? '+' : ''}${format(d)}`}</strong>
       </button>
@@ -121,13 +131,48 @@ export function ReviewDeltaBars({ rows, metric, selected, onSelect, format }: {
   </div>
 }
 
-export function ReviewCoachContent({ result, evidence = {} }: { result: ReviewCoachResult; evidence?: Record<string, string> }) {
+/** Traversal-time colour key shared by the map and the bars. */
+export function ReviewDeltaLegend({ metric }: { metric: ReviewMetric }) {
+  return <p className="review-delta-legend"><span className="gain"><i />Clear gain</span><span className="loss"><i />Clear regression</span><span className="neutral"><i />Within recent variability</span>
+    <span>{metric === 'timeMs' ? 'Only clear traversal-time changes are coloured; bar side and sign show direction.' : 'Map colours use traversal time; other metrics are context and stay neutral.'}</span></p>
+}
+
+export const verdictLabels: Record<FocusVerdict, string> = { met: 'Target met', improved: 'Improved', no_change: 'No change', worse: 'Worse', not_measured: 'Not measured' }
+export function VerdictChip({ verdict }: { verdict: FocusVerdict }) {
+  return <span className={`chip review-verdict ${verdict === 'met' || verdict === 'improved' ? 'gain' : verdict === 'worse' ? 'loss' : 'neutral'}`}>{verdictLabels[verdict] ?? verdict}</span>
+}
+/** One measured focus check: cue, metric, baseline → this session (target), verdict and lap count. */
+export function FocusCheckRow({ check }: { check: FocusCheck }) {
+  return <li className="review-focus-row"><VerdictChip verdict={check.verdict} /><span><b>{check.cue || check.complexName}</b>
+    <small>{check.cue && check.complexName ? `${check.complexName} · ` : ''}{check.metricLabel} · {check.display.baseline || '—'} → <strong>{check.display.current || '—'}</strong> (target {check.display.target || '—'}) · {check.laps} {check.laps === 1 ? 'lap' : 'laps'}</small></span></li>
+}
+function FocusTarget({ item, named = false }: { item: FocusItem; named?: boolean }) {
+  return <li className="review-focus-target"><span className="review-eyebrow">{named ? `${item.complexName} · ` : ''}{item.metricLabel}</span>
+    <span>now <strong>{item.display.baseline}</strong> → target <strong className="gain">{item.display.target}</strong> <small>(best pass {item.display.best})</small></span>
+    {named && item.cue && <q>{item.cue}</q>}{item.referenceLap && <small>Reference lap: {item.referenceLap}</small>}</li>
+}
+const refPart = (id: string) => id.slice(id.indexOf(':') + 1)
+
+export function ReviewCoachContent({ result, evidence = {}, showRegion }: {
+  result: ReviewCoachResult; evidence?: Record<string, string>
+  /** Returns an action that reveals the priority's region, or null when the ref is not a region on this page. */
+  showRegion?: (ref: string) => (() => void) | null
+}) {
+  // Older reports carry no focus; each target is listed once, under the priority that shares its corner.
+  const focus = Array.isArray(result.focus) ? result.focus : [], placed = new Set<FocusItem>()
+  const targets = result.priorities.map(p => focus.filter(f => !placed.has(f) && (f.ref === refPart(p.ref) || f.complexId === p.ref) && !!placed.add(f)))
+  const unplaced = focus.filter(f => !placed.has(f)), previous = Array.isArray(result.previousFocus) ? result.previousFocus : []
   return <div className="review-coach-content"><p className="review-coach-summary">{result.summary}</p>
+    {previous.length > 0 && <div><h3>Last focus</h3><ul className="review-focus-list">{previous.map((c, i) => <FocusCheckRow key={`${c.focusId}:${i}`} check={c} />)}</ul></div>}
     {result.strengths.length > 0 && <div><h3>What improved</h3><ul>{result.strengths.map((s, i) => <li key={i}>{s}</li>)}</ul></div>}
     {result.regressions.length > 0 && <div><h3>Where to focus</h3><ul>{result.regressions.map((s, i) => <li key={i}>{s}</li>)}</ul></div>}
-    {result.priorities.map((p, i) => <article className="review-priority" key={i}><span className="review-eyebrow">Next session · priority {i + 1}</span><h3>{p.advice}</h3>
-      <blockquote>{p.cue}</blockquote><p><strong>Success looks like:</strong> {p.successMetric}</p><details><summary>Measured evidence</summary><ul>{p.evidence.map(id => <li key={id}>{evidence[id] ?? id}</li>)}</ul></details>
-    </article>)}
+    {result.priorities.map((p, i) => { const show = showRegion?.(p.ref)
+      return <article className="review-priority" key={i}><div className="review-priority-head"><span className="review-eyebrow">Next session · priority {i + 1}</span>{show && <button type="button" className="btn ghost review-show-map" onClick={show}>Show on map</button>}</div><h3>{p.advice}</h3>
+        <blockquote>{p.cue}</blockquote><p><strong>Success looks like:</strong> {p.successMetric}</p>
+        {targets[i].length > 0 && <ul className="review-focus-targets">{targets[i].map(f => <FocusTarget key={f.id} item={f} />)}</ul>}
+        <details><summary>Measured evidence</summary><ul>{p.evidence.map(id => <li key={id}>{evidence[id] ?? id}</li>)}</ul></details>
+      </article> })}
+    {unplaced.length > 0 && <div><h3>Targets for next session</h3><ul className="review-focus-targets">{unplaced.map(f => <FocusTarget key={f.id} item={f} named />)}</ul></div>}
     {result.limitations.length > 0 && <details><summary>Data limitations</summary><ul>{result.limitations.map((s, i) => <li key={i}>{s}</li>)}</ul></details>}
   </div>
 }

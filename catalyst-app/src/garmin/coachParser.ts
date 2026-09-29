@@ -2,7 +2,9 @@
 // Extracts the last ```json ... ``` block and validates it permissively —
 // malformed entries are skipped rather than failing the whole parse.
 
-import type { CoachingResult, CoachAnnotation, CoachAnnotationType, CoachLineWaypoint, CoachSetupRec } from '../shared/types.js'
+import type { CoachingResult, CoachAnnotation, CoachAnnotationType, CoachLineWaypoint, CoachSetupRec, FocusItem } from '../shared/types.js'
+import type { CoachPacket } from './coachPacket.js'
+import { focusFromChoice } from './coachPacket.js'
 
 const VALID_ANNOTATION_TYPES = new Set<CoachAnnotationType>([
   'corner_tip', 'segment_tip', 'speed_annotation', 'line_deviation',
@@ -147,4 +149,109 @@ function num(v: unknown): number | undefined {
 function mphFromMps(v: unknown): number | undefined {
   const n = num(v)
   return n == null ? undefined : n * 2.23694
+}
+
+// ─── Version 2: reports built on the evidence packet ─────────────────────────
+
+const CONFIDENCE: Record<string, 1 | 2 | 3> = { low: 1, medium: 2, high: 3 }
+
+function parseJsonObject(raw: string): Record<string, any> | null {
+  const trimmed = raw.trim()
+  const candidates = [trimmed, ...[...raw.matchAll(/```json\s*([\s\S]*?)```/gm)].map(m => m[1].trim()).reverse()]
+  for (const text of candidates) {
+    if (!text.startsWith('{')) continue
+    try {
+      const value = JSON.parse(cleanJson(text))
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value
+    } catch { /* try the next candidate */ }
+  }
+  return null
+}
+
+// Turn the model's choices into a stored report. Every number comes from the
+// packet; the model's text is kept as written. Unknown IDs are dropped.
+export function parseCoachingReport(raw: string, packet: CoachPacket, reportId: string): CoachingResult | null {
+  const r = parseJsonObject(raw)
+  if (!r || typeof r.summary !== 'string' || !r.summary.trim()) return null
+  const known = (ids: unknown): string[] => stringArray(ids).filter(id => id in packet.evidence)
+  const resolve = (ids: string[]) => ids.map(id => packet.evidence[id])
+
+  const focus: FocusItem[] = []
+  for (const choice of Array.isArray(r.focus) ? r.focus.slice(0, 3) : []) {
+    if (!choice || typeof choice !== 'object' || typeof choice.change !== 'string') continue
+    const item = focusFromChoice(packet, {
+      complex: String(choice.complex ?? ''), metric: String(choice.metric ?? ''), target: String(choice.target ?? 'halfway'),
+      phase: String(choice.phase ?? ''), change: choice.change, why: String(choice.why ?? ''), cue: String(choice.cue ?? ''),
+      reference_lap: String(choice.reference_lap ?? ''), confidence: String(choice.confidence ?? 'medium'), evidence: known(choice.evidence),
+    }, `${reportId.slice(0, 8)}-${focus.length + 1}`)
+    if (item) focus.push(item)
+  }
+
+  const tips: CoachingResult['tips'] = focus.map((item, i) => {
+    const stat = packet.stats[item.complexId]?.time
+    const gain = stat?.median != null && stat.best != null ? Math.max(0, Math.round(stat.median - stat.best)) : undefined
+    const complex = packet.complexes.find(c => c.id === item.complexId)
+    const vmin = packet.stats[item.complexId]?.vmin
+    const annotation: CoachAnnotation = {
+      type: complex?.corners.length ? 'corner_tip' : 'segment_tip', ref: item.ref, body: item.cue || item.change,
+      severity: i === 0 ? 3 : 2,
+      actual_vmin_mph: vmin?.median != null ? vmin.median * 2.23694 : undefined,
+      target_vmin_mph: vmin?.bestExec != null ? vmin.bestExec * 2.23694 : undefined,
+    }
+    return {
+      section: item.complexName,
+      ref: item.ref,
+      body: [item.change, item.why].filter(Boolean).join(' '),
+      priority: (Math.min(i + 1, 3)) as 1 | 2 | 3,
+      estimated_gain_ms: gain,
+      confidence: CONFIDENCE[item.confidence],
+      evidence: resolve(item.evidence),
+      cue: item.cue || undefined,
+      success_metric: `${item.metricLabel}: ${item.display.target} (now ${item.display.baseline}; your best pass ${item.display.best})${item.referenceLap ? ` · reference ${item.referenceLap}` : ''}`,
+      annotations: [annotation],
+    }
+  })
+
+  const byFocus = new Map(packet.previousFocus.map(p => [p.item.id, p.check]))
+  const previous = (Array.isArray(r.previous_focus_review) ? r.previous_focus_review : [])
+    .filter((x: any) => x && byFocus.has(x.focus_id))
+    .map((x: any) => ({ focusId: String(x.focus_id), verdict: String(x.verdict ?? 'unclear'), comment: String(x.comment ?? ''), measured: byFocus.get(x.focus_id) }))
+  // Keep measured results even when the model skipped them.
+  for (const [focusId, check] of byFocus) {
+    if (!previous.some((p: { focusId: string }) => p.focusId === focusId)) previous.push({ focusId, verdict: check.verdict, comment: '', measured: check })
+  }
+
+  const setup: CoachSetupRec[] = (Array.isArray(r.setup) ? r.setup : []).flatMap((x: any) => {
+    if (!x || typeof x.area !== 'string' || typeof x.change !== 'string') return []
+    return [{ area: x.area, change: x.change, rationale: String(x.rationale ?? ''), confidence: CONFIDENCE[String(x.confidence)], evidence: resolve(known(x.evidence)) }]
+  })
+
+  const plan = (Array.isArray(r.run_plan) ? r.run_plan : []).flatMap((x: any) => {
+    if (!x || typeof x.instruction !== 'string') return []
+    const item = /^[123]$/.test(String(x.focus)) ? focus[Number(x.focus) - 1] : undefined
+    return [{ run: String(x.run ?? 'Run'), focus: item ? `${x.instruction} (Focus: ${item.cue || item.complexName})` : x.instruction, success_metric: String(x.check ?? '') }]
+  })
+
+  const bestMs = packet.bestLap?.durationMs ?? null
+  return {
+    version: 2,
+    headline: r.summary.trim(),
+    consistency_loss_ms: bestMs != null && packet.idealMs != null ? Math.max(0, Math.round(bestMs - packet.idealMs)) : 0,
+    ideal_lap_ms: packet.idealMs,
+    strengths: (Array.isArray(r.keep_doing) ? r.keep_doing : []).slice(0, 4).flatMap((x: any) => {
+      if (!x || typeof x.text !== 'string') return []
+      const ev = resolve(known(x.evidence))
+      return [ev.length ? `${x.text} (${ev[0].replace(/\.$/, '')})` : x.text]
+    }),
+    tips,
+    focus,
+    previous_focus_review: previous,
+    drills: [],
+    next_session_plan: plan,
+    data_quality_notes: stringArray(r.data_gaps),
+    annotations: tips.flatMap(t => t.annotations),
+    setup,
+    evidence: packet.evidence,
+    context: packet.context,
+  }
 }

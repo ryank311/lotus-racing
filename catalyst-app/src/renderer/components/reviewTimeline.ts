@@ -1,5 +1,13 @@
 const DAY_MS = 86_400_000
 const dateLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+const fullDateLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+
+/** Session starts are local track time ("2026-05-24 16:15:34"); label them without any timezone conversion. */
+export function startLabel(value: string | null | undefined, year = true): string {
+  if (!value) return 'Date unavailable'
+  const day = calendarDate(value), time = value.slice(11, 16)
+  return day ? `${(year ? fullDateLabel : dateLabel).format(day)}${/^\d{2}:\d{2}$/.test(time) ? ` ${time}` : ''}` : value
+}
 
 function calendarDate(value: string): Date | null {
   const day = value.slice(0, 10)

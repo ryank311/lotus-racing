@@ -61,6 +61,46 @@ segments:
     length_m: 773
     flag: 1
 
+complexes:
+  - id: C1
+    name: "Start straight"
+    start_m: 0
+    end_m: 200
+  - id: C2
+    name: "T1–T2 · Horse Shoe"
+    start_m: 200
+    end_m: 720
+    corners: "T1,T2"
+  - id: C3
+    name: "T3 · NASCAR"
+    start_m: 720
+    end_m: 940
+    corners: "T3"
+  - id: C4
+    name: "T4a · Snake Entry"
+    start_m: 940
+    end_m: 1070
+    corners: "T4a"
+  - id: C5
+    name: "T4b–T8b · Snake Entry to Climbing Esses Middle"
+    start_m: 1070
+    end_m: 2110
+    corners: "T4b,T5a,T5b,T6a,T6b,T7,T8a,T8b"
+  - id: C6
+    name: "T9–T10 · Esses Exit to South Bend"
+    start_m: 2110
+    end_m: 2560
+    corners: "T9,T10"
+  - id: C7
+    name: "T11–T12 · Oak Tree Entry to Oak Tree"
+    start_m: 2560
+    end_m: 3940
+    corners: "T11,T12"
+  - id: C8
+    name: "T13–T18 · Roller Coaster Entry to The Kink"
+    start_m: 3940
+    end_m: 5255
+    corners: "T13,T14,T15,T16a,T16b,T17,T18"
 # Named corners, in driving order. apex/start/end are dist_idx values that
 # match the per-sample dist_idx in performance.pb (each unit ≈ 1 m at VIR Full).
 corners:

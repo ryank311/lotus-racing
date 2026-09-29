@@ -9,6 +9,7 @@ import type {
   AiSettings,
 } from '../shared/types.js'
 import type { UnitSystem } from '../shared/units.js'
+import type { LapFilter } from '../shared/coachingScope.js'
 
 const bridge: CatalystBridge = {
   getSessionReview: guid => ipcRenderer.invoke('review:get', guid),
@@ -21,6 +22,15 @@ const bridge: CatalystBridge = {
     ipcRenderer.on('review:event', listener)
     return () => ipcRenderer.off('review:event', listener)
   },
+  getDashboard: () => ipcRenderer.invoke('dashboard:get'),
+  getSessionFocus: guid => ipcRenderer.invoke('focus:forSession', guid),
+  getSessionNotes: guid => ipcRenderer.invoke('notes:get', guid),
+  saveSessionNotes: (guid, notes) => ipcRenderer.invoke('notes:save', guid, notes),
+  listAiContextFiles: profileName => ipcRenderer.invoke('profiles:aiContext', profileName),
+  setAiContextFile: (profileName, fileName, included) => ipcRenderer.invoke('profiles:setAiContext', profileName, fileName, included),
+  getTrackComplexes: meanLineGuid => ipcRenderer.invoke('tracks:complexes', meanLineGuid),
+  saveTrackComplexes: (meanLineGuid, complexes) => ipcRenderer.invoke('tracks:saveComplexes', meanLineGuid, complexes),
+  regenerateTrackComplexes: meanLineGuid => ipcRenderer.invoke('tracks:regenerateComplexes', meanLineGuid),
   getAuthState: () => ipcRenderer.invoke('auth:state'),
   getSyncStats: () => ipcRenderer.invoke('auth:syncStats'),
   getAccountEmail: () => ipcRenderer.invoke('auth:email'),
@@ -82,8 +92,8 @@ const bridge: CatalystBridge = {
     return () => ipcRenderer.off('app:save', handler)
   },
 
-  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) =>
-    ipcRenderer.invoke('analysis:build', sessionGuids, units, lapLimit),
+  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter) =>
+    ipcRenderer.invoke('analysis:build', sessionGuids, units, lapFilter),
 
   // AI Coach
   runCoach: (opts: CoachOptions) => ipcRenderer.invoke('coach:run', opts),

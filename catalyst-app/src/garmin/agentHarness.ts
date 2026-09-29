@@ -6,6 +6,9 @@ import { StringDecoder } from 'node:string_decoder'
 import { AnthropicStream, checkAnthropicStopReason } from './anthropicStream.js'
 import OpenAI from 'openai'
 import { receiveOpenAiResponse } from './openaiResponse.js'
+import {
+  anthropicHasAdaptiveThinking, anthropicSupportsEffort, DEFAULT_REASONING_EFFORT, type ReasoningEffort,
+} from '../shared/aiModels.js'
 import type {
   FunctionTool,
   ResponseCreateParamsNonStreaming,
@@ -16,11 +19,25 @@ export interface HarnessConfig {
   provider: 'anthropic' | 'openai'
   apiKey: string
   model: string
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+  // Stable role, standards and output contract. Sent as `system` (Anthropic)
+  // or `instructions` (OpenAI) so the user turn carries only data and the ask.
+  system?: string
+  reasoningEffort?: ReasoningEffort
   maxTokens?: number
   stream?: boolean
   tools?: object[]
   toolChoice?: { type: 'tool'; name: string }
+  // Total wall-clock budget including retries. Long x-high runs are normal.
+  deadlineMs?: number
+}
+
+const DEFAULT_DEADLINE_MS = 30 * 60_000
+
+// Appended to the request when a model answered in prose instead of calling
+// the report tool. Auto tool choice lets the model think first, but does not
+// guarantee the call, so one corrective retry is allowed.
+function toolNudge(name: string): string {
+  return `\n\nYour previous answer did not call ${name}. Respond now by calling ${name} exactly once with the complete report. Do not write the report as text.`
 }
 
 export async function runAgent(
@@ -29,26 +46,53 @@ export async function runAgent(
   onChunk: (text: string) => void,
 ): Promise<string> {
   const maxTokens = config.maxTokens ?? 32000
+  const effort = config.reasoningEffort ?? DEFAULT_REASONING_EFFORT
+  const deadlineMs = config.deadlineMs ?? DEFAULT_DEADLINE_MS
   if (config.provider === 'openai') {
     // Stream background runs so progress is visible and dropped connections
     // can resume without discarding several minutes of model work.
     return runOpenAI(
       prompt, config.apiKey, config.model, onChunk, maxTokens,
-      config.tools, config.toolChoice, config.reasoningEffort ?? 'xhigh', config.stream ?? true,
+      config.tools, config.toolChoice, effort, config.stream ?? true, config.system, deadlineMs,
     )
   }
 
-  const maxAttempts = 3
-  const deadline = Date.now() + 15 * 60_000
+  const deadline = Date.now() + deadlineMs
+  let result = await runAnthropicWithRetries(prompt, config, onChunk, maxTokens, effort, deadline)
+  if (config.toolChoice && !result.toolCalled && result.text.trim()) {
+    onChunk(`[status] Model answered without the report tool · asking again…\n`)
+    onChunk(`[diag] no ${config.toolChoice.name} call; retrying once with an explicit instruction\n`)
+    result = await runAnthropicWithRetries(prompt + toolNudge(config.toolChoice.name), config, onChunk, maxTokens, effort, deadline)
+  }
+  return result.text
+}
 
+async function runAnthropicWithRetries(
+  prompt: string,
+  config: HarnessConfig,
+  onChunk: (text: string) => void,
+  maxTokens: number,
+  effort: ReasoningEffort,
+  deadline: number,
+): Promise<AnthropicResult> {
+  const maxAttempts = 3
+  const minutes = Math.round((config.deadlineMs ?? DEFAULT_DEADLINE_MS) / 60_000)
+  let strict = true
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (Date.now() >= deadline) throw new Error('Anthropic analysis exceeded the 15-minute total limit, including retries')
+    if (Date.now() >= deadline) throw new Error(`Anthropic analysis exceeded the ${minutes}-minute total limit, including retries`)
     try {
       return await runAnthropic(
-        prompt, config.apiKey, config.model, onChunk, maxTokens,
-        config.stream ?? true, deadline, config.tools, config.toolChoice,
+        prompt, config, onChunk, maxTokens, effort, deadline, minutes, strict,
       )
     } catch (error) {
+      // Strict schemas are an optimisation; never let a schema the API will
+      // not compile block coaching.
+      if (strict && isStrictSchemaRejection(error)) {
+        strict = false
+        attempt--
+        onChunk(`[diag] strict tool schema rejected; retrying without strict: ${errorMessage(error)}\n`)
+        continue
+      }
       if (!isTransientProviderError(error) || attempt === maxAttempts) {
         if (isTransientProviderError(error)) {
           throw providerConnectionError(config.provider, error, attempt)
@@ -64,6 +108,11 @@ export async function runAgent(
   }
 
   throw new Error('Coaching request failed unexpectedly')
+}
+
+function isStrictSchemaRejection(error: unknown): boolean {
+  const status = Number((error as { status?: unknown })?.status)
+  return status === 400 && /strict|schema|input_schema|additionalProperties/i.test(errorMessage(error))
 }
 
 const TRANSIENT_NETWORK_CODES = new Set([
@@ -107,7 +156,7 @@ function providerConnectionError(provider: HarnessConfig['provider'], error: unk
   return new Error(
     `${label} connection failed after ${attempts} attempts (${detail}). ` +
     `Check the internet connection, VPN/firewall, and provider status, then try again. ` +
-    `If it continues, run coaching with the Top 3 lap filter to reduce the request size.`,
+    `If it continues, run coaching with the Top 3 overall lap filter to reduce the request size.`,
   )
 }
 
@@ -117,30 +166,42 @@ function wait(ms: number): Promise<void> {
 
 // ─── Anthropic Messages API (SSE streaming) ──────────────────────────────────
 
+interface AnthropicResult { text: string; toolCalled: boolean }
+
 function runAnthropic(
   prompt: string,
-  apiKey: string,
-  model: string,
+  config: HarnessConfig,
   onChunk: (text: string) => void,
   maxTokens: number,
-  stream: boolean,
+  effort: ReasoningEffort,
   deadline: number,
-  tools?: object[],
-  toolChoice?: { type: 'tool'; name: string },
-): Promise<string> {
+  deadlineMinutes: number,
+  strict: boolean,
+): Promise<AnthropicResult> {
+  const { apiKey, model, tools, toolChoice } = config
+  const stream = config.stream ?? true
+  const adaptive = anthropicHasAdaptiveThinking(model)
   const reqObj: Record<string, unknown> = {
     model, max_tokens: maxTokens, stream,
     messages: [{ role: 'user', content: prompt }],
   }
+  if (config.system) reqObj.system = config.system
+  if (anthropicSupportsEffort(model)) reqObj.output_config = { effort }
+  // Thinking is always on for these models; summarized display streams a
+  // readable account of the work into the progress log.
+  if (adaptive) reqObj.thinking = { type: 'adaptive', display: 'summarized' }
   if (tools?.length) {
-    reqObj.tools = tools
-    // Fable 5.1 rejects forced tool use; auto allows its adaptive thinking.
-    reqObj.tool_choice = model === 'claude-fable-5-1'
+    reqObj.tools = strict ? tools.map(tool => ({ ...tool, strict: true })) : tools
+    // Models that think adaptively get auto tool choice so they reason before
+    // writing the report (Fable 5.1, Opus 5.5 and Sonnet 5.5 reject forced
+    // choice outright). The system prompt names the tool; a missing call is
+    // retried once by runAgent.
+    reqObj.tool_choice = adaptive
       ? { type: 'auto', disable_parallel_tool_use: true }
       : toolChoice ?? { type: 'any' }
   }
   const body = JSON.stringify(reqObj)
-  onChunk(`[diag] model=${model} max_tokens=${maxTokens} stream=${stream} prompt=${(Buffer.byteLength(prompt) / 1024).toFixed(1)}KB\n`)
+  onChunk(`[diag] model=${model} effort=${anthropicSupportsEffort(model) ? effort : 'n/a'} max_tokens=${maxTokens} stream=${stream} strict=${strict && !!tools?.length} prompt=${(Buffer.byteLength(prompt) / 1024).toFixed(1)}KB system=${((config.system?.length ?? 0) / 1024).toFixed(1)}KB\n`)
 
   return new Promise((resolve, reject) => {
     const requestStart = Date.now()
@@ -157,8 +218,14 @@ function runAnthropic(
     let statusTimer: ReturnType<typeof setInterval>
     let deadlineTimer: ReturnType<typeof setTimeout>
     const elapsed = () => ((Date.now() - requestStart) / 1000).toFixed(1)
+    let lastThought = 0
     const parser = new AnthropicStream(toolChoice?.name, event => {
       if (parser.events === 1) onChunk(`[diag] first stream event: ${elapsed()}s\n`)
+      // Surface the latest summarized-thinking sentence at most every 4 s.
+      if (event.type === 'content_block_delta' && event.delta?.type === 'thinking_delta' && Date.now() - lastThought > 4000) {
+        const thought = parser.latestThought()
+        if (thought) { lastThought = Date.now(); onChunk(`[status] Thinking · ${thought}\n`) }
+      }
       if (event.type === 'message_start') {
         setPhase('Request accepted; waiting for model output')
         onChunk(`[diag] message_id=${event.message?.id ?? '?'} input_tokens=${event.message?.usage?.input_tokens ?? '?'}\n`)
@@ -211,13 +278,13 @@ function runAnthropic(
         `Anthropic received no data for 5 minutes while ${phase.toLowerCase()} (${elapsed()}s elapsed)`,
       ), { code: 'ETIMEDOUT' })), 300_000)
     }
-    function succeed(full: string): void {
+    function succeed(full: string, toolCalled: boolean): void {
       if (settled) return
       settled = true
       cleanup()
-      onChunk(`[diag] response complete: ${(Buffer.byteLength(full) / 1024).toFixed(1)}KB in ${elapsed()}s\n`)
+      onChunk(`[diag] response complete: ${(Buffer.byteLength(full) / 1024).toFixed(1)}KB in ${elapsed()}s tool_called=${toolCalled}\n`)
       onChunk('[status] Parsing coaching report…\n')
-      resolve(full)
+      resolve({ text: full, toolCalled })
       // message_stop completes SSE even if the HTTP connection stays open.
       res?.destroy()
       req?.destroy()
@@ -225,7 +292,7 @@ function runAnthropic(
     resetIdle()
     statusTimer = setInterval(progress, 4000)
     deadlineTimer = setTimeout(() => fail(Object.assign(new Error(
-      'Anthropic analysis exceeded the 15-minute total limit, including retries. Try the Top 3 lap filter to reduce the analysis size.',
+      `Anthropic analysis exceeded the ${deadlineMinutes}-minute total limit, including retries. Try the Top 3 overall lap filter to reduce the analysis size.`,
     ), { retryable: false })), Math.max(0, deadline - Date.now()))
     progress()
 
@@ -263,7 +330,7 @@ function runAnthropic(
             if (httpError) rawBody = (rawBody + decoder.write(chunk)).slice(0, 16_384)
             else if (stream) {
               parser.push(chunk)
-              if (parser.done) succeed(parser.finish())
+              if (parser.done) succeed(parser.finish(), parser.toolCalled)
             } else rawBody += decoder.write(chunk)
           } catch (error) { fail(error as Error) }
         })
@@ -273,7 +340,7 @@ function runAnthropic(
             if (httpError) {
               throw Object.assign(new Error(`Anthropic API ${status}: ${rawBody.slice(0, 500)}`), { status })
             }
-            if (stream) { succeed(parser.finish()); return }
+            if (stream) { succeed(parser.finish(), parser.toolCalled); return }
             let result: any
             try { result = JSON.parse(rawBody + decoder.end()) } catch {
               throw new Error('Anthropic returned an invalid JSON response')
@@ -284,7 +351,7 @@ function runAnthropic(
             const full = tool?.input ? JSON.stringify(tool.input) : (result.content ?? [])
               .filter((block: any) => block.type === 'text').map((block: any) => block.text ?? '').join('')
             if (!full.trim()) throw new Error('Anthropic response ended without a coaching report')
-            succeed(full)
+            succeed(full, !!tool?.input)
           } catch (error) { fail(error as Error) }
         })
         if (!httpError && stream && !contentType.includes('text/event-stream')) {
@@ -311,8 +378,10 @@ async function runOpenAI(
   maxTokens: number,
   tools?: object[],
   toolChoice?: { type: 'tool'; name: string },
-  reasoningEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'xhigh',
+  reasoningEffort: ReasoningEffort = DEFAULT_REASONING_EFFORT,
   streaming = true,
+  system?: string,
+  deadlineMs = DEFAULT_DEADLINE_MS,
 ): Promise<string> {
   // The app's canonical schema uses Anthropic's input_schema spelling. Convert
   // it at the provider boundary so both providers are constrained identically.
@@ -329,13 +398,15 @@ async function runOpenAI(
   const reqObj: ResponseCreateParamsNonStreaming = {
     model,
     input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
-    reasoning: { effort: reasoningEffort },
+    // Reasoning summaries stream into the progress log while the model works.
+    reasoning: { effort: reasoningEffort, summary: 'auto' },
     max_output_tokens: maxTokens,
     // Reasoning can take several minutes. Background mode lets the provider
     // continue the job independently while a stream reconnects.
     background: true,
     store: false,
   }
+  if (system) reqObj.instructions = system
   if (openAiTools.length) {
     reqObj.tools = openAiTools
     reqObj.tool_choice = toolChoice
@@ -354,7 +425,7 @@ async function runOpenAI(
     maxRetries: OPENAI_MAX_RETRIES,
   })
   const requestStart = Date.now()
-  const response = await receiveOpenAiResponse(client, reqObj, onChunk, streaming, isTransientProviderError)
+  const response = await receiveOpenAiResponse(client, reqObj, onChunk, streaming, isTransientProviderError, deadlineMs)
 
   if (response.status === 'failed') {
     throw new Error(`OpenAI background analysis failed: ${response.error?.message ?? 'unknown provider error'}`)

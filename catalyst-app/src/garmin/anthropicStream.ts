@@ -1,7 +1,8 @@
 import { StringDecoder } from 'node:string_decoder'
 
 // Decode SSE incrementally: neither UTF-8 characters, lines, nor events are
-// guaranteed to align with network chunks. Never expose thinking text in logs.
+// guaranteed to align with network chunks. Only summarized thinking (requested
+// with display "summarized") is surfaced, one sentence at a time.
 export class AnthropicStream {
   private decoder = new StringDecoder('utf8')
   private pending = ''
@@ -14,6 +15,7 @@ export class AnthropicStream {
   lastEvent = 'none'
   reportChars = 0
   thinkingChars = 0
+  private thinking = ''
 
   constructor(
     private toolName: string | undefined,
@@ -71,6 +73,7 @@ export class AnthropicStream {
         this.reportChars += (delta.partial_json ?? '').length
       } else if (delta?.type === 'thinking_delta') {
         this.thinkingChars += (delta.thinking ?? '').length
+        this.thinking = (this.thinking + (delta.thinking ?? '')).slice(-2000)
       }
     }
     if (event.type === 'content_block_stop') {
@@ -80,6 +83,18 @@ export class AnthropicStream {
     if (event.type === 'message_delta') this.stopReason = event.delta?.stop_reason ?? this.stopReason
     if (event.type === 'message_stop') this.done = true
     this.onEvent(event)
+  }
+
+  // The most recent complete sentence of the thinking summary, trimmed for a
+  // one-line status.
+  latestThought(): string {
+    const sentences = this.thinking.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/).filter(s => /[.!?]$/.test(s))
+    const last = sentences.at(-1) ?? ''
+    return last.length > 140 ? last.slice(0, 137) + '…' : last
+  }
+
+  get toolCalled(): boolean {
+    return [...this.blocks.values()].some(block => block.type === 'tool_use' && (!this.toolName || block.name === this.toolName))
   }
 
   finish(): string {
@@ -108,7 +123,7 @@ export class AnthropicStream {
 
 export function checkAnthropicStopReason(reason: string | undefined): void {
   if (reason === 'max_tokens') {
-    throw new Error('Anthropic reached the output token limit before finishing the coaching report. Try the Top 3 lap filter to reduce the analysis size.')
+    throw new Error('Anthropic reached the output token limit before finishing the coaching report. Try the Top 3 overall lap filter to reduce the analysis size.')
   }
   if (reason && !['end_turn', 'tool_use', 'stop_sequence'].includes(reason)) {
     throw new Error(`Anthropic did not complete the coaching report (stop_reason=${reason})`)

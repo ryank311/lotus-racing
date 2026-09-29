@@ -6,8 +6,10 @@ import { reportAnalysisUrl, segment } from '../routes'
 import { api } from '../api'
 import { CoachProgress } from '../components/CoachProgress'
 import { ReviewCoachContent } from '../components/ReviewCharts'
-import type { CoachingSession, CoachAnnotation } from '../../shared/types'
+import type { CoachingResult, CoachingSession, CoachSetupRec, FocusVerdict } from '../../shared/types'
 import { replaceSessionIds, sanitizeCoachingResult, type SessionAliasMap } from '../../shared/sessionIdentity'
+import { coachingLapFilter, DEFAULT_LAP_FILTER, LAP_FILTERS, lapFilterLabel, type LapFilter } from '../../shared/coachingScope'
+import './pages-extras.css'
 
 function fallbackSessionAliases(session: CoachingSession): SessionAliasMap {
   return Object.fromEntries(
@@ -20,10 +22,9 @@ interface Props {
   selected: Set<string>
   busy: string | null
   setBusy: (b: 'sync' | 'load' | 'coach' | null) => void
-  onLoadSession: (session: CoachingSession) => void
 }
 
-export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }: Props) {
+export function AICoach({ refreshTick, selected, busy, setBusy }: Props) {
   const { id } = useRoute()
   const { go } = useNavigation()
   const history = useResource(() => api.listCoachSessions(), '', refreshTick)
@@ -33,6 +34,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
   const [err, setErr] = useState<string | null>(null)
   const [runLog, setRunLog] = useState<string[]>([])
   const [running, setRunning] = useState(false)
+  const [lapFilter, setLapFilter] = useState<LapFilter>(DEFAULT_LAP_FILTER)
   const [detailLoading, setDetailLoading] = useState(!!id)
   const [detailAttempt, setDetailAttempt] = useState(0)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -63,8 +65,8 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
     setRunLog([])
     setErr(null)
 
-    // Get the active profile from the app settings
-    const profile = await api.getActiveProfile() ?? 'Lotus'
+    // Empty lets the server resolve the profile linked to the sessions' car.
+    const profile = (await api.getActiveProfile()) ?? ''
 
     const unsub = api.onWorker(evt => {
       if (evt.kind !== 'coach') return
@@ -75,13 +77,8 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
         unsub()
         setRunning(false)
         setBusy(null)
-        const sessionId = evt.payload
-        void loadSessions().then(async () => {
-          if (sessionId) {
-            const s = await api.getCoachSession(sessionId)
-            // Completion updates the list; only a user action changes routes.
-          }
-        })
+        // Completion updates the list; only a user action changes routes.
+        void loadSessions()
       }
       if (evt.type === 'error') {
         unsub()
@@ -96,6 +93,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
         profile,
         scope: 'overview',
         sessionGuids: [...selected],
+        lapFilter,
       })
     } catch (e: any) {
       unsub()
@@ -121,7 +119,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
         </div>
         <div className="page-meta">
           <InlineLoadStatus label="coaching history" pending={history.pending} error={history.error} hasData={history.data !== undefined} onRetry={loadSessions} />
-          {history.data !== undefined && <>{sessions.length} sessions<br /></>}
+          {history.data !== undefined && <>{sessions.length} {sessions.length === 1 ? 'report' : 'reports'}<br /></>}
           <span className="muted">{selected.size} selected</span>
         </div>
       </header>
@@ -135,6 +133,10 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
           >
             {running ? 'Coaching…' : `Ask Coach${selected.size > 0 ? ` (${selected.size} sessions)` : ''}`}
           </button>
+          <select className="analysis-lap-select" aria-label="Laps the coach analyses"
+            value={lapFilter} disabled={!!busy} onChange={e => setLapFilter(e.target.value as LapFilter)}>
+            {LAP_FILTERS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
           {selected.size === 0 && (
             <span className="muted text-mono" style={{ fontSize: 10, marginLeft: 8 }}>
               Select sessions on the Sessions tab first
@@ -193,7 +195,7 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
           {/* Session detail */}
           <div className="viewer-pane" style={{ padding: 0 }}>
             {detailLoading ? <div data-route-loading><InlineLoadStatus pending label="report" /><LoadingRows count={3} /></div> : detailError ? <div role="alert">{detailError} <button className="btn ghost" onClick={() => setDetailAttempt(n => n + 1)}>Retry report</button> <NavLink to="/coach">All reports</NavLink></div> : current
-              ? <SessionViewer session={current} onLoad={onLoadSession} onDelete={deleteSession} />
+              ? <SessionViewer session={current} onDelete={deleteSession} />
               : <div className="muted" style={{ padding: 28, fontFamily: 'var(--font-mono)', fontSize: 11 }}>
                   Select a coaching session to view it.
                 </div>
@@ -205,9 +207,8 @@ export function AICoach({ refreshTick, selected, busy, setBusy, onLoadSession }:
   )
 }
 
-function SessionViewer({ session, onLoad, onDelete }: {
+function SessionViewer({ session, onDelete }: {
   session: CoachingSession
-  onLoad: (s: CoachingSession) => void
   onDelete: (s: CoachingSession) => void
 }) {
   const [showRaw, setShowRaw] = useState(false)
@@ -265,6 +266,8 @@ function SessionViewer({ session, onLoad, onDelete }: {
         </div>
       </div>
 
+      {r?.version === 2 && <LastFocusReview result={r} />}
+
       {r?.strengths && r.strengths.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <h3 className="coach-section-title">Keep doing</h3>
@@ -274,8 +277,10 @@ function SessionViewer({ session, onLoad, onDelete }: {
         </div>
       )}
 
+      {r?.version === 2 && <FocusTips result={r} />}
+
       {/* Tips */}
-      {r?.tips && r.tips.length > 0 && (
+      {r?.version !== 2 && r?.tips && r.tips.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <h3 className="coach-section-title">Tips</h3>
           {r.tips.map((tip, i) => (
@@ -296,6 +301,8 @@ function SessionViewer({ session, onLoad, onDelete }: {
           ))}
         </div>
       )}
+
+      {r && (r.version === 2 || (r.setup?.length ?? 0) > 0) && <SetupRecommendations setup={r.setup ?? []} />}
 
       {r?.next_session_plan && r.next_session_plan.length > 0 && (
         <div style={{ marginBottom: 20 }}>
@@ -335,6 +342,7 @@ function SessionViewer({ session, onLoad, onDelete }: {
         letterSpacing: '0.1em', marginBottom: 12,
       }}>
         {session.profile_name} · {session.model_used} · {session.session_guids.length} session(s)
+        {' · '}{lapFilterLabel(coachingLapFilter(session))}
         {' · '}{session.created_at.slice(0, 16).replace('T', ' ')}
       </div>
 
@@ -361,27 +369,102 @@ function SessionViewer({ session, onLoad, onDelete }: {
   )
 }
 
-function severityColor(s: 1 | 2 | 3 | undefined) {
-  if (s === 3) return 'var(--signal)'
-  if (s === 2) return 'var(--amber)'
-  return 'var(--cyan)'
+const CONFIDENCE_LABEL = { 1: 'low', 2: 'medium', 3: 'high' } as const
+const VERDICT_LABEL: Record<FocusVerdict, string> = {
+  met: 'Met', improved: 'Improved', no_change: 'No change', worse: 'Worse', not_measured: 'Not measured',
 }
 
-function AnnotationPill({ annotation: a }: { annotation: CoachAnnotation }) {
+function verdictTone(verdict: string): string {
+  if (verdict === 'met' || verdict === 'improved') return 'good'
+  if (verdict === 'worse') return 'bad'
+  return ''
+}
+
+function Evidence({ items }: { items?: string[] }) {
+  const lines = (items ?? []).filter(Boolean)
+  if (!lines.length) return null
   return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-      background: 'var(--bg-elev)', border: `1px solid ${severityColor(a.severity)}`,
-      borderRadius: 2, padding: '2px 7px',
-      fontFamily: 'var(--font-mono)', fontSize: 9, color: severityColor(a.severity),
-      letterSpacing: '0.1em',
-    }}>
-      <span style={{
-        width: 5, height: 5, borderRadius: '50%',
-        background: severityColor(a.severity),
-        display: 'inline-block', flexShrink: 0,
-      }} />
-      {a.ref} — {a.body.slice(0, 80)}{a.body.length > 80 ? '…' : ''}
-    </span>
+    <details className="coach-evidence">
+      <summary>Evidence ({lines.length})</summary>
+      <ul>{lines.map((line, i) => <li key={i}>{line}</li>)}</ul>
+    </details>
+  )
+}
+
+// Measured results for the focus set by the previous report on this layout.
+function LastFocusReview({ result }: { result: CoachingResult }) {
+  const reviews = result.previous_focus_review ?? []
+  if (!reviews.length) return null
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <h3 className="coach-section-title">Last focus</h3>
+      {reviews.map(review => {
+        const m = review.measured
+        const verdict = m?.verdict ?? review.verdict
+        return (
+          <div key={review.focusId} className="coach-card">
+            <div className="coach-review-head">
+              <span className={`coach-verdict ${verdictTone(verdict)}`}>
+                {VERDICT_LABEL[verdict as FocusVerdict] ?? verdict.replace(/_/g, ' ')}
+              </span>
+              {m && <span className="coach-card-kicker">{m.complexName} · {m.metricLabel}</span>}
+            </div>
+            {m?.cue && <div className="coach-cue">{m.cue}</div>}
+            {m && (
+              <div className="coach-metric">
+                {m.display.baseline} → {m.display.current} <span className="muted">(target {m.display.target})</span>
+                {m.laps > 0 && <span className="muted"> · {m.laps} {m.laps === 1 ? 'lap' : 'laps'}</span>}
+              </div>
+            )}
+            {review.comment && <div className="coach-body" style={{ marginTop: 6 }}>{review.comment}</div>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// Version 2 tips mirror the focus items one to one, with the measured target.
+function FocusTips({ result }: { result: CoachingResult }) {
+  if (!result.tips.length) return null
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <h3 className="coach-section-title">Focus</h3>
+      {result.tips.map((tip, i) => {
+        const focus = result.focus?.[i]
+        const meta = [
+          tip.estimated_gain_ms != null && tip.estimated_gain_ms > 0 ? `~${(tip.estimated_gain_ms / 1000).toFixed(2)} s available` : null,
+          tip.confidence ? `${CONFIDENCE_LABEL[tip.confidence]} confidence` : focus ? `${focus.confidence} confidence` : null,
+        ].filter(Boolean)
+        return (
+          <div key={i} className="coach-card">
+            <div className="coach-card-kicker">{tip.section}{tip.priority ? ` · P${tip.priority}` : ''}</div>
+            {tip.cue && <div className="coach-cue">“{tip.cue}”</div>}
+            <div className="coach-body">{tip.body}</div>
+            {tip.success_metric && <div className="coach-metric">Success: {tip.success_metric}</div>}
+            {meta.length > 0 && <div className="coach-meta">{meta.join(' · ')}</div>}
+            <Evidence items={tip.evidence} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function SetupRecommendations({ setup }: { setup: CoachSetupRec[] }) {
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <h3 className="coach-section-title">Car setup</h3>
+      {setup.length === 0 && <div className="coach-card coach-body">No setup change recommended.</div>}
+      {setup.map((rec, i) => (
+        <div key={i} className="coach-card">
+          <div className="coach-card-kicker">{rec.area}</div>
+          <div className="coach-cue">{rec.change}</div>
+          {rec.rationale && <div className="coach-body">{rec.rationale}</div>}
+          {rec.confidence && <div className="coach-meta">{CONFIDENCE_LABEL[rec.confidence]} confidence</div>}
+          <Evidence items={rec.evidence} />
+        </div>
+      ))}
+    </div>
   )
 }

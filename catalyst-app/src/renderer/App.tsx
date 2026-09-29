@@ -280,11 +280,6 @@ export function App() {
     else go(sessionsParent)
   }
 
-  // Load a coaching session into the Analysis tab.
-  const loadCoachSession = (session: CoachingSession) => {
-    go(reportAnalysisUrl(session))
-  }
-
   return (
     <div className="app-shell">
       <Sidebar
@@ -336,7 +331,6 @@ export function App() {
                   selected={selected}
                   busy={busy}
                   setBusy={setBusy}
-                  onLoadSession={loadCoachSession}
                 />
               ) : <SignedOutGate feature="AI Coach" onSignIn={openLogin} />
             )}

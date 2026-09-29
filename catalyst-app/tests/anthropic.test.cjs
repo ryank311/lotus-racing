@@ -7,7 +7,7 @@ const { COACHING_TOOL } = require('../dist-main/garmin/coachingTool.js')
 
 const config = {
   provider: 'anthropic', apiKey: 'fixture', model: 'claude-fable-5-1', stream: true,
-  tools: [COACHING_TOOL], toolChoice: { type: 'tool', name: COACHING_TOOL.name },
+  tools: [COACHING_TOOL], toolChoice: { type: 'tool', name: COACHING_TOOL.name }, deadlineMs: 15 * 60_000,
 }
 const event = value => Buffer.from(`event: ${value.type}\r\ndata: ${JSON.stringify(value)}\r\n\r\n`)
 const start = { type: 'message_start', message: { id: 'msg_fixture', usage: { input_tokens: 123 } } }
@@ -52,7 +52,7 @@ test('Fable streams real progress before completion and preserves indexed tool J
     const res = req.respond()
     res.send(start,
       { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
-      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'PRIVATE REASONING' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Comparing Oak Tree exits. Still working' } },
       blockStop(0),
       { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
       { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Here is your report.' } },
@@ -62,7 +62,8 @@ test('Fable streams real progress before completion and preserves indexed tool J
     assert.match(logs.join(''), /Model is thinking/)
     assert.match(logs.join(''), /Receiving coaching report/)
     assert.match(logs.join(''), /input_tokens=123/)
-    assert.doesNotMatch(logs.join(''), /PRIVATE REASONING/)
+    assert.match(logs.join(''), /\[status\] Thinking · Comparing Oak Tree exits\./)
+    assert.doesNotMatch(logs.join(''), /Still working/)
     await flush()
     assert.equal(completed, false, 'must not return partial JSON')
     res.send(toolDelta('later"}', 2), blockStop(2),
@@ -72,10 +73,62 @@ test('Fable streams real progress before completion and preserves indexed tool J
     assert.equal(res.destroyed, true, 'message_stop finishes without waiting for HTTP end')
     assert.match(logs.join(''), /output_tokens=42 stop_reason=tool_use/)
   }
-  assert.deepEqual(requests[0].body.tool_choice, { type: 'auto', disable_parallel_tool_use: true })
-  assert.equal(requests[0].body.thinking, undefined)
-  assert.deepEqual(requests[1].body.tool_choice, { type: 'tool', name: COACHING_TOOL.name })
+  for (const request of requests) {
+    // Adaptive-thinking models reason before answering, at x-high by default.
+    assert.deepEqual(request.body.tool_choice, { type: 'auto', disable_parallel_tool_use: true })
+    assert.deepEqual(request.body.thinking, { type: 'adaptive', display: 'summarized' })
+    assert.deepEqual(request.body.output_config, { effort: 'xhigh' })
+    assert.equal(request.body.tools[0].strict, true)
+  }
   assert.equal(requests[0].options.headers['x-api-key'], 'fixture')
+})
+
+test('Haiku keeps forced tool choice without effort or thinking settings', async t => {
+  const requests = mockTransport(t)
+  const pending = runAgent('prompt', { ...config, model: 'claude-haiku-4-5-20251001' }, () => {})
+  requests[0].respond().send(...report('{"headline":"Brake later"}'))
+  await pending
+  assert.deepEqual(requests[0].body.tool_choice, { type: 'tool', name: COACHING_TOOL.name })
+  assert.equal(requests[0].body.output_config, undefined)
+  assert.equal(requests[0].body.thinking, undefined)
+})
+
+test('system prompt is sent separately from the data', async t => {
+  const requests = mockTransport(t)
+  const pending = runAgent('data only', { ...config, system: 'You are the coach.' }, () => {})
+  requests[0].respond().send(...report('{"headline":"Brake later"}'))
+  await pending
+  assert.equal(requests[0].body.system, 'You are the coach.')
+  assert.deepEqual(requests[0].body.messages, [{ role: 'user', content: 'data only' }])
+})
+
+test('a prose answer without the report tool is retried once with an explicit instruction', async t => {
+  const requests = mockTransport(t)
+  const logs = []
+  const pending = runAgent('prompt', config, text => logs.push(text))
+  requests[0].respond().send(start,
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Here is a prose report.' } },
+    blockStop(0), usage('end_turn'), stop)
+  await flush()
+  await flush()
+  requests[1].respond().send(...report('{"headline":"Recovered"}'))
+  assert.equal(await pending, '{"headline":"Recovered"}')
+  assert.match(requests[1].body.messages[0].content, /did not call submit_coaching_report/)
+  assert.match(logs.join(''), /answered without the report tool/)
+})
+
+test('a rejected strict schema falls back to the same request without strict', async t => {
+  const requests = mockTransport(t)
+  const pending = runAgent('prompt', config, () => {})
+  const res = requests[0].respond(400, 'application/json')
+  res.emit('data', Buffer.from('{"error":{"message":"tools.0.strict: schema not supported"}}'))
+  res.emit('end')
+  await flush()
+  await flush()
+  requests[1].respond().send(...report('{"headline":"Recovered"}'))
+  assert.equal(await pending, '{"headline":"Recovered"}')
+  assert.equal(requests[0].body.tools[0].strict, true)
+  assert.equal(requests[1].body.tools[0].strict, undefined)
 })
 
 test('SSE survives split UTF-8, CRLF, partial lines, pings, and future events', async t => {

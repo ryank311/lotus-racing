@@ -5,13 +5,25 @@
 
 import { PALETTE, LAP_PALETTE } from './chartTheme'
 import type { LineSeries } from './Charts'
-import type { AnalysisData } from '../../garmin/analysisData'
+import type { AnalysisData, LapMeta, TimeDeltaTrace } from '../../garmin/analysisData'
+
+// One colour per lap on every chart and the map: the fastest lap is signal
+// orange, the rest use the stable palette slot the server assigned.
+export function lapColor(lap: Pick<LapMeta, 'isBest' | 'colorIndex'>): string {
+  return lap.isBest ? PALETTE.signal : LAP_PALETTE[(lap.colorIndex ?? 0) % LAP_PALETTE.length]
+}
+
+// "May 24 16:15 · L3" — falls back to the lap number for payloads built
+// before labels existed (a renderer left open across a server restart).
+export function lapName(lap: Pick<LapMeta, 'label' | 'lapIdx'>): string {
+  return lap.label || `L${lap.lapIdx + 1}`
+}
 
 export function speedSeries(data: AnalysisData): LineSeries[] {
-  return data.speedTraces.map((t, i) => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,
+  return data.speedTraces.map(t => ({
+    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist, ys: t.speed_mph,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+    color: lapColor(t),
     width: t.isBest ? 2.5 : 1.4, opacity: t.isBest ? 1 : 0.6,
   }))
 }
@@ -35,7 +47,7 @@ export function speedDeltaSeries(data: AnalysisData): LineSeries[] {
     ?? [...data.speedTraces].filter(trace => trace.durationMs > 0).sort((a, b) => a.durationMs - b.durationMs)[0]
   if (!reference) return []
 
-  return data.speedTraces.map((trace, i) => {
+  return data.speedTraces.map(trace => {
     const xs: number[] = []
     const ys: number[] = []
     for (let j = 0; j < trace.dist.length; j++) {
@@ -46,10 +58,10 @@ export function speedDeltaSeries(data: AnalysisData): LineSeries[] {
     }
     return {
       id: `${trace.sg}-${trace.lapIdx}`,
-      label: `${trace.isBest ? '★ ref ' : ''}L${trace.lapIdx + 1}`,
+      label: `${trace.isBest ? '★ ref ' : ''}${lapName(trace)}`,
       xs,
       ys,
-      color: trace.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+      color: lapColor(trace),
       width: trace.isBest ? 1.8 : 1.4,
       opacity: trace.isBest ? 0.85 : 0.65,
     }
@@ -57,43 +69,53 @@ export function speedDeltaSeries(data: AnalysisData): LineSeries[] {
 }
 
 export function lateralSeries(data: AnalysisData): LineSeries[] {
-  return data.lateralTraces.map((t, i) => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,
+  return data.lateralTraces.map(t => ({
+    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist, ys: t.pos,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+    color: lapColor(t),
     width: t.isBest ? 2.5 : 1.2, opacity: t.isBest ? 1 : 0.5,
   }))
 }
 
 export function timeDeltaSeries(data: AnalysisData): LineSeries[] {
-  return (data.timeDeltaTraces ?? []).map((t, i) => ({
+  return (data.timeDeltaTraces ?? []).map(t => ({
     id: `${t.sg}-${t.lapIdx}`,
-    label: `${t.isBest ? '★ ref ' : ''}${t.sgShort}… L${t.lapIdx + 1}`,
+    label: `${t.isBest ? '★ ref ' : ''}${lapName(t)}`,
     xs: t.dist,
     ys: t.delta_s,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+    color: lapColor(t),
     width: t.isBest ? 1.8 : 1.5,
     opacity: t.isBest ? 0.8 : 0.75,
   }))
 }
 
-export function optimalTimeDeltaSeries(data: AnalysisData): LineSeries[] {
-  return (data.optimalTimeDeltaTraces ?? []).map((t, i) => ({
+// Every lap against a virtual reference lap (the theoretical best or Garmin's
+// optimal lap); the fastest real lap is drawn prominently.
+function referenceDeltaSeries(traces: TimeDeltaTrace[] | undefined): LineSeries[] {
+  return (traces ?? []).map(t => ({
     id: `${t.sg}-${t.lapIdx}`,
-    label: `${t.isBest ? '★ best ' : ''}${t.sgShort}… L${t.lapIdx + 1}`,
+    label: `${t.isBest ? '★ best ' : ''}${lapName(t)}`,
     xs: t.dist,
     ys: t.delta_s,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+    color: lapColor(t),
     width: t.isBest ? 2.4 : 1.5,
     opacity: t.isBest ? 1 : 0.72,
   }))
 }
 
+export function optimalTimeDeltaSeries(data: AnalysisData): LineSeries[] {
+  return referenceDeltaSeries(data.optimalTimeDeltaTraces)
+}
+
+export function garminOptimalTimeDeltaSeries(data: AnalysisData): LineSeries[] {
+  return referenceDeltaSeries(data.garminOptimalTimeDeltaTraces)
+}
+
 export function longGSeries(data: AnalysisData): LineSeries[] {
-  return data.longgTraces.map((t, i) => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}L${t.lapIdx + 1}`,
+  return data.longgTraces.map(t => ({
+    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist, ys: t.long_g,
-    color: t.isBest ? PALETTE.signal : LAP_PALETTE[i % LAP_PALETTE.length],
+    color: lapColor(t),
     width: t.isBest ? 2.5 : 1.2, opacity: t.isBest ? 1 : 0.5,
   }))
 }

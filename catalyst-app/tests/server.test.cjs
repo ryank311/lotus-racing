@@ -256,7 +256,7 @@ test('startup migrates legacy AI keys once, removes JSON secrets, and upgrades o
       body: JSON.stringify({ channel: 'ai:getSettings', args: [] }),
     })
     const settings = (await response.json()).result
-    assert.equal(settings.model, username === 'Alice' ? 'claude-opus-5' : 'claude-sonnet-5')
+    assert.equal(settings.model, username === 'Alice' ? 'claude-opus-5-5' : 'claude-sonnet-5-5')
     assert.equal(settings.hasAnthropicApiKey, true)
   }
   await store.write({ anthropic: '' })

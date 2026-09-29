@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useResource } from '../useResource'
 import { InlineLoadStatus, Skeleton, StatValue } from '../components/Loading'
 import { AI_MODELS, defaultModelFor } from '../../shared/aiModels'
-import type { AuthState, SyncStats, AiSettings } from '../../shared/types'
-import { humaniseBytes, api } from '../api'
+import type { AuthState, SyncStats, AiSettings, DashboardLayout, DbSessionRow, FocusStatus, FocusVerdict } from '../../shared/types'
+import { humaniseBytes, api, msToLap } from '../api'
 import { useUnits } from '../units'
 import type { UnitSystem } from '../../shared/units'
 import { NavLink, useNavigation } from '../navigation'
-import { segment } from '../routes'
+import { routeUrl, segment } from '../routes'
+import './home-dashboard.css'
 
 interface Props {
   auth: AuthState | null
@@ -29,13 +30,17 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
   const { lastSessions } = useNavigation()
   const initialLoading = !stats && statsPending
   const [syncMenuOpen, setSyncMenuOpen] = useState(false)
-  const [latestSession, setLatestSession] = useState<string | null>(null)
+  // Newest first; undefined until the list has loaded.
+  const [recentRows, setRecentRows] = useState<DbSessionRow[] | undefined>(undefined)
   useEffect(() => {
     let cancelled = false
-    if (!stats?.sessionCount) setLatestSession(null)
-    if ((stats?.sessionCount ?? 0) > 0) void api.listSessions().then(rows => { if (!cancelled) setLatestSession(rows[0]?.session_guid ?? null) }).catch(() => {})
+    if (stats && !stats.sessionCount) setRecentRows([])
+    if ((stats?.sessionCount ?? 0) > 0) void api.listSessions().then(rows => { if (!cancelled) setRecentRows(rows) }).catch(() => { if (!cancelled) setRecentRows([]) })
     return () => { cancelled = true }
   }, [stats?.sessionCount, stats?.sampleCount, busy])
+  const latest = recentRows && latestSessionCallout(recentRows)
+  // Hold the space empty until we know which entry to show, so it never swaps.
+  const entryKnown = recentRows !== undefined || (!!stats && !stats.sessionCount) || !!statsError
   const syncMenuRef = useRef<HTMLDivElement>(null)
   const syncCaretRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -54,6 +59,11 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
     }
   }, [syncMenuOpen])
   useEffect(() => { if (busy) setSyncMenuOpen(false) }, [busy])
+  // Reload the dashboard when synced data changes, but not mid-sync: the
+  // latest totals apply once the worker finishes.
+  const dataKey = stats ? `${stats.sessionCount}:${stats.lapCount}:${stats.lastSyncEpoch ?? ''}` : statsError ? 'stats-unavailable' : null
+  const [dashboardRevision, setDashboardRevision] = useState(dataKey)
+  useEffect(() => { setDashboardRevision(previous => !busy || previous === null ? dataKey : previous) }, [dataKey, busy])
   return (
     <>
       <header className="page-header">
@@ -80,7 +90,7 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
                   : <>No telemetry yet — sync your first session</>}
             </div>
             <div className="banner-sub">
-              {initialLoading ? <Skeleton /> : stats ? <>{stats.sampleCount.toLocaleString()} samples · last sync {stats.lastSyncAgoHuman ?? 'never'}</> : 'Session summary unavailable'}
+              {initialLoading ? <Skeleton /> : stats ? <>{stats.sampleCount?.toLocaleString() ?? '—'} samples · last sync {stats.lastSyncAgoHuman ?? 'never'}</> : 'Session summary unavailable'}
             </div>
           </div>
           <div className="btn-row" style={{ margin: 0 }}>
@@ -111,16 +121,18 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
           </div>
         </div>
 
-        <div className="home-workflow">
-          <NavLink className="workflow-link" to={lastSessions()}>
-            <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
-          </NavLink>
-          <div className="home-latest-slot">{latestSession && <NavLink to={`/review/${segment(latestSession)}`}>Review latest session →</NavLink>}</div>
+        <div className="home-workflow" aria-busy={!entryKnown}>
+          {latest ? <LatestSessionCallout latest={latest} reviewAll={lastSessions()} />
+            : entryKnown && <NavLink className="workflow-link" to={lastSessions()}>
+              <span><strong>Review your driving</strong><small>Pick sessions · compare laps · get coaching</small></span><span aria-hidden="true">→</span>
+            </NavLink>}
         </div>
+
+        <Dashboard revision={dashboardRevision} archiveEmpty={stats?.sessionCount === 0} />
 
         <div className="stat-grid" aria-label="Telemetry summary" aria-busy={statsPending} data-route-loading={initialLoading || undefined}>
           <Tile label="Sessions in DB" loading={initialLoading} value={stats ? String(stats.sessionCount) : '—'} />
-          <Tile label="Driven laps" loading={initialLoading} value={stats ? stats.lapCount.toLocaleString() : '—'} />
+          <Tile label="Driven laps" loading={initialLoading} value={stats?.lapCount?.toLocaleString() ?? '—'} />
           <Tile label="Tracks" loading={initialLoading} value={stats ? String(stats.trackCount) : '—'} />
           <Tile label="Last sync" loading={initialLoading} value={stats ? stats.lastSyncAgoHuman ?? 'never' : '—'} />
         </div>
@@ -134,6 +146,225 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
       </div>
 
     </>
+  )
+}
+
+// ── Driver dashboard: one card per car and track layout ─────────────────────
+
+const DASHBOARD_PREVIEW = 4
+
+const VERDICTS: Record<FocusVerdict, { label: string; tone: 'good' | 'neutral' | 'bad' }> = {
+  met: { label: 'Target met', tone: 'good' },
+  improved: { label: 'Improving', tone: 'good' },
+  no_change: { label: 'No change yet', tone: 'neutral' },
+  not_measured: { label: 'Not measured', tone: 'neutral' },
+  worse: { label: 'Went backwards', tone: 'bad' },
+}
+
+const seconds = (ms: number) => `${(Math.abs(ms) / 1000).toFixed(2)} s`
+
+function shortDate(iso: string): string | null {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+/** `revision` is null until the archive totals are known; the fetch waits for them. */
+// A session driven in the last two days is what you want at the track: it
+// becomes the Overview's main action. Older archives get the general entry.
+const RECENT_SESSION_MS = 48 * 3600_000
+
+interface LatestSession { row: DbSessionRow; startedAt: Date; sameDay: DbSessionRow[] }
+
+function latestSessionCallout(rows: DbSessionRow[], now = Date.now()): LatestSession | null {
+  const row = rows.find(r => r.session_start)
+  const startedAt = row?.session_start ? new Date(row.session_start.replace(' ', 'T')) : null
+  // Session times are local track time; allow for a device a zone or two away.
+  if (!row || !startedAt || Number.isNaN(+startedAt) || now - +startedAt > RECENT_SESSION_MS || +startedAt - now > 3 * 3600_000) return null
+  const day = row.session_start!.slice(0, 10)
+  const sameLayout = (r: DbSessionRow) => r.vehicle_guid === row.vehicle_guid && (r.layout_key && row.layout_key
+    ? r.layout_key === row.layout_key
+    : r.track_name === row.track_name && r.track_configuration_name === row.track_configuration_name)
+  return { row, startedAt, sameDay: rows.filter(r => r.session_start?.slice(0, 10) === day && sameLayout(r)) }
+}
+
+function whenLabel(startedAt: Date, now = new Date()): { day: string; ago: string } {
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const days = Math.round((midnight.getTime() - new Date(startedAt.getFullYear(), startedAt.getMonth(), startedAt.getDate()).getTime()) / 86_400_000)
+  const time = startedAt.toTimeString().slice(0, 5)
+  const minutes = Math.max(0, Math.round((now.getTime() - startedAt.getTime()) / 60_000))
+  return {
+    day: `${days <= 0 ? 'Today' : days === 1 ? 'Yesterday' : startedAt.toLocaleDateString(undefined, { weekday: 'long' })} ${time}`,
+    ago: minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`,
+  }
+}
+
+function LatestSessionCallout({ latest, reviewAll }: { latest: LatestSession; reviewAll: string }) {
+  const { row, startedAt, sameDay } = latest
+  const when = whenLabel(startedAt)
+  const vehicle = [row.vehicle_year, row.vehicle_make, row.vehicle_model].filter(Boolean).join(' ')
+  const pb = row.best_lap_ms != null && row.layout_best_ms != null && row.best_lap_ms <= row.layout_best_ms
+  const track = [row.track_name, row.track_configuration_name].filter(Boolean).join(' · ') || 'Unknown track'
+  return <section className="home-latest" aria-label="Latest session">
+    <NavLink className="home-latest-main" to={`/review/${segment(row.session_guid)}`}>
+      <span className="home-latest-text">
+        <span className="home-latest-eyebrow">// latest session · {when.day} · {when.ago}</span>
+        <strong className="home-latest-track">{track}</strong>
+        <span className="home-latest-meta">
+          {vehicle && <span>{vehicle}</span>}
+          {row.lap_count > 0 && <span>{row.lap_count} {row.lap_count === 1 ? 'lap' : 'laps'}</span>}
+          {row.best_lap_ms != null && <span>best <b>{msToLap(row.best_lap_ms)}</b>{pb && <em className="home-latest-pb">PB</em>}</span>}
+          {!row.details_loaded && <span>Telemetry downloads when you open it</span>}
+        </span>
+      </span>
+      <span className="home-latest-cta">Review session <span aria-hidden="true">→</span></span>
+    </NavLink>
+    <nav className="home-latest-more" aria-label="More review options">
+      {sameDay.length > 1 && <NavLink to={routeUrl('/analysis', { session: sameDay.map(r => r.session_guid) })}>Compare {when.day.startsWith('Today') ? 'today’s' : 'that day’s'} {sameDay.length} sessions →</NavLink>}
+      <NavLink to={reviewAll}>Review your driving · pick sessions →</NavLink>
+    </nav>
+  </section>
+}
+
+function Dashboard({ revision, archiveEmpty }: { revision: string | null; archiveEmpty: boolean }) {
+  if (archiveEmpty) return <DashboardFrame><DashboardEmpty /></DashboardFrame>
+  if (revision === null) return <DashboardFrame status={<InlineLoadStatus label="tracks" pending />} loading><DashboardSkeleton /></DashboardFrame>
+  return <DashboardData revision={revision} />
+}
+
+function DashboardData({ revision }: { revision: string }) {
+  const resource = useResource(async () => (await api.getDashboard()) ?? [], '', revision)
+  const layouts = resource.data
+  const [showAll, setShowAll] = useState(false)
+  const status = <InlineLoadStatus label="tracks" pending={resource.pending} error={resource.error} hasData={!!layouts} onRetry={resource.reload} />
+  if (!layouts) return <DashboardFrame status={status} loading={resource.pending}>{resource.pending && <DashboardSkeleton />}</DashboardFrame>
+  if (!layouts.length) return <DashboardFrame status={status}><DashboardEmpty /></DashboardFrame>
+  const visible = showAll ? layouts : layouts.slice(0, DASHBOARD_PREVIEW)
+  return (
+    <DashboardFrame status={status}>
+      <div className="home-dash-grid">
+        {visible.map(layout => <LayoutCard key={layout.key} layout={layout} />)}
+      </div>
+      {layouts.length > DASHBOARD_PREVIEW && (
+        <button className="btn ghost home-dash-more" aria-expanded={showAll} onClick={() => setShowAll(open => !open)}>
+          {showAll ? 'Show fewer' : `Show all ${layouts.length}`}
+        </button>
+      )}
+    </DashboardFrame>
+  )
+}
+
+function DashboardFrame({ status, loading = false, children }: { status?: ReactNode; loading?: boolean; children: ReactNode }) {
+  return (
+    <section className="home-dash" aria-labelledby="home-dash-title" aria-busy={loading} data-route-loading={loading || undefined}>
+      <div className="home-dash-heading">
+        <h2 id="home-dash-title">Your tracks</h2>
+        {status}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function DashboardEmpty() {
+  return <p className="home-dash-empty">No lap data yet. Sync your sessions to see your PB and coaching focus for each track.</p>
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="home-dash-grid" aria-hidden="true">
+      {[0, 1].map(i => (
+        <div className="card home-dash-card home-dash-card-loading" key={i}>
+          <Skeleton />
+          <Skeleton variant="value" />
+          <Skeleton />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function LayoutCard({ layout }: { layout: DashboardLayout }) {
+  const { pb, lastSession, lastVsPbMs, garminOptimalMs, focus } = layout
+  const lastIsPb = !!pb && !!lastSession && lastSession.guid === pb.guid && lastVsPbMs != null && lastVsPbMs <= 0
+  const potentialMs = pb && garminOptimalMs != null && garminOptimalMs > 0 ? pb.ms - garminOptimalMs : null
+  const hasFocus = !!focus && focus.items.length > 0
+  const titleId = `home-dash-${layout.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  let lastDelta: ReactNode = null
+  if (lastIsPb) lastDelta = <span className="home-dash-delta is-gain">New PB</span>
+  else if (lastVsPbMs != null && lastVsPbMs <= 0) lastDelta = <span className="home-dash-delta is-gain">Matched PB</span>
+  else if (lastVsPbMs != null) lastDelta = <span className="home-dash-delta is-loss">+{seconds(lastVsPbMs)} to PB</span>
+  return (
+    <article className="card home-dash-card" aria-labelledby={titleId}>
+      <header className="home-dash-card-head">
+        <h3 id={titleId}>{layout.trackLabel}</h3>
+        <p>{layout.vehicleLabel} · {layout.sessionCount} session{layout.sessionCount === 1 ? '' : 's'}</p>
+      </header>
+
+      <div className={`home-dash-card-body${hasFocus ? ' has-focus' : ''}`}>
+        <div className="home-dash-times"><dl className="home-dash-metrics">
+          <div className="home-dash-metric home-dash-metric-pb">
+            <dt>PB</dt>
+            <dd className="home-dash-time">{pb ? msToLap(pb.ms) : '—'}</dd>
+            <dd className="home-dash-sub">{pb ? pb.label : 'No valid laps yet'}</dd>
+          </div>
+          <div className="home-dash-metric">
+            <dt>Last session</dt>
+            <dd className="home-dash-time">{lastSession?.bestMs != null ? msToLap(lastSession.bestMs) : '—'}</dd>
+            {lastDelta && <dd className="home-dash-sub">{lastDelta}</dd>}
+            <dd className="home-dash-sub">{!lastSession ? '—' : lastSession.bestMs == null ? `${lastSession.label} · no valid laps` : lastSession.label}</dd>
+          </div>
+          <div className="home-dash-metric">
+            <dt>Garmin optimal</dt>
+            <dd className="home-dash-time">{msToLap(garminOptimalMs)}</dd>
+            {potentialMs != null && potentialMs > 0 && <dd className="home-dash-sub"><span className="home-dash-potential">{seconds(potentialMs)}</span> potential</dd>}
+          </div>
+        </dl></div>
+
+        {hasFocus && focus && <FocusBlock focus={focus} />}
+      </div>
+
+      {lastSession && (
+        <div className="home-dash-actions">
+          <NavLink className="btn ghost home-dash-action" to={`/review/${segment(lastSession.guid)}`}>Review last session <span aria-hidden="true">→</span></NavLink>
+          <NavLink className="btn ghost home-dash-action" to={`/progress?anchor=${segment(lastSession.guid)}`}>Progress <span aria-hidden="true">→</span></NavLink>
+        </div>
+      )}
+    </article>
+  )
+}
+
+function FocusBlock({ focus }: { focus: FocusStatus }) {
+  const checks = new Map(focus.checks.map(check => [check.focusId, check]))
+  const setOn = shortDate(focus.createdAt)
+  return (
+    <section className="home-dash-focus" aria-label="Current focus">
+      <div className="home-dash-focus-head">
+        <span className="home-dash-label">Current focus{setOn && <span className="home-dash-focus-date"> · set {setOn}</span>}</span>
+        <NavLink to={`/coach/${segment(focus.reportId)}`} title={focus.reportTitle} aria-label={`Open coaching report: ${focus.reportTitle}`}>Report →</NavLink>
+      </div>
+      {focus.checks.length === 0 && <p className="home-dash-focus-note">Not driven since this focus was set</p>}
+      <ul className="home-dash-focus-list">
+        {focus.items.map(item => {
+          const check = checks.get(item.id)
+          const verdict = check ? VERDICTS[check.verdict] ?? VERDICTS.not_measured : null
+          return (
+            <li key={item.id}>
+              <div className="home-dash-cue">{item.cue?.trim() || item.change}</div>
+              <div className="home-dash-where">{[item.complexName, item.metricLabel].filter(Boolean).join(' · ')}</div>
+              <div className="home-dash-target">
+                target: <b>{item.display.target}</b> <span className="home-dash-was">({check ? 'was' : 'now'} {item.display.baseline})</span>
+              </div>
+              {check && verdict && (
+                <div className="home-dash-check">
+                  {check.verdict !== 'not_measured' && <span>last session: <b>{check.display.current}</b></span>}
+                  <span className={`chip home-dash-verdict is-${verdict.tone}`}>{verdict.label}</span>
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }
 

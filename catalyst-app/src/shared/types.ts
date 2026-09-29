@@ -1,6 +1,7 @@
 // Shared types between main and renderer processes.
 
 import type { UnitSystem } from './units.js'
+import type { LapFilter } from './coachingScope.js'
 import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
 
 export interface SessionSummary {
@@ -40,6 +41,11 @@ export interface DbSessionRow {
   track_name: string | null
   track_configuration_name: string | null
   best_lap_ms: number | null
+  temperature_c?: number | null
+  // Layout identity (mean line) and this car's best Garmin lap on it, so the
+  // list can flag PB sessions and warn about mixed selections.
+  layout_key?: string | null
+  layout_best_ms?: number | null
   lap_count: number
   sample_count: number
   weather_description: string | null
@@ -162,14 +168,117 @@ export interface CoachSetupRec {
   change: string      // the concrete adjustment, written to the driver
   rationale: string   // why — cites the corners/segments/laps that motivate it
   confidence?: 1 | 2 | 3  // 1 = speculative · 2 = likely · 3 = strong evidence
+  evidence?: string[] // resolved evidence text (version 2 reports)
+}
+
+// A measurable focus item. The app computes every number from telemetry; the
+// model chooses the complex, phase, metric and target basis. Canonical units:
+// ms for time, m/s for speed, m for distance, g for deceleration.
+export type FocusUnit = 'ms' | 'mps' | 'm' | 'g'
+export interface FocusItem {
+  id: string
+  complexId: string
+  complexName: string
+  complexStartM: number
+  complexEndM: number
+  ref: string                 // first corner (T11) or segment (S3) for the map
+  phase: string
+  change: string
+  why: string
+  cue: string
+  metric: string              // e.g. 'C6.exit200'
+  metricLabel: string
+  better: 'lower' | 'higher'
+  unit: FocusUnit
+  baseline: number            // median on representative laps when set
+  best: number                // the driver's best execution
+  target: number
+  display: { baseline: string; best: string; target: string }
+  referenceLap: string        // label of the lap that shows how
+  confidence: 'low' | 'medium' | 'high'
+  evidence: string[]          // evidence IDs
+}
+
+export type FocusVerdict = 'met' | 'improved' | 'no_change' | 'worse' | 'not_measured'
+export interface FocusCheck {
+  focusId: string
+  reportId: string
+  reportCreatedAt: string
+  complexName: string
+  ref: string
+  metricLabel: string
+  cue: string
+  verdict: FocusVerdict
+  current: number | null
+  laps: number
+  display: { baseline: string; target: string; current: string }
+  sessions: string[]          // session labels the check used
+}
+
+// The focus that applied to a session (or the latest focus for a layout),
+// with measured checks from sessions driven after it was set.
+export interface FocusStatus {
+  reportId: string
+  reportTitle: string
+  createdAt: string
+  items: FocusItem[]
+  checks: FocusCheck[]
+}
+
+// One Overview card per car and layout.
+export interface DashboardLayout {
+  key: string
+  trackLabel: string
+  vehicleLabel: string
+  sessionCount: number
+  lastSession: { guid: string; label: string; bestMs: number | null } | null
+  pb: { ms: number; label: string; guid: string } | null
+  lastVsPbMs: number | null
+  garminOptimalMs: number | null
+  focus: FocusStatus | null
+}
+
+// Driver notes and setup for one session; included in coaching prompts.
+export interface SessionNotes {
+  tires: string
+  pressures: string
+  setup: string
+  notes: string
+}
+
+// A Garage document and whether the AI coach reads it.
+export interface AiContextFile { name: string; included: boolean; defaultIncluded: boolean; bytes: number }
+
+// A corner complex (braking zone to braking zone) on a track layout.
+export interface TrackComplexPayload { id: string; name: string; startM: number; endM: number; corners: string[] }
+export interface TrackComplexesResponse { complexes: TrackComplexPayload[]; source: 'track' | 'derived' | 'segments'; yamlPath: string | null }
+
+// Where a coaching report applies, so its focus can be checked later.
+export interface CoachingContext {
+  vehicleGuid: string | null
+  account: string | null
+  meanLineGuid: string | null
+  configurationId: number | null
+  trackLabel: string
+  lapFilter: LapFilter
+  latestSessionStart: string | null
+  units: UnitSystem
 }
 
 export interface CoachingResult {
   headline: string
   consistency_loss_ms: number
   strengths?: string[]
+  // Present on reports generated from the evidence packet (version 2).
+  version?: 2
+  focus?: FocusItem[]
+  previous_focus_review?: Array<{ focusId: string; verdict: string; comment: string; measured?: FocusCheck }>
+  evidence?: Record<string, string>
+  context?: CoachingContext
+  ideal_lap_ms?: number | null
   tips: Array<{
     section: string
+    ref?: string
     body: string
     annotations: CoachAnnotation[]
     priority?: 1 | 2 | 3
@@ -205,7 +314,7 @@ export interface CoachOptions {
   profile: string
   scope: 'overview' | 'corner' | 'compare' | 'session-review'
   sessionGuids: string[]
-  lapLimit?: 3 | 5 | 10 | null
+  lapFilter?: LapFilter
   reviewRevision?: string
 }
 
@@ -354,9 +463,20 @@ export interface CatalystBridge {
   getAccountStats(): Promise<AccountStats>
 
   // Analysis (Plotly data)
-  buildAnalysis(sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null): Promise<AnalysisDataPayload>
+  buildAnalysis(sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter): Promise<AnalysisDataPayload>
+
+  // Focus tracking, dashboard, notes
+  getDashboard(): Promise<DashboardLayout[]>
+  getSessionFocus(sessionGuid: string): Promise<FocusStatus | null>
+  getSessionNotes(sessionGuid: string): Promise<SessionNotes>
+  saveSessionNotes(sessionGuid: string, notes: SessionNotes): Promise<void>
+  listAiContextFiles(profileName: string): Promise<AiContextFile[]>
+  setAiContextFile(profileName: string, fileName: string, included: boolean | null): Promise<void>
 
   // Tracks editor
+  getTrackComplexes(meanLineGuid: string): Promise<TrackComplexesResponse>
+  saveTrackComplexes(meanLineGuid: string, complexes: TrackComplexPayload[]): Promise<TrackComplexesResponse>
+  regenerateTrackComplexes(meanLineGuid: string): Promise<TrackComplexesResponse>
   listTracks(): Promise<TrackListEntry[]>
   getTrack(meanLineGuid: string): Promise<TrackDetail | null>
   saveTrackCorners(opts: {

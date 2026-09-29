@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { DuckDBInstance, DuckDBConnection } from '@duckdb/node-api'
 import { DATA_DIR, SESSIONS_DIR, DB_PATH } from './paths.js'
-import { decodePerformance } from './decodePerformance.js'
+import { decodeOptimalLap, decodePerformance } from './decodePerformance.js'
 import type { CoachingSession } from '../shared/types.js'
 import type { SessionSummary } from './catalystClient.js'
 import { initReviewSchema, markReviewDirty } from './reviewSchema.js'
@@ -30,6 +30,15 @@ export function isoDurationToMs(s: string | undefined | null): number | null {
     }
   }
   return Math.round(total * 1000)
+}
+
+// Garmin reports session starts with the track's UTC offset
+// ("2026-05-24T16:15:34-04:00"). A DuckDB TIMESTAMP would convert that to UTC,
+// so keep the local wall-clock time the drivers saw on the device.
+export function localSessionStart(value: string | null | undefined): string | null {
+  if (!value) return null
+  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(?:Z|[+-]\d{2}:?\d{2})?$/)
+  return match ? `${match[1]} ${match[2]}` : String(value)
 }
 
 export async function initSchema(con: DuckDBConnection): Promise<void> {
@@ -161,8 +170,113 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
       value VARCHAR NOT NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Which Garage files are sent to the AI coach. Missing rows use defaults.
+    CREATE TABLE IF NOT EXISTS garage_ai_context (
+      profile_name VARCHAR NOT NULL,
+      file_name VARCHAR NOT NULL,
+      included BOOLEAN NOT NULL,
+      PRIMARY KEY (profile_name, file_name)
+    );
+
+    -- Driver notes and setup per session (tires, pressures, changes, traffic).
+    CREATE TABLE IF NOT EXISTS session_notes (
+      session_guid VARCHAR PRIMARY KEY,
+      tires VARCHAR,
+      pressures VARCHAR,
+      setup VARCHAR,
+      notes VARCHAR,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Garmin's own optimal lap for each session (the reference on the device).
+    CREATE TABLE IF NOT EXISTS optimal_laps (
+      session_guid VARCHAR PRIMARY KEY,
+      duration_ms INTEGER,
+      sample_count INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS optimal_lap_samples (
+      session_guid VARCHAR,
+      distance_m INTEGER,
+      time_ms INTEGER,
+      lat DOUBLE,
+      lon DOUBLE,
+      gnss_speed_mps DOUBLE,
+      accel_x_mps2 DOUBLE,
+      accel_y_mps2 DOUBLE,
+      lateral_position DOUBLE
+    );
+    CREATE INDEX IF NOT EXISTS idx_optimal_lap_samples ON optimal_lap_samples(session_guid);
+
+    CREATE TABLE IF NOT EXISTS app_migrations (
+      key VARCHAR PRIMARY KEY,
+      applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
   `)
   await initReviewSchema(con)
+  await migrateLocalSessionStarts(con)
+  await migrateOptimalLaps(con)
+}
+
+async function migrationApplied(con: DuckDBConnection, key: string): Promise<boolean> {
+  return (await con.runAndReadAll('SELECT 1 FROM app_migrations WHERE key = ?', [key])).getRowsJson().length > 0
+}
+
+// Earlier loads stored UTC. Rewrite each session start from its summary.json
+// once; the review service notices the changed start and recomputes.
+async function migrateLocalSessionStarts(con: DuckDBConnection): Promise<void> {
+  const key = 'local-session-start'
+  if (await migrationApplied(con, key)) return
+  const rows = (await con.runAndReadAll('SELECT session_guid FROM sessions')).getRowsJson()
+  for (const [guid] of rows) {
+    const summaryPath = path.join(SESSIONS_DIR, String(guid), 'summary.json')
+    if (!/^[a-zA-Z0-9_-]+$/.test(String(guid)) || !fs.existsSync(summaryPath)) continue
+    try {
+      const start = localSessionStart(JSON.parse(fs.readFileSync(summaryPath, 'utf-8')).sessionStart)
+      if (start) await con.run('UPDATE sessions SET session_start = ? WHERE session_guid = ?', [start, String(guid)])
+    } catch { /* an unreadable summary keeps its stored time */ }
+  }
+  await con.run('INSERT OR IGNORE INTO app_migrations (key) VALUES (?)', [key])
+}
+
+// Sessions loaded before optimal laps were stored get them from disk once.
+async function migrateOptimalLaps(con: DuckDBConnection): Promise<void> {
+  const key = 'optimal-laps-v1'
+  if (await migrationApplied(con, key)) return
+  const rows = (await con.runAndReadAll(
+    'SELECT session_guid FROM sessions WHERE details_loaded AND session_guid NOT IN (SELECT session_guid FROM optimal_laps)',
+  )).getRowsJson()
+  for (const [guid] of rows) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(String(guid))) continue
+    try { await loadOptimalLap(con, path.join(SESSIONS_DIR, String(guid))) } catch { /* optional reference */ }
+  }
+  await con.run('INSERT OR IGNORE INTO app_migrations (key) VALUES (?)', [key])
+}
+
+export async function loadOptimalLap(con: DuckDBConnection, sessionDir: string): Promise<boolean> {
+  const sg = path.basename(sessionDir)
+  const file = path.join(sessionDir, 'optimal_lap.pb')
+  if (!fs.existsSync(file) || fs.statSync(file).size === 0) return false
+  const lap = decodeOptimalLap(new Uint8Array(fs.readFileSync(file))).optimal_lap
+  if (!lap?.duration_ms || !lap.samples.length) return false
+  await con.run('DELETE FROM optimal_lap_samples WHERE session_guid = ?', [sg])
+  await con.run('INSERT OR REPLACE INTO optimal_laps VALUES (?, ?, ?)', [sg, lap.duration_ms, lap.samples.length])
+  const appender = await con.createAppender('optimal_lap_samples')
+  const dbl = (v: number | undefined | null) => { if (v == null || Number.isNaN(v)) appender.appendNull(); else appender.appendDouble(v) }
+  try {
+    for (const s of lap.samples) {
+      appender.appendVarchar(sg)
+      appender.appendInteger(Math.round(s.distance_m ?? 0))
+      if (s.time_ms == null) appender.appendNull(); else appender.appendInteger(s.time_ms)
+      dbl(s.position?.lat); dbl(s.position?.lon); dbl(s.gnss_speed_mps)
+      dbl(s.accel_x_mps2); dbl(s.accel_y_mps2); dbl(s.lateral_position)
+      appender.endRow()
+    }
+    appender.flush()
+  } finally {
+    appender.close()
+  }
+  return true
 }
 
 function nullIfNaN(v: number | undefined | null): number | null {
@@ -214,7 +328,7 @@ export async function loadSessionSummary(con: DuckDBConnection, summary: Session
       mean_line_guid = excluded.mean_line_guid, track_name = excluded.track_name,
       track_configuration_name = excluded.track_configuration_name,
       account = COALESCE(excluded.account, sessions.account)
-  `, [summary.sessionGuid, summary.sessionStart ?? null, isoDurationToMs(summary.bestLap),
+  `, [summary.sessionGuid, localSessionStart(summary.sessionStart), isoDurationToMs(summary.bestLap),
     isoDurationToMs(summary.bestLapNormal), summary.trackCartographyId ?? null,
     summary.trackConfigurationId ?? null, summary.meanLineGuid ?? null,
     summary.trackName ?? null, summary.trackConfigurationName ?? null, account] as any)
@@ -267,7 +381,7 @@ async function loadSessionData(con: DuckDBConnection, sessionDir: string): Promi
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true)`,
     [
       sg,
-      summary.sessionStart ?? null,
+      localSessionStart(summary.sessionStart),
       isoDurationToMs(summary.bestLap),
       isoDurationToMs(summary.bestLapNormal),
       summary.trackCartographyId ?? null,
@@ -348,6 +462,7 @@ async function loadSessionData(con: DuckDBConnection, sessionDir: string): Promi
   } finally {
     appender.close()
   }
+  try { await loadOptimalLap(con, sessionDir) } catch { /* optional reference */ }
   await con.run('UPDATE sessions SET review_source_revision = ? WHERE session_guid = ?', [reviewSourceRevision, sg])
   if (previousRevision !== reviewSourceRevision) await markReviewDirty(con, sg)
   return sampleCount
@@ -452,6 +567,8 @@ export async function loadAll(
         DROP TABLE IF EXISTS laps;
         DROP TABLE IF EXISTS sessions;
         DROP TABLE IF EXISTS track_configs;
+        DELETE FROM optimal_laps;
+        DELETE FROM optimal_lap_samples;
         DELETE FROM review_aggregates;
         DELETE FROM review_lap_metrics;
         DELETE FROM review_jobs;

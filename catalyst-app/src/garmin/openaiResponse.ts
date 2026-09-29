@@ -9,10 +9,13 @@ export async function receiveOpenAiResponse(
   onChunk: (text: string) => void,
   streaming: boolean,
   isTransient: (error: unknown) => boolean,
+  deadlineMs = 30 * 60_000,
 ): Promise<Response> {
   const started = Date.now()
   const deadline = new AbortController()
-  const timeout = setTimeout(() => deadline.abort(), 15 * 60_000)
+  const timeout = setTimeout(() => deadline.abort(), deadlineMs)
+  let summary = ''
+  let lastThought = 0
   let phase = 'Connecting to OpenAI'
   let reportChars = 0
   let lastProgress = 0
@@ -86,6 +89,16 @@ export async function receiveOpenAiResponse(
             case 'response.output_text.delta':
               setPhase('Receiving model response')
               break
+            case 'response.reasoning_summary_text.delta': {
+              // Surface the latest complete summary sentence at most every 4 s.
+              summary = (summary + event.delta).slice(-2000)
+              const sentence = summary.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/).filter(s => /[.!?]$/.test(s)).at(-1)
+              if (sentence && Date.now() - lastThought > 4000) {
+                lastThought = Date.now()
+                onChunk(`[status] Thinking · ${sentence.length > 140 ? sentence.slice(0, 137) + '…' : sentence}\n`)
+              }
+              break
+            }
             case 'response.completed':
             case 'response.failed':
             case 'response.incomplete':
@@ -113,7 +126,7 @@ export async function receiveOpenAiResponse(
     }
     throw new Error('OpenAI analysis could not be resumed')
   } catch (error) {
-    if (deadline.signal.aborted) throw new Error('OpenAI analysis did not finish within 15 minutes')
+    if (deadline.signal.aborted) throw new Error(`OpenAI analysis did not finish within ${Math.round(deadlineMs / 60_000)} minutes`)
     throw error
   } finally {
     clearTimeout(timeout)

@@ -13,9 +13,10 @@ import {
   INSTANCE_DIR,
 } from '../garmin/paths.js'
 import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
-import { configuredModelFor } from '../shared/aiModels.js'
+import { configuredModelFor, DEFAULT_REASONING_EFFORT, maxOutputTokensFor } from '../shared/aiModels.js'
 import { loadConfig, saveConfig, setAccountEmail, setCredentials } from '../garmin/config.js'
 import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
+import type { LapFilter } from '../shared/coachingScope.js'
 import { replaceSessionIds } from '../shared/sessionIdentity.js'
 import {
   CatalystAPI,
@@ -38,10 +39,12 @@ import {
 import { MEAN_LINES_DIR, TRACKS_DIR } from '../garmin/paths.js'
 import { buildTrackGeometry } from '../garmin/trackGeometry.js'
 import { loadTrackYaml, resolveTrackYamlPath, saveTrackYamlCorners, TrackCorner } from '../garmin/trackYaml.js'
-import { runBrief, runCoach } from '../garmin/promptPack.js'
-import { parseCoachResponse } from '../garmin/coachParser.js'
+import { driverContext, runBrief, runCoach } from '../garmin/promptPack.js'
+import { buildCoachPacket, resolveComplexes, type CoachPacket, type SessionMeta } from '../garmin/coachPacket.js'
+import { buildDashboard, focusForSession } from '../garmin/focusService.js'
+import { saveTrackYamlComplexes } from '../garmin/trackYaml.js'
+import { parseCoachingReport, parseCoachResponse } from '../garmin/coachParser.js'
 import { runAgent } from '../garmin/agentHarness.js'
-import { COACHING_TOOL } from '../garmin/coachingTool.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import { syncSessions, validateSessionGuids } from '../garmin/sessionSync.js'
 import { ReviewService } from '../garmin/reviewStore.js'
@@ -50,6 +53,8 @@ import type { ConditionOverride, ProgressFilters } from '../shared/review.js'
 import {
   deleteGarageFile,
   ensureGarageProfile,
+  listAiContextFiles,
+  setAiContextIncluded,
   getGarageActiveProfile,
   listGarageFiles,
   listGarageProfiles,
@@ -317,7 +322,10 @@ export function registerApiHandlers(
             (SELECT COUNT(*) FROM samples sm WHERE sm.session_guid = s.session_guid) AS sample_count,
             COALESCE(s.weather_description, '') AS weather_description,
             s.account,
-            s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type
+            s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type,
+            s.temperature_c,
+            COALESCE(s.mean_line_guid, CAST(s.track_configuration_id AS VARCHAR)) AS layout_key,
+            MIN(s.best_lap_ms) OVER (PARTITION BY COALESCE(s.mean_line_guid, CAST(s.track_configuration_id AS VARCHAR)), s.vehicle_guid, s.account) AS layout_best_ms
           FROM sessions s
           LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
           ${whereClause}
@@ -396,6 +404,18 @@ export function registerApiHandlers(
     deleteGarageFile(profileName, fileName))
 
   // Create a database profile with blank car context and optionally link it to a vehicle.
+  // Which Garage documents the AI coach reads (defaults unless overridden).
+  register('profiles:aiContext', async (_e, profileName: string) => {
+    const [track] = fs.existsSync(DB_PATH) ? await withDb(async con => (await con.runAndReadAll(`
+      SELECT COALESCE(s.track_name, tc.track_name, '') || ' · ' || COALESCE(s.track_configuration_name, tc.track_configuration_name, '')
+      FROM sessions s LEFT JOIN track_configs tc USING (track_configuration_id) ORDER BY s.session_start DESC LIMIT 1`)).getRowsJson().map(r => String(r[0]))) : ['']
+    return listAiContextFiles(profileName, track ?? '')
+  })
+  register('profiles:setAiContext', (_e, profileName: string, fileName: string, included: boolean | null) => {
+    if (included !== null && typeof included !== 'boolean') throw new Error('Invalid AI context setting')
+    return setAiContextIncluded(profileName, fileName, included)
+  })
+
   register('profiles:ensureProfile', (_e, name: string, vehicleGuid?: string) =>
     ensureGarageProfile(name, vehicleGuid))
 
@@ -494,6 +514,44 @@ export function registerApiHandlers(
     return withDb(con => listCoachingSessions(con), DB_PATH).catch(() => [])
   })
 
+  register('dashboard:get', async () => {
+    if (!fs.existsSync(DB_PATH)) return []
+    const account = loadConfig().auth?.email ?? null
+    return withDb(con => buildDashboard(con, loadConfig().units ?? DEFAULT_UNIT_SYSTEM, account), DB_PATH).catch(error => {
+      console.error('[dashboard]', error)
+      return []
+    })
+  })
+
+  register('focus:forSession', async (_e, guid: string) => {
+    if (typeof guid !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(guid)) throw new Error('Invalid session ID')
+    if (!fs.existsSync(DB_PATH)) return null
+    return withDb(con => focusForSession(con, guid, loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH)
+  })
+
+  const NOTE_FIELDS = ['tires', 'pressures', 'setup', 'notes'] as const
+  register('notes:get', async (_e, guid: string) => {
+    if (typeof guid !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(guid)) throw new Error('Invalid session ID')
+    const empty = { tires: '', pressures: '', setup: '', notes: '' }
+    if (!fs.existsSync(DB_PATH)) return empty
+    const row = await withDb(async con => (await con.runAndReadAll('SELECT tires, pressures, setup, notes FROM session_notes WHERE session_guid = ?', [guid])).getRowObjectsJson()[0])
+    return row ? Object.fromEntries(NOTE_FIELDS.map(k => [k, String(row[k] ?? '')])) : empty
+  })
+  register('notes:save', async (_e, guid: string, notes: Record<string, unknown>) => {
+    if (typeof guid !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(guid)) throw new Error('Invalid session ID')
+    if (!notes || typeof notes !== 'object') throw new Error('Invalid session notes')
+    const values = NOTE_FIELDS.map(k => {
+      const v = notes[k] ?? ''
+      if (typeof v !== 'string' || v.length > 2000) throw new Error(`Invalid ${k}`)
+      return v.trim() || null
+    })
+    await withDb(async con => {
+      await initSchema(con)
+      if (values.every(v => v === null)) await con.run('DELETE FROM session_notes WHERE session_guid = ?', [guid])
+      else await con.run('INSERT OR REPLACE INTO session_notes VALUES (?, ?, ?, ?, ?, now())', [guid, ...values] as any)
+    })
+  })
+
   register('coach:get', async (_e, id: string): Promise<CoachingSession | null> => {
     if (!fs.existsSync(DB_PATH)) return null
     return withDb(con => getCoachingSession(con, id), DB_PATH).catch(() => null)
@@ -532,18 +590,18 @@ export function registerApiHandlers(
 
         const coachRun = await runCoach({
           sessionGuids: opts.sessionGuids,
-          lapLimit: opts.lapLimit,
-          profile: opts.profile,
+          lapFilter: opts.lapFilter,
+          profile: opts.profile || null,
           scope: analysisScope,
           dbPath: DB_PATH,
           system: loadConfig().units ?? DEFAULT_UNIT_SYSTEM,
         })
-        const { prompt, profile: resolvedProfile } = coachRun
+        const { prompt, profile: resolvedProfile, packet } = coachRun
         sessionAliases = coachRun.sessionAliases
-        builtPrompt = prompt
+        builtPrompt = `${coachRun.system}\n\n---\n\n${prompt}`
         resolvedProfileName = resolvedProfile
 
-        log(`[coach] Prompt ready (${prompt.length.toLocaleString()} chars). Sending to LLM…`)
+        log(`[coach] Prompt ready (${prompt.length.toLocaleString()} chars, ${packet.laps.length} laps, ${packet.complexes.length} complexes, ${Object.keys(packet.evidence).length} evidence items). Sending to LLM…`)
         broadcast(win, { kind: 'coach', type: 'progress',
           progress: { current: 1, total: 3, label: 'Sending to LLM…' } })
 
@@ -554,15 +612,17 @@ export function registerApiHandlers(
           const label = provider === 'openai' ? 'OpenAI' : 'Anthropic'
           throw new Error(`No ${label} API key configured. Add it under AI Coach on the Overview page.`)
         }
+        const model = configuredModelFor(cfg.ai?.model, provider)
         const harnessConfig: Parameters<typeof runAgent>[1] = {
           provider,
           apiKey,
-          model: configuredModelFor(cfg.ai?.model, provider),
-          reasoningEffort: provider === 'openai' ? 'xhigh' : undefined,
-          maxTokens: provider === 'openai' ? 64000 : 32000,
+          model,
+          system: coachRun.system,
+          reasoningEffort: DEFAULT_REASONING_EFFORT,
+          maxTokens: maxOutputTokensFor(provider, model),
           stream: true,
-          tools:     [COACHING_TOOL],
-          toolChoice: { type: 'tool' as const, name: COACHING_TOOL.name },
+          tools:     [coachRun.tool],
+          toolChoice: { type: 'tool' as const, name: coachRun.tool.name },
         }
 
         const rawResponse = await runAgent(prompt, harnessConfig, (text) => {
@@ -576,7 +636,7 @@ export function registerApiHandlers(
           }
         })
 
-        log('[coach] Response received. Parsing annotations…')
+        log('[coach] Response received. Parsing report…')
         broadcast(win, { kind: 'coach', type: 'progress',
           progress: { current: 2, total: 3, label: 'Parsing result…' } })
 
@@ -584,16 +644,17 @@ export function registerApiHandlers(
         // before any response text is persisted or rendered to the driver.
         const safeResponse = replaceSessionIds(rawResponse, sessionAliases)
         receivedResponse = safeResponse
-        const parsed = parseCoachResponse(safeResponse)
+        const reportId = randomUUID()
+        const parsed = parseCoachingReport(safeResponse, packet, reportId) ?? parseCoachResponse(safeResponse)
         if (!parsed) {
           throw new Error('The model returned a response, but it could not be read as a coaching report. The response is saved in AI Coach for inspection.')
         }
-        log(`[coach] Parsed ${parsed.tips.length} tips and ${parsed.annotations.length} annotations`)
+        log(`[coach] Parsed ${parsed.tips.length} focus items and ${parsed.previous_focus_review?.length ?? 0} previous-focus checks`)
         const modelUsed = harnessConfig.model
         const title = parsed?.headline
           ?? `Coach · ${resolvedProfile} · ${new Date().toISOString().slice(0, 10)}`
 
-        const sessionId = randomUUID()
+        const sessionId = reportId
         const coachingSession: CoachingSession = {
           id: sessionId,
           created_at: new Date().toISOString(),
@@ -782,6 +843,48 @@ export function registerApiHandlers(
     return { savedTo: opts.yamlPath, cornerCount: enriched.length }
   })
 
+  // ── Corner complexes (braking zone to braking zone) per layout ─────────────
+  async function layoutSession(meanLineGuid: string): Promise<SessionMeta> {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(meanLineGuid)) throw new Error('invalid mean-line id')
+    const geom = buildTrackGeometry(meanLineGuid)
+    const base: SessionMeta = {
+      session_guid: '', start: null, track_name: geom?.trackName ?? null, track_configuration_name: geom?.configName ?? null,
+      track_configuration_id: null, mean_line_guid: meanLineGuid, vehicle_guid: null, vehicle_make: null, vehicle_model: null,
+      vehicle_year: null, account: null, weather_description: null, temperature_c: null, humidity_pct: null,
+      wind_speed_mps: null, wind_direction_deg: null, best_lap_ms: null,
+    }
+    return base
+  }
+  async function complexesResponse(meanLineGuid: string): Promise<import('../shared/types.js').TrackComplexesResponse> {
+    const session = await layoutSession(meanLineGuid)
+    const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', meanLineGuid)
+    if (!fs.existsSync(DB_PATH)) return { complexes: [], source: 'segments', yamlPath: resolved.exists ? resolved.path : null }
+    const { complexes, source } = await withDb(con => resolveComplexes(con, session))
+    return { complexes, source, yamlPath: resolved.exists ? resolved.path : null }
+  }
+  register('tracks:complexes', (_e, meanLineGuid: string) => complexesResponse(meanLineGuid))
+  register('tracks:saveComplexes', async (_e, meanLineGuid: string, complexes: import('../shared/types.js').TrackComplexPayload[]) => {
+    const session = await layoutSession(meanLineGuid)
+    const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', meanLineGuid)
+    if (!resolved.exists) throw new Error('Save the corners for this layout before editing complexes.')
+    if (!Array.isArray(complexes) || complexes.length > 60) throw new Error('Invalid complexes')
+    const clean = complexes.map((c, i) => {
+      const startM = Math.round(Number(c.startM)), endM = Math.round(Number(c.endM))
+      if (!Number.isFinite(startM) || !Number.isFinite(endM) || startM < 0 || endM <= startM) throw new Error(`Complex ${i + 1} has an invalid range`)
+      const name = String(c.name ?? '').slice(0, 120) || `Complex ${i + 1}`
+      const corners = Array.isArray(c.corners) ? c.corners.map(String).filter(t => /^[A-Za-z0-9]{1,8}$/.test(t)) : []
+      return { id: `C${i + 1}`, name, start_m: startM, end_m: endM, corners: corners.join(',') }
+    }).sort((a, b) => a.start_m - b.start_m).map((c, i) => ({ ...c, id: `C${i + 1}` }))
+    await reviews.foreground(async () => { saveTrackYamlComplexes(resolved.path, clean) })
+    return complexesResponse(meanLineGuid)
+  })
+  register('tracks:regenerateComplexes', async (_e, meanLineGuid: string) => {
+    const session = await layoutSession(meanLineGuid)
+    const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', meanLineGuid)
+    if (resolved.exists) await reviews.foreground(async () => { saveTrackYamlComplexes(resolved.path, []) })
+    return complexesResponse(meanLineGuid)
+  })
+
   register('briefs:list', (): BriefFile[] => {
     if (!fs.existsSync(COACHING_DIR)) return []
     const files = fs.readdirSync(COACHING_DIR)
@@ -841,9 +944,9 @@ export function registerApiHandlers(
     revealPath(p)
   })
 
-  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) => {
+  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter) => {
     await ensureSessionDetails(sessionGuids)
-    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapLimit)
+    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapFilter)
   })
 
   // ---- workers ---------------------------------------------------------
@@ -962,27 +1065,32 @@ export function registerApiHandlers(
       try {
         broadcast(win, { kind: 'coach', type: 'progress', progress: { current: 0, total: 3, label: 'Preparing session review…' } })
         const mapped = await resolveGarageVehicleProfile(snapshot.current.summary.vehicleGuid, null)
-        profile = mapped.profile ?? opts.profile
-        let context = ''
-        if (profile) {
-          const files = await listGarageFiles(profile)
-          const included = files.filter(f => f.name.endsWith('.md'))
-          for (const f of included) context += `\n${f.name}\n${await readGarageFile(f.path)}\n`
+        profile = mapped.profile ?? (opts.profile || '')
+        if (!profile) profile = (await getGarageActiveProfile()) ?? ''
+        const trackLabel = `${snapshot.current.summary.track} · ${snapshot.current.summary.layout}`
+        const context = profile ? await driverContext(profile, trackLabel) : ''
+        // Complex phases and the previous focus come from the shared packet.
+        let packet: CoachPacket | null = null
+        try {
+          packet = await withDb(con => buildCoachPacket(con, { sessionGuids: [guid], system: units }))
+        } catch (error) {
+          emit('log', `[review coach] phase metrics unavailable: ${error instanceof Error ? error.message : String(error)}\n`)
         }
-        const pack = buildReviewCoachPrompt(snapshot, context, units)
-        prompt = pack.prompt; evidence = pack.evidence; aliases = pack.aliases
+        const pack = buildReviewCoachPrompt(snapshot, context, units, packet)
+        prompt = `${pack.system}\n\n---\n\n${pack.prompt}`; evidence = pack.evidence; aliases = pack.aliases
         const apiKey = (await readAiKeys())[provider]
         if (!apiKey) throw new Error(`No ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key configured. Add it under AI Coach on Overview.`)
         model = configuredModelFor(cfg.ai?.model, provider)
-        const tool = reviewCoachingTool(snapshot, evidence)
-        raw = await runAgent(prompt, { provider, apiKey, model, stream: true, maxTokens: 16000,
-          reasoningEffort: provider === 'openai' ? 'xhigh' : undefined, tools: [tool], toolChoice: { type: 'tool', name: tool.name } }, chunk => {
+        const tool = reviewCoachingTool(snapshot, evidence, packet)
+        raw = await runAgent(pack.prompt, { provider, apiKey, model, stream: true, system: pack.system, maxTokens: maxOutputTokensFor(provider, model),
+          reasoningEffort: DEFAULT_REASONING_EFFORT, tools: [tool], toolChoice: { type: 'tool', name: tool.name } }, chunk => {
           if (chunk.startsWith('[status]')) broadcast(win, { kind: 'coach', type: 'progress', progress: { current: 1, total: 3, label: chunk.replace('[status]', '').trim() } })
           else emit('log', replaceSessionIds(chunk, aliases))
         })
         raw = replaceSessionIds(raw, aliases)
-        const result = parseReviewCoaching(raw, snapshot, evidence)
-        const id = randomUUID()
+        const reportId = randomUUID()
+        const result = parseReviewCoaching(raw, snapshot, evidence, packet, reportId)
+        const id = reportId
         await withDb(con => insertCoachingSession(con, { id, created_at: new Date().toISOString(), session_guids: [guid],
           profile_name: profile, model_used: model, title: result.summary, prompt, raw_response: raw, parsed_result: null,
           review_context: { sessionGuid: guid, revision: snapshot.revision, units, provider, evidence }, review_result: result }))

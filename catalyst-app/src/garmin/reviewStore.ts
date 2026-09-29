@@ -24,7 +24,7 @@ export function validateConditions(value: ConditionOverride): void {
 }
 export function validateProgressFilters(filters: ProgressFilters): void {
   if (!filters || typeof filters !== 'object' || Array.isArray(filters)) throw new Error('Invalid progress filters')
-  if (filters.surface !== undefined && !SURFACES.includes(filters.surface)) throw new Error('Invalid surface')
+  if (filters.surface !== undefined && filters.surface !== 'any' && !SURFACES.includes(filters.surface)) throw new Error('Invalid surface')
   if (filters.temperatureC !== undefined && (!finite(filters.temperatureC) || filters.temperatureC < -60 || filters.temperatureC > 70)) throw new Error('Invalid temperature')
   for (const key of ['configurationId', 'cartographyId'] as const) if (filters[key] !== undefined && !Number.isSafeInteger(filters[key])) throw new Error('Invalid track identifier')
   if (filters.reverse !== undefined && typeof filters.reverse !== 'boolean') throw new Error('Invalid direction')
@@ -295,7 +295,7 @@ export class ReviewService {
         direction: anchor?.direction, surface: anchor?.conditions.surface, ...input }
       const sessions = available.filter(s => identityKey(s) && s.vehicleGuid === filters.vehicleGuid && s.configurationId === filters.configurationId
         && s.cartographyId === filters.cartographyId && s.account === filters.account && s.reverse === filters.reverse && s.direction === filters.direction
-        && filters.surface !== 'unknown' && s.conditions.surface === filters.surface
+        && (filters.surface === 'any' || (filters.surface !== 'unknown' && s.conditions.surface === filters.surface))
         && (filters.temperatureC === undefined || finite(s.conditions.temperatureC) && Math.abs(s.conditions.temperatureC - filters.temperatureC) <= 5 + 1e-8) && s.fastLapCount > 0)
       const references = sessions.map(s => {
         // Progress references use the same optional filters as the visible history.

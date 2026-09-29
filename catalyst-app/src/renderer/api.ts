@@ -3,6 +3,7 @@
 
 import type { CatalystBridge, WorkerEvent, SignInResult } from '../shared/types'
 import type { UnitSystem } from '../shared/units'
+import type { LapFilter } from '../shared/coachingScope'
 
 const params = new URLSearchParams(window.location.search)
 const configuredServer = params.get('catalystServer')
@@ -70,6 +71,15 @@ const remoteBridge: CatalystBridge = {
   updateReviewConditions: (guid, value) => rpc('review:conditions', guid, value),
   setReviewLapExcluded: (guid, index, excluded, reason = '') => rpc('review:excludeLap', guid, index, excluded, reason),
   onReviewStatus: cb => subscribe('review:event', cb),
+  getDashboard: () => rpc('dashboard:get'),
+  getSessionFocus: guid => rpc('focus:forSession', guid),
+  getSessionNotes: guid => rpc('notes:get', guid),
+  saveSessionNotes: (guid, notes) => rpc('notes:save', guid, notes),
+  listAiContextFiles: profileName => rpc('profiles:aiContext', profileName),
+  setAiContextFile: (profileName, fileName, included) => rpc('profiles:setAiContext', profileName, fileName, included),
+  getTrackComplexes: meanLineGuid => rpc('tracks:complexes', meanLineGuid),
+  saveTrackComplexes: (meanLineGuid, complexes) => rpc('tracks:saveComplexes', meanLineGuid, complexes),
+  regenerateTrackComplexes: meanLineGuid => rpc('tracks:regenerateComplexes', meanLineGuid),
   getAuthState: () => rpc('auth:state'),
   getSyncStats: () => rpc('auth:syncStats'),
   getAccountEmail: () => rpc('auth:email'),
@@ -112,8 +122,8 @@ const remoteBridge: CatalystBridge = {
   onLog: cb => subscribe('app:log', cb),
   onSaveRequest: () => () => {},
 
-  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapLimit?: 3 | 5 | 10 | null) =>
-    rpc('analysis:build', sessionGuids, units, lapLimit),
+  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter) =>
+    rpc('analysis:build', sessionGuids, units, lapFilter),
   runCoach: opts => rpc('coach:run', opts),
   listCoachSessions: () => rpc('coach:list'),
   getCoachSession: id => rpc('coach:get', id),

@@ -26,6 +26,16 @@ export interface TrackCorner {
   apex_radius_m?: number
 }
 
+// A corner complex runs from one braking zone to the next. `corners` is a
+// comma-separated list because this YAML subset has no inline lists.
+export interface TrackComplex {
+  id: string
+  name: string
+  start_m: number
+  end_m: number
+  corners?: string
+}
+
 export interface TrackYaml {
   track_name?: string
   track_configuration_name?: string
@@ -34,6 +44,7 @@ export interface TrackYaml {
   point_count?: number
   segments: TrackSegment[]
   corners: TrackCorner[]
+  complexes?: TrackComplex[]
 }
 
 function coerce(s: string): unknown {
@@ -109,6 +120,37 @@ export function saveTrackYamlCorners(filePath: string, corners: TrackCorner[]): 
   fs.writeFileSync(filePath, head + headSep + block)
 }
 
+// Replace (or add) the `complexes:` block. It is written just before
+// `corners:` so saveTrackYamlCorners, which rewrites from `corners:` to EOF,
+// preserves it.
+export function saveTrackYamlComplexes(filePath: string, complexes: TrackComplex[]): void {
+  const block = complexes.length
+    ? 'complexes:\n' + complexes.map(serializeComplex).join('\n') + '\n'
+    : ''
+  const text = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : ''
+  const lines = text.split('\n')
+  const start = lines.findIndex(l => l.trim() === 'complexes:')
+  if (start !== -1) {
+    let end = start + 1
+    while (end < lines.length && (lines[end].startsWith(' ') || lines[end].trim() === '')) end++
+    lines.splice(start, end - start)
+  }
+  let cornersIdx = lines.findIndex(l => l.trim() === 'corners:')
+  // Keep a comment that introduces the corners attached to them.
+  while (cornersIdx > 0 && lines[cornersIdx - 1].trim().startsWith('#')) cornersIdx--
+  if (block) {
+    if (cornersIdx === -1) lines.push(...block.trimEnd().split('\n'))
+    else lines.splice(cornersIdx, 0, ...block.trimEnd().split('\n'))
+  }
+  fs.writeFileSync(filePath, lines.join('\n').replace(/\n*$/, '\n'))
+}
+
+function serializeComplex(c: TrackComplex): string {
+  const lines = [`  - id: ${c.id}`, `    name: "${escapeYamlString(c.name)}"`, `    start_m: ${Math.round(c.start_m)}`, `    end_m: ${Math.round(c.end_m)}`]
+  if (c.corners) lines.push(`    corners: "${escapeYamlString(c.corners)}"`)
+  return lines.join('\n')
+}
+
 function escapeYamlString(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
@@ -138,7 +180,7 @@ export function loadTrackYaml(filePath: string): TrackYaml {
   for (const rawLine of fs.readFileSync(filePath, 'utf-8').split('\n')) {
     const line = rawLine.replace(/\s+$/, '')
     if (!line || line.trim().startsWith('#')) continue
-    if (line === 'segments:' || line === 'corners:') {
+    if (line === 'segments:' || line === 'corners:' || line === 'complexes:') {
       currentList = []
       ;(out as any)[line.slice(0, -1)] = currentList
       currentItem = null

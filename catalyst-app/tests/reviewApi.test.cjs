@@ -33,11 +33,17 @@ function setup(t, modelResponse) {
   t.mock.method(keys, 'migrateAiConfig', async () => {})
   t.mock.method(garage, 'resolveGarageVehicleProfile', async () => ({ profile: 'Car' }))
   t.mock.method(garage, 'listGarageFiles', async () => [])
+  t.mock.method(garage, 'aiContextDocuments', async () => [{ name: 'Car.md', content: '# Car notes' }])
   t.mock.method(db, 'withDb', async fn => fn === db.existingSessionGuids ? new Set([guid]) : fn({}))
   t.mock.method(db, 'initSchema', async () => {})
   t.mock.method(db, 'insertCoachingSession', async (_con, session) => { saved.push(session) })
   const agent = t.mock.method(harness, 'runAgent', async (prompt, options, onChunk) => {
-    assert.match(prompt, /"paceMs":10100/)
+    // Display-unit tables and evidence, no raw SI JSON.
+    assert.match(prompt, /Fast-lap mean 10\.100 s/)
+    assert.doesNotMatch(prompt, /"paceMs"/)
+    assert.match(prompt, /# Car notes/)
+    assert.match(options.system, /reviewing ONE just-completed track session/)
+    assert.equal(options.reasoningEffort, 'xhigh')
     assert.equal(options.tools[0].name, 'submit_session_review')
     assert.equal(options.stream, true)
     onChunk('[status] Generating session advice\n')
@@ -51,7 +57,7 @@ function setup(t, modelResponse) {
   return { handlers, saved, events, calls, terminal, agent, snapshot }
 }
 const result = { summary: 'Establish a repeatable reference', strengths: [], regressions: [], limitations: ['No historical baseline'],
-  priorities: [{ ref: 'session', advice: 'Repeat your current pace', cue: 'Repeat first', successMetric: 'Two laps near the measured 10.1 s mean', evidence: ['pace'] }] }
+  priorities: [{ ref: 'session', advice: 'Repeat your current pace', cue: 'Repeat first', successMetric: 'Two laps near the measured 10.1 s mean', evidence: ['pace'], metric: 'none', target: 'halfway' }] }
 
 test('review bridge accepts Electron omissions and HTTP null arguments without triggering coaching', async t => {
   const { handlers, calls, agent } = setup(t, result)
@@ -89,6 +95,6 @@ test('review provider failures preserve the prompt and emit a retryable error', 
   await handlers.get('coach:run')(null, { profile: 'Car', scope: 'session-review', sessionGuids: [guid], reviewRevision: 'saved-revision' })
   assert.equal((await terminal).type, 'error')
   assert.equal(saved[0].review_context.error, 'Provider unavailable')
-  assert.match(saved[0].prompt, /"paceMs":10100/)
+  assert.match(saved[0].prompt, /Fast-lap mean 10\.100 s/)
   assert.equal(saved[0].review_result, null)
 })

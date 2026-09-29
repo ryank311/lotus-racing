@@ -4,7 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useDebouncedQuery, useNavigation, useRoute } from '../navigation'
 import { routeUrl, segment } from '../routes'
+import { useUnits } from '../units'
+import { startLabel } from '../components/reviewTimeline'
 import type { DbSessionRow } from '../../shared/types'
+import './pages-extras.css'
 
 interface Props {
   refreshTick: number
@@ -32,6 +35,36 @@ interface VehicleGroup {
   count: number
 }
 
+function trackLabel(r: DbSessionRow): string {
+  return [r.track_name, r.track_configuration_name].map(s => (s ?? '').trim()).filter(Boolean).join(' · ')
+}
+
+// One chip per track layout (mean line); lap times only compare within one.
+interface TrackGroup {
+  key: string
+  label: string
+  count: number
+}
+
+// The session holding this car's best lap on its layout (same account).
+function isLayoutPb(r: DbSessionRow): boolean {
+  return r.best_lap_ms != null && r.best_lap_ms > 0 && r.best_lap_ms === r.layout_best_ms
+}
+
+function layoutPbGap(r: DbSessionRow): string | null {
+  if (r.best_lap_ms == null || r.best_lap_ms <= 0 || r.layout_best_ms == null || isLayoutPb(r)) return null
+  return `+${((r.best_lap_ms - r.layout_best_ms) / 1000).toFixed(2)} s`
+}
+
+function LapTime({ row }: { row: DbSessionRow }) {
+  const gap = layoutPbGap(row)
+  return <>
+    {msToLap(row.best_lap_ms)}
+    {isLayoutPb(row) && <span className="session-pb" role="img" title="Layout PB for this car" aria-label="Layout PB for this car">★</span>}
+    {gap && <span className="session-pb-gap" title="Gap to this car's best lap on this layout">{gap}</span>}
+  </>
+}
+
 type SortKey = 'date' | 'track' | 'config' | 'vehicle' | 'best' | 'laps' | 'weather'
 type SortDir = 'asc' | 'desc'
 
@@ -46,6 +79,16 @@ const SORT_EXTRACTORS: Record<SortKey, (r: DbSessionRow) => string | number | nu
   laps:    r => r.lap_count ?? null,
   weather: r => (r.weather_description ?? '').toLowerCase() || null,
 }
+
+// The phone layout sorts from one dropdown; directions are part of the choice.
+const SORT_CHOICES: Array<{ key: SortKey; dir: SortDir; label: string }> = [
+  { key: 'date', dir: 'desc', label: 'Newest first' },
+  { key: 'date', dir: 'asc', label: 'Oldest first' },
+  { key: 'best', dir: 'asc', label: 'Fastest lap first' },
+  { key: 'laps', dir: 'desc', label: 'Most laps first' },
+  { key: 'track', dir: 'asc', label: 'Track A–Z' },
+  { key: 'vehicle', dir: 'asc', label: 'Car A–Z' },
+]
 
 function compareWith(key: SortKey, dir: SortDir) {
   const extract = SORT_EXTRACTORS[key]
@@ -73,6 +116,10 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
   const [filter, setFilter] = useDebouncedQuery('q', params.get('q') ?? '')
   const vehicleFilter = params.get('vehicle')
   const setVehicleFilter = (value: string | null) => query({ vehicle: value })
+  const trackFilter = params.get('track')
+  const setTrackFilter = (value: string | null) => query({ track: value })
+  const { tempFromC, tempUnit } = useUnits()
+  const temperature = (r: DbSessionRow) => r.temperature_c == null ? null : `${Math.round(tempFromC(r.temperature_c))}${tempUnit}`
   const sortKey = (params.get('sort') ?? 'date') as SortKey
   const sortDir: SortDir = params.get('dir') === 'asc' ? 'asc' : 'desc'
   const setSortDir = (fn: (old: SortDir) => SortDir) => query({ dir: fn(sortDir) })
@@ -81,13 +128,13 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
   const [downloading, setDownloading] = useState(new Set<string>())
   const [downloadError, setDownloadError] = useState<string | null>(null)
 
-  // First click on a new column picks that column's natural default direction;
-  // clicking the active column toggles asc/desc.
+  // First click on a new column picks that column's natural default direction
+  // (newest, most laps, fastest lap first); clicking the active column toggles.
   const onHeaderClick = (key: SortKey) => {
     if (sortKey === key) {
       setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
     } else {
-      query({ sort: key, dir: key === 'date' || key === 'best' || key === 'laps' ? 'desc' : 'asc' })
+      query({ sort: key, dir: key === 'date' || key === 'laps' ? 'desc' : 'asc' })
     }
   }
 
@@ -127,23 +174,45 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     return [...by.values()].sort((a, b) => b.count - a.count)
   }, [rows])
 
+  const trackGroups = useMemo<TrackGroup[]>(() => {
+    const by = new Map<string, TrackGroup>()
+    for (const r of rows) {
+      if (!r.layout_key) continue
+      const g = by.get(r.layout_key)
+      if (g) g.count++
+      else by.set(r.layout_key, { key: r.layout_key, label: trackLabel(r) || 'Unknown track', count: 1 })
+    }
+    const groups = [...by.values()]
+    // Two mean lines can share a name; a short key suffix keeps them apart.
+    const named = new Map<string, number>()
+    for (const g of groups) named.set(g.label, (named.get(g.label) ?? 0) + 1)
+    for (const g of groups) if (named.get(g.label)! > 1) g.label += ` (${g.key.slice(0, 6)})`
+    return groups.sort((a, b) => b.count - a.count)
+  }, [rows])
+
   const filtered = useMemo(() => {
     let out = rows
     if (vehicleFilter) out = out.filter(r => r.vehicle_guid === vehicleFilter)
+    if (trackFilter) out = out.filter(r => r.layout_key === trackFilter)
     const q = filter.trim().toLowerCase()
     if (q) {
       out = out.filter(r =>
         (r.track_name ?? '').toLowerCase().includes(q) ||
         (r.track_configuration_name ?? '').toLowerCase().includes(q) ||
         (r.session_guid ?? '').toLowerCase().includes(q) ||
+        (r.session_start ?? '').includes(q) ||
+        startLabel(r.session_start).toLowerCase().includes(q) ||
         vehicleLabel(r).toLowerCase().includes(q))
     }
     // Sort after filtering so the visible order matches the selected column.
     // Slice() because Array.sort is in-place and `out` may alias `rows`.
     return out.slice().sort(compareWith(sortKey, sortDir))
-  }, [rows, filter, vehicleFilter, sortKey, sortDir])
+  }, [rows, filter, vehicleFilter, trackFilter, sortKey, sortDir])
 
   const allVisibleSelected = filtered.length > 0 && filtered.every(r => selected.has(r.session_guid))
+  const filtersActive = !!(vehicleFilter || trackFilter || filter.trim())
+  const sortValue = `${sortKey}:${sortDir}`
+  const thisYear = String(new Date().getFullYear())
 
   const toggle = (guid: string) => {
     const next = new Set(selected)
@@ -166,6 +235,12 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     [rows, selected],
   )
   const selectedNeedsDetails = selectedRows.some(row => !row.details_loaded || downloading.has(row.session_guid))
+  // Laps only compare within one layout and one car; the coach rejects the rest.
+  const mixedSelection = useMemo(() => {
+    const layouts = new Set(selectedRows.map(r => r.layout_key).filter(Boolean))
+    const vehicles = new Set(selectedRows.map(r => r.vehicle_guid).filter(Boolean))
+    return layouts.size > 1 || vehicles.size > 1
+  }, [selectedRows])
 
   return (
     <>
@@ -176,15 +251,40 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
         </div>
         <div className="page-meta">
           <InlineLoadStatus label="sessions" pending={sessionsResource.pending} error={sessionsResource.error} hasData={sessionsResource.data !== undefined} onRetry={sessionsResource.reload} />
-          {sessionsResource.data !== undefined && <><span>{filtered.length} of {rows.length}</span><br /></>}
-          {hasDb !== undefined && <span className="muted">{hasDb ? 'duckdb attached' : 'no db — summary only'}</span>}
+          {hasDb === false && <span className="muted">No database · summaries only</span>}
           {dbResource.error && <InlineLoadStatus label="database status" pending={dbResource.pending} error={dbResource.error} onRetry={dbResource.reload} />}
         </div>
       </header>
 
       <div className="page-body sessions-body" data-route-loading={loading || undefined}>
-        <p className="muted small">Select sessions to compare laps and get coaching.</p>
-        {selected.size > 0 && rows.some(r => selected.has(r.session_guid) && !r.details_loaded) && <button className="btn primary" disabled={downloading.size > 0} onClick={downloadSelected}>Download selected telemetry</button>}
+        <div className="session-toolbar">
+          <div className="session-search">
+            <input type="search" aria-label="Filter sessions" placeholder="Search track, car or date…"
+              value={filter} onChange={e => setFilter(e.target.value)} />
+          </div>
+          <div className="session-filters">
+            <select aria-label="Track" disabled={loading} value={trackFilter ?? ''} onChange={e => setTrackFilter(e.target.value || null)}>
+              <option value="">All tracks</option>
+              {trackGroups.map(g => <option key={g.key} value={g.key}>{g.label} · {g.count}</option>)}
+            </select>
+            {(vehicleGroups.length > 1 || vehicleFilter) && <select aria-label="Car" value={vehicleFilter ?? ''} onChange={e => setVehicleFilter(e.target.value || null)}>
+              <option value="">All cars</option>
+              {vehicleGroups.map(g => <option key={g.guid} value={g.guid}>{g.label} · {g.count}</option>)}
+            </select>}
+            <select className="session-sort" aria-label="Sort sessions" value={sortValue} onChange={e => { const [sort, dir] = e.target.value.split(':'); query({ sort, dir }) }}>
+              {!SORT_CHOICES.some(c => `${c.key}:${c.dir}` === sortValue) && <option value={sortValue}>Sorted by {sortKey} {sortDir === 'asc' ? '↑' : '↓'}</option>}
+              {SORT_CHOICES.map(c => <option key={`${c.key}:${c.dir}`} value={`${c.key}:${c.dir}`}>{c.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="session-results">
+          <span>{sessionsResource.data === undefined ? 'Loading sessions…' : filtered.length === rows.length ? `${rows.length} ${rows.length === 1 ? 'session' : 'sessions'}` : `${filtered.length} of ${rows.length} sessions`}</span>
+          {filtersActive && <button type="button" className="session-link" onClick={() => { setFilter(''); query({ track: null, vehicle: null }) }}>Clear filters</button>}
+          {filtered.length > 0 && <button type="button" className="session-link session-select-all" onClick={toggleAllVisible}>
+            {allVisibleSelected ? 'Clear selection' : `Select all ${filtered.length}`}
+          </button>}
+        </div>
+        {selected.size > 0 && rows.some(r => selected.has(r.session_guid) && !r.details_loaded) && <button className="btn primary session-download" disabled={downloading.size > 0} onClick={downloadSelected}>Download selected telemetry</button>}
         {sessionsResource.data !== undefined && [...selected].some(id => !rows.some(r => r.session_guid === id)) && <p role="alert">Some selected sessions are unavailable. Clear the selection to choose available sessions.</p>}
         {downloading.size > 0 && <p className="small" role="status">Downloading details for {downloading.size} session(s)…</p>}
         {downloadError && (
@@ -195,79 +295,27 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
             }}>Retry selected</button>
           </div>
         )}
-        {vehicleGroups.length > 1 && (
-          <div className="row-center session-vehicle-filters" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-            <span className="muted text-mono" style={{
-              fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', marginRight: 4,
-            }}>Vehicle:</span>
-            <button
-              aria-pressed={vehicleFilter === null}
-              className={`chip ${vehicleFilter === null ? 'signal' : ''}`}
-              style={{ cursor: 'pointer' }}
-              onClick={() => setVehicleFilter(null)}
-            >
-              All · {rows.length}
-            </button>
-            {vehicleGroups.map(g => (
-              <button
-                aria-pressed={vehicleFilter === g.guid}
-                key={g.guid}
-                className={`chip ${vehicleFilter === g.guid ? 'signal' : ''}`}
-                style={{ cursor: 'pointer' }}
-                onClick={() => setVehicleFilter(g.guid === vehicleFilter ? null : g.guid)}
-              >
-                {g.label} · {g.count}
-              </button>
-            ))}
-          </div>
-        )}
 
-        <div className="row-center session-search" style={{ marginBottom: 16, gap: 10 }}>
-          <input
-            aria-label="Filter sessions"
-            placeholder="Search track, vehicle, or session…"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-            style={{
-              flex: 1,
-              background: 'var(--panel)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)',
-              padding: '10px 14px',
-              color: 'var(--text)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 12,
-            }}
-          />
-          <button className="btn ghost" style={{ padding: '10px 14px' }} onClick={toggleAllVisible}>
-            {allVisibleSelected ? 'Clear visible' : 'Select visible'}
-          </button>
-        </div>
-
-        <div className="session-mobile-sort">
-          <label htmlFor="session-sort">Sort sessions</label>
-          <select id="session-sort" value={sortKey} onChange={e => onHeaderClick(e.target.value as SortKey)}>
-            <option value="date">Date</option><option value="track">Track</option><option value="config">Configuration</option><option value="vehicle">Vehicle</option><option value="best">Best lap</option><option value="laps">Lap count</option><option value="weather">Weather</option>
-          </select>
-          <button className="btn ghost" aria-label={`Sort ${sortDir === 'desc' ? 'ascending' : 'descending'}`} onClick={() => setSortDir(d => d === 'asc' ? 'desc' : 'asc')}>{sortDir === 'desc' ? '↓ Desc' : '↑ Asc'}</button>
-        </div>
         <div className="session-cards" aria-busy={sessionsResource.pending}>
           {loading && <LoadingRows />}
           {sessionsResource.data !== undefined && !filtered.length && <p className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</p>}
           {filtered.map(r => <label key={r.session_guid} className={`session-card ${selected.has(r.session_guid) ? 'is-selected' : ''}`}>
-            <div className="session-card-top">
-              <span className="session-card-date">{r.session_start ?? 'Date unavailable'}</span>
-              <input type="checkbox" checked={selected.has(r.session_guid)} onChange={() => toggle(r.session_guid)} aria-label={`Select ${r.track_name ?? 'session'} ${r.session_start ?? ''}`} />
-            </div>
-            <strong className="session-card-track">{r.track_name ?? 'Unknown track'}</strong>
-            <span className="session-card-config">{r.track_configuration_name || 'Default configuration'}</span>
-            <div className="session-card-stats">
-              <div><small>Best lap</small><strong>{msToLap(r.best_lap_ms)}</strong></div>
-              <div><small>Laps</small><strong>{r.lap_count || '—'}</strong></div>
-              <div><small>Vehicle</small><span>{vehicleLabel(r) || '—'}</span></div>
-            </div>
-            <div className="session-card-footer"><span>{r.weather_description || 'Weather unavailable'}</span><span>{downloading.has(r.session_guid) ? 'Downloading…' : r.details_loaded ? 'Telemetry ready' : 'Details needed'}</span></div>
-            <NavLink className="btn ghost" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review session →</NavLink>
+            <input type="checkbox" className="session-card-check" checked={selected.has(r.session_guid)} onChange={() => toggle(r.session_guid)} aria-label={`Select ${r.track_name ?? 'session'} ${r.session_start ?? ''}`} />
+            <span className="session-card-main">
+              <strong className="session-card-track">{r.track_name ?? 'Unknown track'}</strong>
+              <span className="session-card-sub">{[r.track_configuration_name || 'Default configuration', vehicleLabel(r)].filter(Boolean).join(' · ')}</span>
+            </span>
+            <span className="session-card-time">
+              <strong><LapTime row={r} /></strong>
+              <small>{r.lap_count ? `${r.lap_count} ${r.lap_count === 1 ? 'lap' : 'laps'}` : 'No laps'}</small>
+            </span>
+            <span className="session-card-foot">
+              <span className="session-card-when">
+                {[startLabel(r.session_start, !r.session_start?.startsWith(thisYear)), r.weather_description, temperature(r)].filter(Boolean).join(' · ')}
+                {(!r.details_loaded || downloading.has(r.session_guid)) && <em>{downloading.has(r.session_guid) ? 'Downloading…' : 'Overview only'}</em>}
+              </span>
+              <NavLink className="session-card-review" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review →</NavLink>
+            </span>
           </label>)}
         </div>
         <div className="tbl-wrap sessions-table" aria-busy={sessionsResource.pending}>
@@ -281,13 +329,15 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                 <SortHeader k="vehicle" sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Vehicle</SortHeader>
                 <SortHeader k="best"    sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick} align="right">Best lap</SortHeader>
                 <SortHeader k="laps"    sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick} align="right">Laps</SortHeader>
+                <th style={{ textAlign: 'right' }}>Temp</th>
                 <SortHeader k="weather" sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Weather</SortHeader>
+                <th><span className="loading-sr-only">Review</span></th>
               </tr>
             </thead>
             <tbody>
-              {loading && Array.from({ length: 5 }, (_, row) => <tr key={row} className="loading-table-row" aria-hidden="true">{Array.from({ length: 8 }, (_, cell) => <td key={cell}><Skeleton /></td>)}</tr>)}
+              {loading && Array.from({ length: 5 }, (_, row) => <tr key={row} className="loading-table-row" aria-hidden="true">{Array.from({ length: 10 }, (_, cell) => <td key={cell}><Skeleton /></td>)}</tr>)}
               {sessionsResource.data !== undefined && filtered.length === 0 && (
-                <tr><td colSpan={8} className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</td></tr>
+                <tr><td colSpan={10} className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</td></tr>
               )}
               {filtered.map(r => {
                 const on = selected.has(r.session_guid)
@@ -317,9 +367,11 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                     </td>
                     <td className="muted">{r.track_configuration_name || '—'}</td>
                     <td className="small">{veh || <span className="muted">—</span>}</td>
-                    <td className="num laptime">{msToLap(r.best_lap_ms)}</td>
+                    <td className="num laptime"><LapTime row={r} /></td>
                     <td className="num">{r.lap_count || '—'}</td>
-                    <td className="muted small">{r.weather_description || '—'}<NavLink className="session-review-link" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review →</NavLink></td>
+                    <td className="num">{temperature(r) ?? '—'}</td>
+                    <td className="muted small">{r.weather_description || '—'}</td>
+                    <td className="session-review-cell"><NavLink className="session-review-link" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review →</NavLink></td>
                   </tr>
                 )
               })}
@@ -347,9 +399,10 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
               <span className="chip">+{selectedRows.length - 10}</span>
             )}
           </div>
+          {mixedSelection && <p className="selection-warning" role="status">Pick sessions from one track layout and one car to compare laps</p>}
           <button className="btn ghost" onClick={() => setSelected(new Set())}>Clear</button>
-          {selectedNeedsDetails || sessionsResource.data === undefined || [...selected].some(id => !rows.some(r => r.session_guid === id))
-            ? <button className="btn primary" disabled>{selectedNeedsDetails ? 'Download details first' : 'Sessions unavailable'}</button>
+          {selectedNeedsDetails || mixedSelection || sessionsResource.data === undefined || [...selected].some(id => !rows.some(r => r.session_guid === id))
+            ? <button className="btn primary" disabled>{selectedNeedsDetails ? 'Download details first' : mixedSelection ? 'Mixed selection' : 'Sessions unavailable'}</button>
             : <NavLink className="btn primary" to={routeUrl('/analysis', { session: [...selected] })}>Analyze {selected.size} →</NavLink>}
         </div>
       )}

@@ -5,7 +5,7 @@ const { COACHING_TOOL } = require('../dist-main/garmin/coachingTool.js')
 
 const config = {
   provider: 'openai', apiKey: 'fixture', model: 'gpt-6-astra',
-  tools: [COACHING_TOOL], toolChoice: { type: 'tool', name: COACHING_TOOL.name },
+  tools: [COACHING_TOOL], toolChoice: { type: 'tool', name: COACHING_TOOL.name }, deadlineMs: 15 * 60_000,
 }
 const json = JSON.stringify({ headline: 'Brake smoothly 🏁', tips: [], annotations: [] })
 const response = (status = 'completed', extra = {}) => ({

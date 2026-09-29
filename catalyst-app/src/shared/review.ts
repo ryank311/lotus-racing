@@ -1,4 +1,5 @@
 /** Review storage and transport use SI units: milliseconds, metres, m/s, °C. */
+import type { CoachingContext, FocusCheck, FocusItem } from './types.js'
 export type Surface = 'dry' | 'damp' | 'wet' | 'mixed' | 'unknown'
 export const SURFACES: Surface[] = ['dry', 'damp', 'wet', 'mixed', 'unknown']
 export type ReviewMetric = 'timeMs' | 'vminMps' | 'vminDistanceM' | 'entryMps' | 'exitMps' | 'topSpeedMps' | 'consistencyMs'
@@ -63,8 +64,8 @@ export interface ConditionOverride { surface: Surface | null; temperatureC: numb
 export interface ProgressFilters {
   vehicleGuid?: string; configurationId?: number; cartographyId?: number
   account?: string; reverse?: boolean; direction?: string | null
-  /** Omit temperatureC to include all temperatures; when set, match within ±5°C. */
-  surface?: Surface; temperatureC?: number; anchorSessionGuid?: string
+  /** 'any' includes every surface. Omit temperatureC to include all temperatures; when set, match within ±5°C. */
+  surface?: Surface | 'any'; temperatureC?: number; anchorSessionGuid?: string
 }
 export interface ProgressResponse {
   filters: ProgressFilters; available: ReviewSummary[]; sessions: ReviewSummary[]
@@ -75,6 +76,10 @@ export interface ReviewCoachResult {
   summary: string; strengths: string[]; regressions: string[]
   priorities: Array<{ ref: string; advice: string; evidence: string[]; cue: string; successMetric: string }>
   limitations: string[]
+  // Measurable targets set by this review, and how the previous focus fared.
+  focus?: FocusItem[]
+  context?: CoachingContext
+  previousFocus?: FocusCheck[]
 }
 export interface ReviewCoachingReport {
   id: string; sessionGuid: string; revision: string; createdAt: string; model: string; units: string

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from 'react'
-import { REVIEW_METRICS, type ReviewSummary } from '../../shared/review'
+import { REVIEW_METRICS, type ReviewMetric, type ReviewSummary } from '../../shared/review'
 import { NavLink } from '../navigation'
 import { segment } from '../routes'
 import { metricLabels, useReviewFormat } from '../pages/SessionReview'
@@ -29,6 +29,8 @@ function ComparisonWorkspace({ sessions, scope }: { sessions: ReviewSummary[]; s
   useEffect(() => { try { sessionStorage.setItem(storageKey, JSON.stringify(plots)) } catch { /* Storage is optional. */ } }, [storageKey, plots])
   const [hidden, setHidden] = useState<string[]>([])
   const [scale, setScale] = useState<'actual' | 'relative'>('actual')
+  // Traversal time can plot the fast-three mean or each session's best pass; other metrics always use the mean.
+  const [timeStat, setTimeStat] = useState<'mean' | 'best'>('mean')
   const [from, setFrom] = useState(''), [to, setTo] = useState('')
   const [search, setSearch] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false), [datesOpen, setDatesOpen] = useState(false), [helpOpen, setHelpOpen] = useState(false)
@@ -42,14 +44,18 @@ function ComparisonWorkspace({ sessions, scope }: { sessions: ReviewSummary[]; s
     return () => observer.disconnect()
   }, [])
   const compatible = sessions.filter(s => s.meanLineGuid && s.meanLineGuid === latest?.meanLineGuid && s.geometryRevision === latest?.geometryRevision)
-  const filtered = compatible.filter(s => (!from || !!s.start && s.start.slice(0, 10) >= from) && (!to || !!s.start && s.start.slice(0, 10) <= to))
+  const olderDefinitions = sessions.filter(s => s.meanLineGuid && s.meanLineGuid === latest?.meanLineGuid && s.geometryRevision !== latest?.geometryRevision).length
+  const dated = compatible.filter(s => (!from || !!s.start && s.start.slice(0, 10) >= from) && (!to || !!s.start && s.start.slice(0, 10) <= to))
   const active = plots.filter(p => regions.some(r => r.id === p.regionId))
   const visible = active.filter(p => !hidden.includes(plotKey(p)))
+  const timePlots = active.some(p => p.metric === 'timeMs'), best = timeStat === 'best' && timePlots
+  const filtered = best ? dated.map(s => ({ ...s, regions: s.regions.map(r => ({ ...r, timeMs: r.bestTimeMs })) })) : dated
+  const metricName = (metric: ReviewMetric) => metric === 'timeMs' && best ? 'Traversal time (best lap)' : metricLabels[metric]
   const mixed = new Set(visible.map(p => metricFamily(p.metric))).size > 1
   const relative = scale === 'relative' || mixed
   const series = visible.map(p => {
     const index = active.findIndex(a => plotKey(a) === plotKey(p))
-    return { ...p, key: plotKey(p), label: `${regions.find(r => r.id === p.regionId)?.name} · ${metricLabels[p.metric]}`, color: colors[index % colors.length], dash: dashes[Math.floor(index / colors.length) % dashes.length], ...comparisonValues(filtered, p, relative) }
+    return { ...p, key: plotKey(p), label: `${regions.find(r => r.id === p.regionId)?.name} · ${metricName(p.metric)}`, color: colors[index % colors.length], dash: dashes[Math.floor(index / colors.length) % dashes.length], ...comparisonValues(filtered, p, relative) }
   })
   const all = series.flatMap(s => s.values).filter((v): v is number => v !== null)
   const low = Math.min(...all, ...(relative ? [0] : [])), high = Math.max(...all, ...(relative ? [0] : []))
@@ -71,6 +77,7 @@ function ComparisonWorkspace({ sessions, scope }: { sessions: ReviewSummary[]; s
     <div className="progress-controls">
       <button type="button" className="progress-control progress-choose" aria-expanded={pickerOpen} aria-controls={`${controlId}-plots`} onClick={() => setPickerOpen(v => !v)}>Choose plots <span>{active.length}</span></button>
       <div className="review-tabs" role="group" aria-label="Comparison scale"><button type="button" className={!relative ? 'active' : ''} aria-pressed={!relative} disabled={mixed} title={mixed ? 'Mixed units require percentage change' : 'Use a shared axis in the original units'} onClick={() => setScale('actual')}>Actual values</button><button type="button" className={relative ? 'active' : ''} aria-pressed={relative} onClick={() => setScale('relative')}>Change %</button></div>
+      <div className="review-tabs" role="group" aria-label="Traversal time statistic" title={timePlots ? 'Traversal time: mean of the fast three laps or the best single pass' : 'Applies to traversal-time plots only'}><button type="button" className={!best ? 'active' : ''} aria-pressed={!best} disabled={!timePlots} onClick={() => setTimeStat('mean')}>Mean of fast three</button><button type="button" className={best ? 'active' : ''} aria-pressed={best} disabled={!timePlots} onClick={() => setTimeStat('best')}>Best lap</button></div>
       <button type="button" className="progress-control" aria-expanded={datesOpen} aria-controls={`${controlId}-dates`} onClick={() => setDatesOpen(v => !v)}>{from || to ? `${from || 'Start'} → ${to || 'Latest'}` : 'All dates'} <span aria-hidden="true">▾</span></button>
       <button type="button" className="progress-control progress-help" aria-label="About comparison scales" aria-expanded={helpOpen} aria-controls={`${controlId}-help`} onClick={() => setHelpOpen(v => !v)}>ⓘ{mixed && <span>Mixed units</span>}</button>
     </div>
@@ -86,9 +93,10 @@ function ComparisonWorkspace({ sessions, scope }: { sessions: ReviewSummary[]; s
     </div>
     <p className="progress-scale-note progress-help-text" id={`${controlId}-help`} hidden={!helpOpen}>{relative ? `${mixed ? 'Mixed units use percentage change. ' : ''}Each plot starts at its first measured value in this date range. Negative = lower, positive = higher; speed changes are neutral.` : 'Plots with the same units share an axis. Add metrics with different units to compare percentage change.'}</p>
     <div className="progress-plot-legend" aria-label="Selected plots">{active.map((plot, index) => {
-      const key = plotKey(plot), label = `${regions.find(r => r.id === plot.regionId)?.name} · ${metricLabels[plot.metric]}`, shown = !hidden.includes(key)
+      const key = plotKey(plot), label = `${regions.find(r => r.id === plot.regionId)?.name} · ${metricName(plot.metric)}`, shown = !hidden.includes(key)
       return <button key={key} type="button" aria-pressed={shown} aria-label={`${shown ? 'Hide' : 'Show'} ${label}`} style={{ '--plot-color': colors[index % colors.length] } as CSSProperties} onClick={() => setHidden(previous => shown ? [...previous, key] : previous.filter(k => k !== key))}><svg width="24" height="8" aria-hidden="true"><line x1="0" x2="24" y1="4" y2="4" stroke="currentColor" strokeWidth="3" strokeDasharray={dashes[Math.floor(index / colors.length) % dashes.length]} /></svg>{label}</button>
     })}</div>
+    {olderDefinitions > 0 && <p className="progress-hidden-note">{olderDefinitions} earlier {olderDefinitions === 1 ? 'session uses an older corner definition and is' : 'sessions use an older corner definition and are'} hidden from region plots.</p>}
     <div ref={container} className="progress-chart">
       {!filtered.length || !all.length ? <div className="progress-empty" role="status"><strong>{!filtered.length ? 'No sessions in this comparison' : !visible.length ? 'Choose plots to start comparing' : 'No plottable measurements'}</strong><p>{!filtered.length ? 'Try a wider date range. Regional history requires matching track geometry.' : !visible.length ? 'Use Choose plots above, or show a hidden plot.' : 'Missing values leave gaps. Percentage change is unavailable when a plot starts at zero; try actual values with matching units.'}</p></div> : <div className="review-trend-scroll" role="region" aria-label="Regional comparison timeline" tabIndex={0}>
         <svg width={timeline.width} height={height} viewBox={`0 0 ${timeline.width} ${height}`} role="group" aria-label="Overlaid regional progress plots">
