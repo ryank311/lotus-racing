@@ -31,6 +31,8 @@ in the app:
 | Videos are kept forever, and ffmpeg processing is preferred. | ffmpeg trims each recording to its sessions and transcodes the result for playback. The processed files are permanent. ffmpeg becomes a runtime dependency. |
 | PDR data is workspace-scoped. | Files, tables, uploads and media all live in the uploading driver's workspace only. Nothing goes in the shared server root. |
 | Not every car has a PDR (the Lotus doesn't). | Every PDR feature is optional. Without PDR data the app behaves exactly as it does today. |
+| The recorded video already has the PDR overlay burned in. | No overlay rendering of our own. The burned-in speed/RPM readout doubles as a check on video/telemetry sync in Phase 0. The player leaves the frame uncovered so the overlay stays readable. |
+| Playback videos are 1080p for now. | One 1080p playback file per session. No 720p setting or mobile rendition until 1080p proves a problem. |
 
 ## What a PDR recording is
 
@@ -335,11 +337,10 @@ ffmpeg turns it into one permanent file per linked session:
   anyway.
 - **Transcode.** Default to H.264 High, 1080p, CRF 23, `-preset veryfast`, with
   AAC 128 kb/s audio. Use `-movflags +faststart` so browsers can seek over HTTP.
-  This keeps the burned-in overlay readable at roughly 300–500 MB per 22-minute
-  session, versus about 900 MB for the original.
-  - A workspace setting can choose 720p (about 150–250 MB) to save space.
-  - A 720p "mobile" rendition for phones over Cloudflare is optional and can be
-    added later if 1080p stutters.
+  1080p keeps the burned-in overlay readable, at roughly 300–500 MB per
+  22-minute session versus about 900 MB for the original. Resolution is fixed
+  at 1080p for now. A 720p rendition for phones over Cloudflare can be added
+  later if 1080p stutters.
 - **Poster.** Take one JPEG from the first lap for lists and the player.
 - **Verify.** Run `ffprobe` on the output: duration within 0.5 s of expected,
   video stream present. Record the output's actual start on the PDR clock in
@@ -475,7 +476,7 @@ and a "needs review" count on the Import action.
 | **3. Channels in Analysis** | Throttle/brake, steering, RPM/gear charts, intervention strip, measured lap phases with fallback, optional-data handling. | Corner phases on a PDR lap come from pedals. Lotus and older Corvette laps are unchanged, and mixed selections render correctly. |
 | **4. Video** | ffmpeg processing queue, Docker/desktop dependency, Range media endpoint, video panel on Analysis and Session Review, two-way cursor sync, storage view. | A session's playback file is created automatically after import. Hovering a braking zone shows that moment on video within one frame on desktop, and seeking works on a phone. |
 | **5. Coaching** | New metrics, understeer index, tyre and fluid data in the packet, focus tracking, measured/inferred labels. | A coaching report on a PDR session cites measured pedal metrics. A Lotus report is unchanged. |
-| **6. Extras** | Side-by-side two-lap video synced by distance, per-lap clip export, a 720p mobile rendition, Quick Sync encoding. | As needed. |
+| **6. Extras** | Side-by-side two-lap video synced by distance, per-lap clip export, a 720p mobile rendition if 1080p stutters on phones, Quick Sync encoding. | As needed. |
 
 ## Testing
 
@@ -527,8 +528,10 @@ Follow the existing `node --test tests/*.test.cjs` pattern.
   weekend's worth on cellular is slow. Uploading from the laptop on home Wi-Fi is
   the comfortable path.
 - **Transcode time.** If the NAS can't keep up (Phase 0 measures it), use Quick
-  Sync or 720p output. Telemetry is usable while video is still processing.
-- **Still open:**
-  - Which overlay mode do you record in? If it's None, a later phase could draw
-    our own overlay on clean video.
-  - Should the default playback resolution be 1080p (proposed) or 720p?
+  Sync, or revisit the 1080p decision. Telemetry is usable while video is still
+  processing.
+- **Overlay mode changes.** The driver can change the overlay mid-recording,
+  which is harmless. A recording made with overlay None would play as clean
+  video. That is fine, but it can't be used for the Phase 0 sync check.
+
+No product questions are open. Phase 0 answers the remaining technical ones.
