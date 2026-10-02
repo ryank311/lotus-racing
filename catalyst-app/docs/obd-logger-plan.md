@@ -34,40 +34,61 @@ offers.
 
 The Catalyst is an Android-based device the owner owns, so the goal is to
 install our own app on it the same way any Android device takes a sideloaded
-app. What's unverified is whether this unit exposes a **standard** Android
-install path. Phase 0 checks, on the owner's own device, using only normal
-Android facilities:
+app. There is real precedent: owners of Garmin's **Overlander** (Android 6.0.1)
+and **Tread Overland / XL** units install their own standard APKs through the
+ordinary Android path. What's unverified is whether the Catalyst exposes that
+same path, and whether a sideloaded app can use Bluetooth. Phase 0 checks, on
+the owner's own device, with only normal Android facilities, following the
+sequence those owners use:
 
-1. **Developer Options / USB debugging.** In Settings, look for an About or
-   build-number entry and a Developer Options screen with a USB debugging
-   toggle (standard Android).
-2. **ADB over USB.** With the Catalyst on USB, run `adb devices`. If it appears
-   as a device (not only MTP storage), try `adb install our-app.apk` with a
-   trivial signed test APK.
-3. **Install from storage.** If there is a files/browser surface, try opening
-   an APK copied to the device, with "install unknown apps" allowed.
-4. **Note the OS.** Record the Android/AOSP version shown, and whether BLE is
-   available to apps.
+1. **Unlock Developer Options.** Settings → About device → tap **Build number**
+   about seven times until the "you are now a developer" toast appears, then
+   open the new **Developer Options** entry and enable **USB debugging**.
+2. **Allow unknown sources.** Settings → Security → enable installing apps from
+   outside a store.
+3. **Install the test APK, two ways.** The method owners report most on the
+   Garmin units is copying the APK to the device over USB (or microSD) and
+   opening it in the device's **file manager**. Also try `adb devices` then
+   `adb install test.apk` over USB (the Catalyst may show only as MTP storage,
+   in which case `adb` won't see it and the file-manager route is the one).
+4. **The critical test — BLE.** The test APK must scan for and connect to the
+   Veepeak over BLE and read one PID. On the Tread units, third-party apps
+   reportedly **can't pair Bluetooth freely** (it seems scoped to Garmin's own
+   accessories). If the Catalyst behaves the same way, the app can install but
+   can't reach the adapter, which kills the on-device design. Test this before
+   any real build work.
+5. **Launching and OS notes.** Record the Android version, and how a sideloaded
+   app is launched: Garmin's custom launcher may hide the icon, so a small
+   shortcut-launcher APK, or setting a different launcher, may be needed.
 
-**Outcome A — the Catalyst accepts a standard sideload.** This is the plan:
-build the app (Part A) and install it this way. Everything below is written for
-this case.
+**Outcome A — the Catalyst installs the app and the app reaches the adapter over
+BLE.** This is the plan: build Part A and install it this way. Everything below
+is written for this case.
 
-**Outcome B — the device only runs manufacturer-signed software and exposes no
-standard install path.** Then the app can't be installed without modifying the
-device's firmware or security, which this plan does not cover. The same app
-also runs unchanged on any spare Android device the owner already has, but
-that's a last resort, not a design goal here. Phase 0 is expected to land on
-Outcome A.
+**Outcome B — the app can't be installed, or installs but can't use BLE.** Then
+the on-device design doesn't work on this unit, and this plan stops rather than
+modifying the device's firmware or security, which it does not cover. The same
+app runs unchanged on any spare Android device, but that's a last resort the
+owner has said they'd rather avoid, not a design goal here.
 
-The server side (Part B) is identical in every case: it accepts uploads from
-any logger, so the host decision never reaches it.
+The server side (Part B) is identical either way: it accepts uploads from any
+logger, so the host decision never reaches it.
 
-> Research notes: no public source documented a standard sideload path on the
-> original Catalyst, and Garmin lists it among Linux-based products and ships
-> only Garmin-signed updates (Garmin Express or Wi‑Fi). That's why this is a
-> device check rather than an assumption. Neither Catalyst generation reads OBD
-> itself, so none of this data is already in the Garmin sessions.
+> Research notes (several key sources were proxy-blocked, so some of this is
+> second-hand from search snippets):
+> - **Precedent exists but only on sibling units.** Overlander and Tread
+>   Overland/XL accept standard sideloads; Tread Base and Tread 2 don't; the
+>   locked DriveSmart/dēzl/RV line connects as MTP only.
+> - **No Catalyst report.** Nothing documents Developer Options, ADB, or a
+>   standard app install on the original Catalyst. It presents over USB as MTP,
+>   and Garmin has been tightening access (FIT files removed in firmware 5.30).
+> - **Firmware updates can break it.** A 2025 Tread Overland update left
+>   sideloaded apps installed but no longer able to run. A Catalyst update could
+>   do the same, so pin/decline firmware updates once it works.
+> - **Third-party BLE is the biggest risk** (step 4), ahead of the install path
+>   itself.
+> - Neither Catalyst generation reads OBD itself, so none of this data is
+>   already in the Garmin sessions.
 
 ## What the car can give over OBD-II
 
@@ -247,7 +268,7 @@ laps without data. What a car with OBD gains:
 
 | Phase | Scope | Done when |
 | --- | --- | --- |
-| **0. Host and car check** | On the Catalyst: check for Developer Options / USB debugging, try `adb install` of a test APK, or an APK from storage; note the Android version and BLE availability. On the car with a free terminal app: `ATDPN`, `0100/0120/0140`, test a multi-PID request, time 200 fast-PID polls, and note any useful broadcast frame. Decide host (Catalyst vs fallback) and acquisition mode. | Findings written here: install path, Android version, protocol, PID list, achieved Hz, chosen adapter. |
+| **0. Host and car check** | On the Catalyst, follow the Host-decision steps: unlock Developer Options, allow unknown sources, install a test APK (file manager or `adb install`), and above all confirm a sideloaded app can **connect to the Veepeak over BLE and read a PID**; note the Android version and how to launch a sideloaded app. On the car with a free terminal app: `ATDPN`, `0100/0120/0140`, test a multi-PID request, time 200 fast-PID polls, and note any useful broadcast frame. | Findings written here: install path, third-party BLE works yes/no, Android version, protocol, PID list, achieved Hz, chosen adapter. The BLE result is the go/no-go. |
 | **1. Logger MVP** | Transports, ELM327 driver, catalog + any car profile, scheduler, recorder, status/diagnostics screens; manual start/stop and a share-recording export. | A drive produces a recording with RPM, speed and throttle at the measured rates, no gaps beyond adapter dropouts. |
 | **2. Hands-off** | Auto-start, auto-connect, session detection, reconnect handling; runs cleanly alongside a Catalyst session. | 3 drives logged untouched with Garmin recording normally. |
 | **3. Server ingest & pairing** | Generic `aux_*` schema (shared with PDR), device tokens + QR pairing, Cloudflare service-token setup/docs, ingest endpoint, worker job, Uploader. | Recordings upload automatically on Wi‑Fi through Cloudflare and land only in the paired workspace; a revoked device gets 401. |
@@ -256,8 +277,11 @@ laps without data. What a car with OBD gains:
 
 ## Risks
 
-- **Install path unknown until Phase 0.** The whole on-device design is gated on
-  it. Phase 0 is scoped to answer it first, before any build work starts.
+- **Install path and third-party BLE unknown until Phase 0.** The whole
+  on-device design is gated on both. Precedent on Garmin's Overlander and Tread
+  Overland is encouraging for the install path, but those units reportedly
+  restrict Bluetooth to Garmin accessories, and the OBD app lives or dies on
+  BLE. Phase 0 tests BLE first, before any build work starts.
 - **Low sample rate.** If a channel polls under ~3 Hz, move to an STN-based
   adapter (OBDLink CX, BLE) — a transport change only.
 - **Running alongside Garmin.** The app must stay light and must never disturb a
