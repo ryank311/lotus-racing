@@ -1,386 +1,275 @@
-# OBD-II logger app plan
+# OBD-II logger plan
 
-Status: proposal. Nothing is implemented yet. Phase 0 is a few hours of hands-on
-checks with the car, the Veepeak adapter and the Catalyst. Those checks decide
-two things: which device runs the logger, and which channels we can actually
-get.
+Status: proposal. Nothing is implemented yet. Phase 0 is a short hands-on check
+of the Catalyst and the car. It decides the host (the Catalyst itself, or a
+fallback device) and the channel set.
 
 ## Goal
 
-An Android app runs in the car without anyone touching it. It:
+Anyone who drives with a Garmin Catalyst and runs Catalyst Coach should be able
+to add their car's own OBD-II data to their sessions: RPM, speed, throttle and
+pedal position, load, boost, temperatures — whatever the car's OBD-II port
+offers.
 
-1. starts with the car
-2. connects to the Bluetooth Veepeak OBD-II adapter
-3. logs every useful channel the car offers during track sessions
-4. uploads the recordings to Catalyst Coach when it reaches Wi‑Fi
+- **On the Catalyst.** The logger runs as a native Android app on the
+  Catalyst itself, so there is no phone and nothing extra in the car.
+- **Automatic.** It starts with the car, connects to the Bluetooth OBD adapter,
+  logs during sessions, and uploads to the driver's Catalyst Coach workspace
+  over Wi‑Fi.
+- **Linked and used.** Catalyst Coach matches each recording to the Catalyst
+  session and uses the channels in Analysis and coaching, the same way the
+  [PDR import plan](corvette-pdr-import-plan.md) does for the Corvette.
 
-Catalyst Coach then links each recording to the matching Catalyst session and
-uses the channels in Analysis and coaching, the same way the
-[PDR import plan](corvette-pdr-import-plan.md) does for the Corvette.
+## Requirements (from the owner)
 
-## What research found
+| Requirement | Consequence |
+| --- | --- |
+| Run on the owner's own Catalyst (original, 6.95", Android-based). | The app installs on the Catalyst through a standard Android app-install path. Primary design below. |
+| No phone and no add-on sensors in the car. | Only the OBD adapter may change. Data is limited to the OBD-II port. |
+| Works for anyone, any car. | Nothing car-specific is required; the app discovers each car's PIDs. Optional car profiles add extras. |
+| A faster adapter is fine. | The current Veepeak BLE can be replaced if Phase 0 shows it's a bottleneck. |
+| Data belongs to a workspace. | Each logger pairs with exactly one Catalyst Coach workspace. |
 
-Most forum and vendor pages couldn't be opened directly, so many facts below
-come from search snippets. Phase 0 exists to confirm them on our own car and
-hardware.
+## Host decision (Phase 0 gate)
 
-### 1. The app almost certainly can't run on the Catalyst
+The Catalyst is an Android-based device the owner owns, so the goal is to
+install our own app on it the same way any Android device takes a sideloaded
+app. What's unverified is whether this unit exposes a **standard** Android
+install path. Phase 0 checks, on the owner's own device, using only normal
+Android facilities:
 
-- **No route in.** Neither Catalyst generation has a known way to install
-  apps: no app store, no Developer Options or ADB, no sideloading or root
-  reports.
-- **The original Catalyst is Android underneath.** It shows up over USB as an
-  Android (MTP) device. But Garmin locks it to a single app and has been
-  closing access over time; firmware 5.30 removed the FIT session files.
-- **Catalyst 2 may not be Android at all.** It has a 3" screen and a
-  dashcam-style body.
-- **Garmin's other car units are different.** The Tread Overland runs Android
-  10 and accepts APKs. Nobody has reported the same for a Catalyst.
+1. **Developer Options / USB debugging.** In Settings, look for an About or
+   build-number entry and a Developer Options screen with a USB debugging
+   toggle (standard Android).
+2. **ADB over USB.** With the Catalyst on USB, run `adb devices`. If it appears
+   as a device (not only MTP storage), try `adb install our-app.apk` with a
+   trivial signed test APK.
+3. **Install from storage.** If there is a files/browser surface, try opening
+   an APK copied to the device, with "install unknown apps" allowed.
+4. **Note the OS.** Record the Android/AOSP version shown, and whether BLE is
+   available to apps.
 
-**Plan:** run the logger on a **cheap dedicated Android phone** that lives in
-the car. Phase 0 includes a 10-minute check of the Catalyst anyway (USB
-debugging, `adb devices`), in case we get lucky.
+**Outcome A — the Catalyst accepts a standard sideload.** This is the plan:
+build the app (Part A) and install it this way. Everything below is written for
+this case.
 
-### 2. The Catalyst has no OBD support of its own
+**Outcome B — the device only runs manufacturer-signed software and exposes no
+standard install path.** Then the app can't be installed without modifying the
+device's firmware or security, which this plan does not cover. The same app
+also runs unchanged on any spare Android device the owner already has, but
+that's a last resort, not a design goal here. Phase 0 is expected to land on
+Outcome A.
 
-Neither generation reads OBD-II or CAN. Forums agree on this, and the only
-Catalyst accessory is the R1 rear radar. So no engine data is hiding in the
-Garmin sessions we already download. It has to come from our own logger.
+The server side (Part B) is identical in every case: it accepts uploads from
+any logger, so the host decision never reaches it.
 
-### 3. What each car can give over the OBD port
+> Research notes: no public source documented a standard sideload path on the
+> original Catalyst, and Garmin lists it among Linux-based products and ships
+> only Garmin-signed updates (Garmin Express or Wi‑Fi). That's why this is a
+> device check rather than an assumption. Neither Catalyst generation reads OBD
+> itself, so none of this data is already in the Garmin sessions.
 
-| Channel you asked about | 2008 Lotus Exige (T4e ECU) | 2023 Corvette C8 |
+## What the car can give over OBD-II
+
+Standard OBD-II Mode 01, available on essentially every car, in canonical units:
+
+| Category | PIDs | Notes |
 | --- | --- | --- |
-| Engine RPM | **Yes.** About 10 Hz from the ECU's broadcast frame `0x400` (see below). Also available by polling (PID `0C`). | Polling only (PID `0C`) |
-| Speed | **Yes.** Broadcast (frame `0x400`) and PID `0D` | PID `0D` |
-| Throttle | **Yes.** Throttle position, PID `11`, polled at a few Hz | PIDs `11`/`49`; already in the PDR at 50 Hz |
-| Coolant, intake air temperature, ignition timing, engine load, MAF | Yes, polled slowly | Yes; most are in the PDR |
-| Fuel level | Broadcast frame `0x400` | — |
-| **Brake pedal or brake pressure** | **No.** There's no brake pressure sensor, and no public map of a brake-switch frame. | Not through the OBD port (gateway). The PDR has it at 100 Hz. |
-| **Wheel speeds, ABS activity** | **No.** The ABS unit isn't on the CAN bus. | Not through the OBD port; the PDR has them. |
-| Steering angle | **No.** There's no sensor. | PDR only |
+| Engine and speed | RPM `0C`, speed `0D` | Speed is whole km/h and often filtered; GPS speed is preferred for analysis. |
+| Driver input | throttle `11`, relative throttle `45`, pedal D/E/F `49`–`4B`, commanded throttle `4C` | **The main new coaching channel.** Pedal position is the driver's foot; throttle position is the blade. |
+| Load and torque | load `04`/`43`, torque `61`–`63` | Torque on newer cars only. |
+| Air and boost | MAP `0B` (boost = MAP − baro `33`), MAF `10` | |
+| Temperatures | coolant `05`, intake air `0F`, oil `5C` (often absent), ambient `46` | Heat soak over a session. |
+| Other | timing `0E`, commanded λ `44`, module voltage `42` | Timing pulled under heat or knock. |
 
-#### Lotus details
+**Not in standard OBD-II on any car:** brake pressure or brake pedal, steering
+angle, individual wheel speeds, ABS activity, gear. Some cars expose extras
+through manufacturer-specific requests or broadcast CAN frames; those go in
+optional **car profiles** and never hold up the standard path. **Gear is
+derived** from RPM against speed.
 
-**Protocol.** The 2008 model year moved to CAN at 500 kbit/s. Earlier
-Elise/Exige cars use ISO 9141.
+**Rates.** An ELM327-class adapter shares a budget of roughly 20–50 requests a
+second across all polled channels on CAN cars (much less on older K-line cars).
+With a small fast set that's about 5–10 Hz per channel. At 40 m/s, 5 Hz is a
+sample every 8 m — enough to see throttle pickup and lift points per corner,
+not fine pedal modulation. Each OBD point is labelled with its rate so the app
+never implies more resolution than it has. Phase 0 measures the real figure.
 
-**Broadcast frame `0x400`.** The ECU sends this frame onto the diagnostic port
-about 10 times a second:
+### The two cars here (illustrative)
 
-| Byte | Contents | Decoding |
-| --- | --- | --- |
-| 1 | Speed | value − 11 |
-| 3–4 | RPM | 256·A + B |
-| 5 | Fuel level | 0x00 empty, 0xFF full |
-| 6 | Coolant temperature | value − 14 |
-| 7 | MIL and shift-light status | |
+- **2008 Lotus Exige (CAN, 500 kbit/s):** throttle, RPM, speed and engine
+  temperatures over standard PIDs. Its ECU also broadcasts a ~10 Hz frame
+  (`0x400`) carrying RPM and speed, which a Lotus car profile can read passively
+  for free. No brake, wheel-speed or steering data exists on this car's bus.
+- **2023 Corvette C8:** standard PIDs work, but its OBD port is behind a gateway
+  that blocks the richer broadcast data, and the PDR already captures brake,
+  steering and wheel speed at high rate. So OBD is the Lotus's story; the C8 is
+  covered by the PDR plan.
 
-It is documented by the open-source
-[elise-shift-lights](https://github.com/bri3d/elise-shift-lights) project.
+## Part A: the Catalyst app (`android-logger/`)
 
-**Sniffing other frames.** Other broadcast frames may exist (a brake switch
-would be valuable). Finding them is a Phase 0 sniffing exercise.
+A new Gradle/Kotlin project at the repo root. The minimum SDK matches whatever
+Android version Phase 0 reports for the Catalyst.
 
-#### Corvette details
+### A1. Running unattended
 
-**The OBD port is behind a gateway.** Passive monitoring sees nothing there.
-Racelogic taps a CAN pair behind the sill plate instead. GM Mode 22 requests
-for brake, steering and wheel data through the gateway are unconfirmed.
-
-**Conclusion:** for the C8, the PDR import already provides everything the OBD
-port could, at far higher rates. **The logger is for the Lotus.** It stays
-car-agnostic so it would also work in the C8 or a future car, but we don't
-build anything C8-specific.
-
-**Brake pressure and wheel speed for the Lotus need extra hardware.** An
-example is a brake-line pressure transducer, plus optionally a steering sensor,
-feeding a small ESP32 BLE box. The open-source
-[RaceChronoDiyBleDevice](https://github.com/timurrrr/RaceChronoDiyBleDevice)
-(MIT) is a template. The app is designed so a second BLE source like that can
-be added later as an optional phase (Phase 6).
-
-### 4. Sample rates are modest
-
-- **Shared polling budget.** ELM327-type adapters poll at roughly 8–20
-  requests per second in total, shared across every polled channel. With
-  throttle, RPM and speed that is about 3–8 Hz each.
-- **Passive frames are free.** The Lotus's `0x400` frame gives RPM and speed at
-  10 Hz with no polling cost.
-- **One mode at a time.** The adapter can't listen to broadcasts and poll at
-  the same moment; sending a request ends monitoring.
-- **Multi-PID requests could help.** If the T4e accepts several PIDs in one
-  request (for example `010C0D11`), throttle, RPM and speed arrive together and
-  the effective rate roughly triples. Phase 0 tests this.
-- **What it means for analysis.** At 5 Hz and 40 m/s a throttle sample comes
-  every 8 m. That's good enough to see throttle pickup and lift points per
-  corner, not to study pedal modulation. The app labels OBD-derived points with
-  their resolution.
-
-### 5. Veepeak adapters
-
-- **Two connection types.** The OBDCheck BLE/BLE+ are Bluetooth Low Energy:
-  usually GATT service `FFF0`, notify `FFF1`, write `FFF2`. Some units use
-  `FFE0`/`FFE1`. The VP11 "Mini" is Bluetooth Classic (serial port profile).
-- **Must discover at runtime.** The app supports both kinds and discovers the
-  characteristics at runtime rather than hard-coding them.
-- **Chips vary.** Clones report any version string. Some BLE+ units are said to
-  use an STN chip with larger buffers and better filters. Phase 0 identifies
-  ours with `ATI`, `STI` and `STDI`.
-- **Monitoring needs a filter.** Unfiltered monitoring (`ATMA`) overflows
-  ("BUFFER FULL") on a busy bus, so monitoring always uses a filter
-  (`ATCRA 400`).
-
-## Architecture
-
-```
- Lotus OBD port ── Veepeak (BLE or Classic) ── Android logger phone
-                                                  │  records locally (works offline)
-                                                  │  phone GPS for time alignment
-                                                  ▼  on Wi‑Fi: upload
- Cloudflare Access (service token, /api/ingest/* only)
-                                                  ▼
- Catalyst Coach server ── POST /api/ingest/obd ── driver workspace worker
-        stores recording → links to Catalyst session → per-lap channels
-        → Analysis charts, lap phases, coaching
-```
-
-## Part A: Android logger app (`android-logger/`)
-
-A new Gradle project at the repo root, written in Kotlin. The minimum SDK is
-set by the phone we choose, at least 26. It targets the current Android SDK.
-
-### A1. Device and power
-
-**Recommended hardware.** A used Pixel (6a/7a) or a Motorola, roughly
-$100–200, in a vent or dash mount out of direct sun. Phones shut down when they
-overheat in a parked car.
-
-**Power.** Ignition-switched USB power is simplest. On the Lotus, check
-whether the 12 V socket is switched.
-
-**The phone stays on permanently** and sleeps when idle. That avoids relying
-on "boot when charger connects", which most phones only support after
-unlocking the bootloader. The app reacts to the adapter appearing instead.
-
-**Kiosk mode.** The app registers as the phone's **home screen**. After any
-reboot it's in the foreground, and Android's restrictions on starting
-background services from boot don't apply. It also starts from
-`BOOT_COMPLETED` as a fallback. Battery optimisation is disabled for the app
-during setup.
+- **Auto-start.** A `BOOT_COMPLETED` receiver starts a foreground service
+  (types `connectedDevice` and `location`). If the Catalyst's launcher can be
+  set, the app can also be the launcher as a stronger guarantee; if not, the
+  boot receiver plus foreground service is enough on most Android builds.
+- **Power.** The Catalyst already powers up with the car. The app reacts to the
+  OBD adapter appearing rather than to power events.
+- **Coexistence.** The app must not interfere with Garmin's software: it only
+  uses BLE and Wi‑Fi client networking, holds a wake lock only while recording,
+  and keeps CPU and storage use low. Phase 0 confirms it runs alongside a normal
+  Catalyst session without disturbing it.
 
 ### A2. Components
 
 | Component | Responsibility |
 | --- | --- |
-| `LoggerService` | Foreground service (types `connectedDevice` and `location`) that owns the connection, the scheduler and the recorder. It shows a persistent notification with its state. |
-| `ObdTransport` | One interface with two implementations: **BLE**, which scans for the paired adapter's address, discovers `FFF0`/`FFE0` at runtime, asks for a high-priority connection and assembles notifications into lines; and **Classic SPP**, which opens an RFCOMM socket using the `00001101-…` UUID. Both expose `send(cmd)` and a stream of response lines, with timeouts. |
-| `Elm327` | Initialises the adapter (`ATZ`, `ATE0`, `ATL0`, `ATS0`, `ATH1`, `ATSP0`, then `ATDPN` to record the protocol). It adds the response-count hint (e.g. `010C1`) so the adapter doesn't wait for a timeout, and tunes adaptive timing (`ATAT2` and `ATST`). It detects STN chips and uses their extra commands when present. Adapting the response parsing from `eltonvs/kotlin-obd-api` (Apache-2.0) is fine. GPL projects such as AndrOBD and python-OBD are reference only. |
-| `ChannelCatalog` | Standard Mode 01 PID definitions (formula, unit, canonical key), plus per-car **profiles**. The Lotus profile includes the `0x400` broadcast decoder. Supported PIDs are discovered with `0100`, `0120` and `0140` and cached per vehicle (VIN from `0902` when the ECU answers; otherwise the adapter's address). |
-| `Scheduler` | Polls channels by priority: **fast** channels (throttle `11`, RPM `0C`, speed `0D`, multi-PID if supported) as often as possible, and **slow** channels (coolant `05`, IAT `0F`, timing `0E`, load `04`, MAF `10`, others found) round-robin at about 0.5 Hz. A per-profile **acquisition mode** chosen in Phase 0: *poll-only*, or *mixed*, which alternates short `ATCRA 400`/`ATMA` windows with polling bursts if that measures better. It tracks the achieved rate per channel. |
-| `SessionDetector` | Starts a recording when the adapter answers and RPM > 0. It ends after 3 minutes of RPM = 0 or no response. Brief Bluetooth drops are reconnected with backoff without splitting the recording. |
-| `Recorder` | Append-only file per recording (`<uuid>.obdlog`): a JSON header (app version, adapter ID, protocol, profile, channel catalog, UTC start), then compact binary records `(elapsedRealtimeNanos, channel, value, rtt_us)`. Buffered and flushed every second, so a crash loses at most a second. It also writes **phone GPS** fixes (Fused Location, highest rate available, usually 1–10 Hz), with GNSS time used to map elapsed time to UTC. |
-| `Uploader` | WorkManager job with a **Wi‑Fi (unmetered) constraint** and exponential backoff, also triggered when a recording closes. It gzips and uploads each finished recording, marks it uploaded only after the server confirms the SHA-256, and deletes local copies 30 days after upload. |
-| `PairingActivity` | Scans a QR code generated by Catalyst Coach (§B2) to store the server URL, device token and Cloudflare service-token credentials in encrypted storage. It also picks the Bluetooth adapter. |
-| `StatusActivity` (home screen) | Large, glanceable status: adapter connected, protocol, live RPM/throttle, recording time, **achieved Hz per channel**, recordings waiting to upload, last upload result. It also has a **Diagnostics** screen with a raw AT terminal, PID discovery and a `0x400` sniff, so Phase 0-style checks can be repeated later. |
+| `LoggerService` | Foreground service owning the connection, scheduler and recorder; shows a persistent status notification. |
+| `ObdTransport` | One interface, two implementations: **BLE** (scan for the paired adapter, discover `FFF0`/`FFE0` at runtime, request a high-priority connection, assemble notifications into lines) and **Classic SPP** (RFCOMM `00001101-…`). Both expose `send(cmd)` and a line stream with timeouts. |
+| `Elm327` | Adapter init (`ATZ ATE0 ATL0 ATS0 ATH1 ATSP0`, then `ATDPN`), the response-count hint (e.g. `010C1`) so it doesn't wait out a timeout, adaptive timing (`ATAT2`, `ATST`), and STN detection for better buffers/filters. Response parsing adapted from `eltonvs/kotlin-obd-api` (Apache-2.0). GPL projects (AndrOBD, python-OBD) are reference only. |
+| `ChannelCatalog` | Standard Mode 01 PID definitions plus optional per-car profiles (e.g. the Lotus `0x400` decoder). Supported PIDs discovered with `0100/0120/0140` and cached per vehicle (VIN from `0902`, else the adapter address). |
+| `Scheduler` | Polls a **fast** set (throttle, RPM, speed; multi-PID request when the ECU allows) as fast as possible and a **slow** set round-robin (~0.5 Hz). Tracks achieved Hz per channel. A per-profile acquisition mode (poll-only, or mixed with short filtered `ATCRA`/`ATMA` windows) chosen in Phase 0. |
+| `SessionDetector` | Starts a recording when the adapter answers and RPM > 0; ends after ~3 min of no engine. Brief BLE drops reconnect with backoff without splitting the recording. |
+| `Recorder` | Append-only `<uuid>.obdlog`: JSON header (app/adapter/protocol/profile/catalog/UTC start) then compact binary `(elapsedRealtimeNanos, channel, value, rtt_us)`, flushed every second. Also logs the Catalyst's **own GPS** if the app can read it; otherwise alignment uses OBD speed alone. |
+| `Uploader` | WorkManager job, Wi‑Fi (unmetered) constraint, exponential backoff, also fired when a recording closes. Gzips and uploads each finished recording, marks it uploaded only after the server confirms its SHA-256, deletes local copies 30 days later. |
+| `PairingActivity` | Scans the QR code from Catalyst Coach (Part B) and stores server URL, device token and optional Cloudflare service-token credentials in encrypted storage; also picks the BLE adapter. |
+| `StatusActivity` | Glanceable status (adapter, protocol, live RPM/throttle, recording time, achieved Hz, pending uploads, last result) plus a **Diagnostics** screen with a raw AT terminal, PID discovery and a frame sniff, so Phase 0 checks can be repeated. |
 
 ### A3. Time alignment
 
-- **Timestamping.** Each sample is stamped when it is received, using
-  `elapsedRealtimeNanos` minus half the measured round trip, and the round-trip
-  time is stored.
-- **Converting to UTC.** Elapsed time is mapped to UTC with GNSS-fix times.
-  NTP is the fallback; the system clock is not trusted.
-- **Exact alignment happens on the server.** It cross-correlates OBD speed
-  (and phone GPS speed) against the Catalyst's GPS speed (§B4). That makes
-  phone clock error irrelevant.
+Each sample is stamped on receipt (`elapsedRealtimeNanos` minus half the
+measured round trip; the round trip is stored). Elapsed time maps to UTC via
+GPS fixes where available, else NTP. Exact alignment happens on the server by
+cross-correlating OBD (and any GPS) speed against the Catalyst session's GPS
+speed, so device clock error doesn't matter.
 
 ### A4. Build and install
 
-**Build.** A GitHub Actions job builds a signed release APK on pushes that
-change `android-logger/`. It keeps the signing keystore in repository secrets.
+A GitHub Actions job builds a signed release APK on changes under
+`android-logger/`, keystore in repository secrets. Install by the standard path
+Phase 0 confirmed (`adb install`, or opening the APK on the device). The app
+checks the server for a newer APK and prompts on the status screen.
 
-**Install.** Copy the APK onto the phone with `adb install`, or have Catalyst
-Coach offer the latest APK for download on the pairing page. No Play Store is
-needed.
+### A5. Tests
 
-**Updates.** The app checks the server for a newer APK and prompts on the
-status screen. Silent self-update isn't possible without device-owner mode.
-Device-owner mode is an optional later step.
-
-### A5. App tests
-
-| Kind | What it covers |
-| --- | --- |
-| JVM unit tests | PID formulas, `0x400` decoding, response parsing (multi-line, `NO DATA`, `BUFFER FULL`, `SEARCHING...`), scheduler fairness, session detection, the recording file format, and the round trip of the upload protocol. |
-| Integration against a simulated adapter | A fake `ObdTransport` replays recorded traffic from the Phase 0 sessions. It is checked in as fixtures, so reconnects and timeouts are tested deterministically. The Python `ELM327-emulator` project can drive a Classic-SPP smoke test. |
-| On-device checklist | Reboot → app in front → adapter connects → recording starts on engine start → stops after engine off → uploads on home Wi‑Fi. |
+JVM unit tests (PID formulas, profile decoders, response parsing incl.
+`NO DATA`/`BUFFER FULL`/`SEARCHING...`, scheduler fairness, session detection,
+file format, upload round-trip). Integration against a fake `ObdTransport` that
+replays Phase 0 traffic fixtures. An on-device checklist (reboot → app running →
+adapter connects → recording on engine start → stops after engine off → uploads
+on home Wi‑Fi).
 
 ## Part B: Catalyst Coach changes (`catalyst-app/`)
 
-### B1. Share the PDR plan's model for extra telemetry
+### B1. Share the PDR plan's telemetry model
 
 The PDR plan already designs storage, linking, per-lap derivation and
-"optional data" handling for one extra telemetry source. OBD recordings need
-the same thing. **Build it once, source-agnostic**, and use it for both
-features (whichever ships first creates it):
+optional-data handling for one extra telemetry source. OBD needs the same, so
+build it once, **source-agnostic** (whichever feature ships first creates it):
 
-| PDR plan table | Generic name | Change |
+| PDR table | Generic | Change |
 | --- | --- | --- |
-| `pdr_recordings` | `aux_recordings` | Adds `source` (`pdr`/`obd`) and source-specific metadata as JSON |
-| `pdr_channels` | `aux_channels` | Same shape: dictionary plus canonical key and unit |
-| `pdr_samples_raw` | `aux_samples` | `(recording_id, channel, t_ns, value)`. OBD values arrive already decoded. |
-| `pdr_links` | `aux_links` | Unchanged |
-| `pdr_lap_samples` | `aux_lap_samples` | Per-lap canonical channels on the Catalyst distance grid, with `source` and achieved-rate columns, and `NULL` where a source lacks the channel |
+| `pdr_recordings` | `aux_recordings` | add `source` (`pdr`/`obd`) + source metadata JSON |
+| `pdr_channels` | `aux_channels` | same shape |
+| `pdr_samples_raw` | `aux_samples` | `(recording_id, channel, t_ns, value)`; OBD values arrive decoded |
+| `pdr_links` | `aux_links` | unchanged |
+| `pdr_lap_samples` | `aux_lap_samples` | per-lap canonical channels on the Catalyst distance grid, with `source` and achieved-rate columns, `NULL` where a source lacks a channel |
 
-Video (`pdr_videos`) stays PDR-only. Everything stays in the uploading
-driver's workspace and survives `loadAll()` exactly as that plan describes.
+Video stays PDR-only. Everything is workspace-scoped and survives `loadAll()`
+exactly as that plan describes.
 
-### B2. Device pairing and authentication
+### B2. Device pairing and auth
 
-The server is cookie-based and passwordless, and the public site sits behind
-Cloudflare Access email sign-in. A phone can't do either, so it needs two
-credentials:
+The server is cookie-based and passwordless, and the public site is behind
+Cloudflare Access email sign-in, so a headless logger needs two credentials:
 
-- **Cloudflare service token** (one-time setup in the Cloudflare dashboard;
-  add the steps to `deploy/CLOUDFLARE.md`).
-  - Create a service token.
-  - Add a second Access application for **`/api/ingest/*` only**, with a
-    *Service Auth* policy allowing that token.
-  - The rest of the site keeps the email policy.
-  - The phone sends `CF-Access-Client-Id` and `CF-Access-Client-Secret`.
-  - On a LAN or Tailscale install, this credential is simply left empty.
-- **Workspace device token** (in the app).
-  - Under **Account → Logging devices → Add device**, the server creates a
-    random token for this workspace.
-  - Only its SHA-256 and a label are stored, in the **workspace's** database.
-  - The page shows a QR code with `{serverUrl, token, cfClientId?,
-    cfClientSecret?}` once, plus a list of devices with last-seen time and a
-    **Revoke** button.
-- **Routing to the right workspace.** The token embeds the workspace name like
-  the session cookie does: `base64url(username).random`. The parent server
-  reads the name, forwards the request to that workspace's worker, and the
-  worker checks the hash. A wrong or revoked token gets `401`. No token can
-  reach another workspace.
+- **Cloudflare service token** — a second Access application scoped to
+  `/api/ingest/*` only, with a Service Auth policy; the rest of the site keeps
+  the email policy. Empty on a LAN/Tailscale install. (Add steps to
+  `deploy/CLOUDFLARE.md`.)
+- **Workspace device token** — created under **Account → Logging devices → Add
+  device**; only its SHA-256 and a label are stored, in the workspace DB. The
+  page shows a one-time QR (`{serverUrl, token, cfClientId?, cfClientSecret?}`)
+  and a device list with last-seen and **Revoke**. The token embeds the
+  workspace name like the session cookie (`base64url(username).random`), so the
+  parent server routes to the right worker and no token can reach another
+  workspace.
 
 ### B3. Ingest endpoint
 
-**`POST /api/ingest/obd`** handles uploads. It is served by the parent process,
-which authenticates as in B2 and then hands the body to the workspace worker.
+**`POST /api/ingest/obd`**, served by the parent process: authenticates (B2),
+hands the body to the workspace worker. Body is a gzipped `.obdlog` ≤ 20 MB
+(a 30-min recording at ~40 samples/s is well under 1 MB), headers carry the UUID
+and SHA-256. Idempotent on repeated UUID+hash (`200 duplicate`); hash mismatch
+`422`. Worker job (`WorkerKind` `'obd'`, inside `reviews.foreground()`): parse →
+insert `aux_*` → link (B4) → derive per-lap channels → `markReviewDirty()`.
+Recordings show in **Sessions → Logged data** as linked / needs review / waiting
+for Catalyst sync; the last retries after each Garmin sync, because the logger
+often uploads before the Catalyst session is downloaded.
 
-**Request.** The body is a gzipped `.obdlog` file of at most 20 MB, under the
-existing 25 MB body limit. A 30-minute recording at about 40 samples/s is well
-under 1 MB. Headers carry the recording UUID and SHA-256.
+### B4. Linking
 
-**Responses.**
-
-- **Idempotent.** A repeated UUID with the same hash returns `200 {status:
-  "duplicate"}`.
-- **Hash mismatch.** Returns `422`.
-
-**Worker job** (`WorkerKind` `'obd'`), run inside `reviews.foreground()`:
-
-1. Parse the file and convert to canonical units.
-2. Insert `aux_*` rows.
-3. Link (§B4).
-4. Derive the per-lap channels.
-5. Call `markReviewDirty()` on linked sessions.
-
-**Status.** Recordings appear in **Sessions → Logged data** with states
-*linked*, *needs review* and *waiting for Catalyst sync*. The last state retries
-automatically after every Garmin sync, because the phone often uploads before
-the Catalyst session has been downloaded.
-
-### B4. Linking to Catalyst sessions
-
-This reuses the PDR plan's matching:
-
-1. **Find candidates.** Catalyst sessions in this workspace whose UTC window
-   overlaps the recording.
-2. **Fine alignment.** Cross-correlate OBD speed (10 Hz from `0x400` or polled)
-   and phone GPS speed against Catalyst GPS speed.
-3. **Check for drift.** Compare the first and last five minutes.
-4. **Validate the GPS.** Phone GPS against the Catalyst track: median residual
-   ≤ 10 m. Phone GPS is coarser than the PDR's.
-5. **Link or ask.** Auto-link a single good match; otherwise mark the recording
-   *needs review* with the same manual picker and nudge.
-
-Unlike the PDR, a recording can **cover several Catalyst sessions**: the
-logger may run all day if the engine idles between sessions. The link step
-splits it across every overlapping session.
-
-**Speed sensor check.** The car's OBD speed comes from its own speed sensor.
-The ratio of OBD speed to GPS speed is stored per session as a tyre-size and
-calibration check.
+Reuses the PDR plan's matching: candidate Catalyst sessions in this workspace
+whose UTC window overlaps; fine alignment by cross-correlating OBD (and any GPS)
+speed against Catalyst GPS speed; drift check on first vs last five minutes;
+auto-link a single good match, else **needs review** with the manual picker and
+nudge. Unlike the PDR, one recording can **span several Catalyst sessions** (the
+logger may run all day), so the link step splits it across every overlapping
+session. The OBD-speed-to-GPS-speed ratio is stored per session as a
+tyre-size/calibration check.
 
 ### B5. Using the data (optional everywhere)
 
-The same rules as the PDR plan apply:
+Same rules as the PDR plan: data is optional per lap, absence is never zero,
+today's no-aux output is pinned by a regression test, and mixed selections label
+laps without data. What a car with OBD gains:
 
-- **Data is optional per lap.** Laps without auxiliary data are unchanged, and
-  absence is never treated as zero.
-- **Pinned regression.** A test pins today's output for a selection with no
-  auxiliary data.
-- **Mixed selections** label laps that have no data.
-
-What the Lotus gains:
-
-- **THROTTLE chart.** The first measured pedal channel for the Lotus. The card
-  shows the achieved rate, e.g. "throttle · OBD · ~5 Hz".
-- **RPM / GEAR chart.** Gear is derived from the RPM-to-speed ratio and
-  clustered per car. The Exige's gear ratios can seed the clusters via its
-  Garage profile. This gives shift points, time spent near the 7,800 rpm
-  limiter, and over-revving on downshifts.
-- **Measured throttle in lap phases.** Throttle pickup and lift points come from
-  throttle position when present; they're still inferred from g when it isn't.
-  **Braking stays g-inferred on the Lotus**, because no pedal channel exists, and
-  coaching text says so per metric (measured/inferred).
-- **Coolant, IAT and timing trends** per session. They support heat-soak notes
-  and a check for the ECU pulling timing.
-- **Coaching packet.** Gains measured-throttle metrics (pickup point,
-  full-throttle share per segment, lift on fast corners such as the Climbing
-  Esses), RPM and gear at corner minimums, and temperatures. These are offered to
-  the model only when the packet has OBD laps.
+- **THROTTLE chart** — first measured pedal channel for the Lotus; the card
+  shows the rate ("throttle · OBD · ~5 Hz").
+- **RPM / GEAR chart** — gear derived from the RPM/speed ratio, clustered per
+  car (seedable from a Garage profile's gear ratios): shift points, time near
+  the limiter, over-rev on downshifts.
+- **Measured throttle in lap phases** — pickup and lift points from throttle
+  when present; still g-inferred otherwise. Braking stays g-inferred unless a
+  car profile supplies a brake channel; coaching text labels each metric
+  measured or inferred.
+- **Temperature trends** — coolant/IAT/timing per session (heat soak, timing
+  pulled).
+- **Coaching packet** — measured-throttle metrics (pickup point, full-throttle
+  share per segment, lift on fast corners), RPM/gear at corner minimums, and
+  temperatures, offered to the model only when the packet has OBD laps.
 
 ## Phases
 
 | Phase | Scope | Done when |
 | --- | --- | --- |
-| **0. Hands-on checks** (one afternoon plus one drive) | **Catalyst:** look for Developer Options and USB debugging, and try `adb devices` over USB. **Veepeak:** model number, BLE or Classic, `ATI`/`STI`/`STDI`. **Lotus:** with a free terminal app (nRF Connect for BLE, Serial Bluetooth Terminal for Classic), run `ATDPN`, `0100`/`0120`/`0140`, and test `010C0D11`. Time 200 polls of fast PIDs. Run `ATCRA 400` + `ATMA`, then broader filtered sniffing for other frames while pressing the brake pedal. **Drive:** log once with Torque Lite to sanity-check rates. **Power:** check whether the Lotus 12 V socket is switched and whether the Veepeak drains the battery overnight. | Findings written into this doc: protocol, PID list, achieved Hz per mode, chosen acquisition mode, any brake-switch frame, logger device decision. |
-| **1. Logger MVP** | Transports, ELM327 driver, channel catalog plus Lotus profile, scheduler, recorder with phone GPS, status and diagnostics screens. Manual start/stop and "share recording" export. | A track or road drive produces a recording with RPM, speed and throttle at the measured rates and no gaps beyond adapter dropouts. |
-| **2. Hands-off operation** | Home-screen (kiosk) mode, boot start, auto-connect, session detection, reconnect handling, heat and battery settings. | 3 consecutive drives logged with nobody touching the phone. |
-| **3. Server ingest and pairing** | Generic `aux_*` schema (shared with the PDR plan), device tokens and QR pairing, Cloudflare service-token setup and docs, ingest endpoint, worker job, Uploader. | Recordings upload automatically on home Wi‑Fi through Cloudflare and land only in the paired workspace; a revoked device gets 401. |
-| **4. Linking** | Alignment, multi-session splitting, *waiting for Catalyst sync* retries, needs-review UI. | A VIR day auto-links every session, with alignment error under 100 ms checked against lap-boundary speed features. |
-| **5. Analysis and coaching** | Throttle and RPM/gear charts, gear derivation, measured throttle phases, temperature trends, packet changes, optional-data regression tests. | A Lotus coaching report cites measured throttle metrics. Sessions without OBD data are unchanged. |
-| **6. Optional brake hardware** | ESP32 BLE box with brake pressure (and optionally steering angle), added as a second source in the logger. | Measured braking phases on the Lotus. |
+| **0. Host and car check** | On the Catalyst: check for Developer Options / USB debugging, try `adb install` of a test APK, or an APK from storage; note the Android version and BLE availability. On the car with a free terminal app: `ATDPN`, `0100/0120/0140`, test a multi-PID request, time 200 fast-PID polls, and note any useful broadcast frame. Decide host (Catalyst vs fallback) and acquisition mode. | Findings written here: install path, Android version, protocol, PID list, achieved Hz, chosen adapter. |
+| **1. Logger MVP** | Transports, ELM327 driver, catalog + any car profile, scheduler, recorder, status/diagnostics screens; manual start/stop and a share-recording export. | A drive produces a recording with RPM, speed and throttle at the measured rates, no gaps beyond adapter dropouts. |
+| **2. Hands-off** | Auto-start, auto-connect, session detection, reconnect handling; runs cleanly alongside a Catalyst session. | 3 drives logged untouched with Garmin recording normally. |
+| **3. Server ingest & pairing** | Generic `aux_*` schema (shared with PDR), device tokens + QR pairing, Cloudflare service-token setup/docs, ingest endpoint, worker job, Uploader. | Recordings upload automatically on Wi‑Fi through Cloudflare and land only in the paired workspace; a revoked device gets 401. |
+| **4. Linking** | Alignment, multi-session splitting, waiting-for-sync retries, needs-review UI. | A VIR day auto-links every session, alignment error < 100 ms vs lap-boundary speed features. |
+| **5. Analysis & coaching** | Throttle and RPM/gear charts, gear derivation, measured throttle phases, temperature trends, packet changes, optional-data regression tests. | A coaching report cites measured throttle metrics; non-OBD sessions unchanged. |
 
 ## Risks
 
-- **Low sample rate.** If Phase 0 measures under about 3 Hz per channel for
-  throttle, consider an STN-based adapter such as an OBDLink MX+, around $100.
-  That swap needs only a transport-profile change.
-- **Phone heat and reliability.** A phone in a sealed car on a summer
-  trailer can overheat. Use a vent mount, keep it out of the sun, and take it
-  out between events if needed. The status screen shows the battery
-  temperature.
-- **Adapter battery drain.** The Veepeak is powered from the OBD port's
-  permanent 12 V. Unplug it, or rely on its sleep mode, during storage;
-  Phase 0 measures this.
-- **Android background limits.** Running as the home screen plus a foreground
-  service avoids most of them. Vendor battery savers (Samsung especially) are
-  the reason to prefer a Pixel or Motorola.
-- **Credentials on the phone.** The phone holds a workspace upload token and,
-  for the public site, a Cloudflare service token limited to `/api/ingest/*`.
-  Both can be revoked separately. A stolen phone can upload junk, but it can't
-  read data.
+- **Install path unknown until Phase 0.** The whole on-device design is gated on
+  it. Phase 0 is scoped to answer it first, before any build work starts.
+- **Low sample rate.** If a channel polls under ~3 Hz, move to an STN-based
+  adapter (OBDLink CX, BLE) — a transport change only.
+- **Running alongside Garmin.** The app must stay light and must never disturb a
+  Catalyst session; Phase 2 verifies this.
+- **Firmware updates.** A Garmin update could remove a sideloaded app; it can be
+  reinstalled by the same path.
+- **Credentials on the device.** It holds a workspace upload token and an
+  ingest-scoped Cloudflare token; both are revocable and neither can read data.
 
-## Questions for you
+## Questions for the owner
 
-- **Adapter model:** which Veepeak is it? The model on the label, e.g.
-  OBDCheck BLE, BLE+ or VP11.
-- **Catalyst generation:** which one do you have? The repo notes suggest the
-  original (6.95" screen).
-- **Hardware:** are you OK buying a cheap dedicated Android phone for the car?
-- **Scope:** confirm Lotus only, since the Corvette's PDR covers it.
-- **Brake data:** are you interested in Phase 6 (a brake pressure sensor), the
-  only way to get braking data on the Lotus?
+- **Catalyst generation:** confirmed original (6.95")?
+- **Adapter model:** which Veepeak (OBDCheck BLE, BLE+, VP11)? The label says.
+- **If Phase 0 shows the Catalyst won't take a standard sideload:** stop there
+  and reconsider, or fall back to a spare Android device running the same app?
