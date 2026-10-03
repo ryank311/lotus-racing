@@ -16,14 +16,18 @@ main-branch image builds. It does nothing if the healthy container already runs
 that image, and leaves an intentionally stopped app stopped. It does not update
 the Cloudflare connector or download new Compose files.
 
-For a changed image, it stops Catalyst, archives the entire data directory and
-deployment configuration, then starts the exact downloaded image and waits up
-to three minutes for health. The five latest complete backups are retained in
+For a changed image, it stops Catalyst, snapshots the data directory, starts
+the exact downloaded image and polls it until it answers (up to three minutes).
+The site is down only for that stop, snapshot and start: seconds on Btrfs, where
+the snapshot is a copy-on-write reflink. The snapshot is then compressed to
+`data.tar.gz` at low priority while the new version serves; if compression
+fails, the uncompressed snapshot is kept instead. The five latest complete
+backups are retained in
 `/volume1/docker/catalyst-coach-updates/backups`. Previous images receive local
 `catalyst-coach:rollback-<timestamp>` tags; the updater does not prune Docker
 images. Backups contain credentials and are accessible only to root.
 
-If backup creation fails, the old container is restarted. If installing or
+If the snapshot fails, the old container is restarted. If installing or
 verifying the new image fails, automatic updates pause rather than automatically
 restoring an older database over possible new writes. Review the failure and
 matching backup before recovery. Once resolved, remove

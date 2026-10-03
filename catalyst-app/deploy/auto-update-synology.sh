@@ -72,21 +72,50 @@ mkdir "$backup"
 printf 'previous_image=%s\nnew_image=%s\nnew_digest=%s\n' "$current" "$candidate" "$digest" > "$backup/images.txt"
 docker image tag "$current" "catalyst-coach:rollback-$stamp"
 cp "$project/compose.yaml" "$project/compose.cloudflare.yaml" "$project/.env.cloudflare" "$backup/"
-echo "Backing up the stopped workspace to $backup/data.tar.gz"
+snapshot="$backup/data"
+# The app is down only while it stops, the workspace is snapshotted and the new
+# image starts. On Btrfs (DSM's default) the reflink copy is near-instant; on
+# other filesystems it falls back to a plain copy. Compression happens later.
+echo "Snapshotting the stopped workspace to $snapshot"
 stopped=1
 compose stop catalyst
-tar -czf "$backup/data.tar.gz.partial" -C "$data" .
-gzip -t "$backup/data.tar.gz.partial"
-mv "$backup/data.tar.gz.partial" "$backup/data.tar.gz"
+mkdir "$snapshot"
+if ! cp -a --reflink=auto "$data/." "$snapshot/" 2>/dev/null; then
+  rm -rf -- "$snapshot"
+  mkdir "$snapshot"
+  cp -a "$data/." "$snapshot/"
+fi
 # Use exactly the image just checked, even if latest changes during the backup.
 export CATALYST_IMAGE="$digest"
 deploying=1
-compose up -d --no-deps --wait --wait-timeout 180 catalyst
+compose up -d --no-deps catalyst
+# The app answers as soon as it listens, well before Docker's 30 s health
+# interval would report it healthy; poll it directly.
+deadline=$((SECONDS + 180))
+until curl --silent --fail --max-time 5 http://127.0.0.1:3210/api/health >/dev/null; do
+  (( SECONDS < deadline )) || break
+  sleep 1
+done
 curl --silent --show-error --fail --max-time 10 http://127.0.0.1:3210/api/health
 printf '\n'
 stopped=0
 deploying=0
-write_status "UPDATED image=$candidate backup=$backup"
+write_status "UPDATED image=$candidate; archiving backup $backup"
+# Archive the frozen snapshot while the new version serves. A failed archive
+# keeps the uncompressed snapshot as the backup rather than failing the update.
+archive_backup() {
+  nice -n 19 tar -czf "$backup/data.tar.gz.partial" -C "$snapshot" . &&
+    nice -n 19 gzip -t "$backup/data.tar.gz.partial" &&
+    mv "$backup/data.tar.gz.partial" "$backup/data.tar.gz" &&
+    rm -rf -- "$snapshot"
+}
+echo "Archiving the snapshot to $backup/data.tar.gz"
+if archive_backup; then
+  write_status "UPDATED image=$candidate backup=$backup"
+else
+  rm -f -- "$backup/data.tar.gz.partial"
+  write_status "UPDATED image=$candidate; archive failed, snapshot kept at $snapshot"
+fi
 # Retain five complete backups; retain old image tags for manual rollback.
 count=0
 while IFS= read -r old; do

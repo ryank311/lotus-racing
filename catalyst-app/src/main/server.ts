@@ -396,10 +396,14 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
     host, port, url: `http://${publicHost}:${port}`,
     close: async () => {
       closing = true
-      await Promise.all([
-        ...[...backends.values()].map(backend => backend.close()),
-        new Promise<void>(resolve => server.close(() => resolve())),
-      ])
+      // Give open requests a moment, then drop them so a restart stays short.
+      const force = setTimeout(() => server.closeAllConnections(), 5_000)
+      try {
+        await Promise.all([
+          ...[...backends.values()].map(backend => backend.close()),
+          new Promise<void>(resolve => server.close(() => resolve())),
+        ])
+      } finally { clearTimeout(force) }
     },
   }
 }
