@@ -17,9 +17,10 @@ import type { AnalysisData, ComparisonData, CornerComparisonCell, CornerComparis
 import { selectLaps, type LapFilter } from '../shared/coachingScope.js'
 import { MAX_COMPARE_SESSIONS } from '../shared/comparison.js'
 import type { ComparisonBundle, ComparisonExport, ComparisonLap } from './comparisonBundle.js'
+import { readMeanLineTrace } from './meanLineAlign.js'
 
 // Types and merging live in comparisonBundle.ts (shared with the coach packet).
-export { comparisonLaps, validateComparisonBundles } from './comparisonBundle.js'
+export { alignComparisonBundles, comparisonLaps, validateComparisonBundles } from './comparisonBundle.js'
 export type { ComparisonBundle, ComparisonExport, ComparisonLap, ComparisonSession } from './comparisonBundle.js'
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,9 @@ export async function exportComparison(sessionGuids: unknown, lapFilter?: LapFil
       })),
       laps,
       excludedLapCount: Math.max(0, driven - valid.length),
+      // One mean line: assertComparable allows a single layout. Every 5 m is
+      // plenty to map it onto the other driver's line.
+      line: readMeanLineTrace(meta.find(m => m.mean_line_guid)?.mean_line_guid, 5),
     }
   } finally {
     await db.close()

@@ -331,6 +331,7 @@ export function registerApiHandlers(
             s.vehicle_guid, s.vehicle_make, s.vehicle_model, s.vehicle_year, s.vehicle_type,
             s.temperature_c,
             COALESCE(s.mean_line_guid, CAST(s.track_configuration_id AS VARCHAR)) AS layout_key,
+            s.track_configuration_id,
             MIN(s.best_lap_ms) OVER (PARTITION BY COALESCE(s.mean_line_guid, CAST(s.track_configuration_id AS VARCHAR)), s.vehicle_guid, s.account) AS layout_best_ms
           FROM sessions s
           LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id

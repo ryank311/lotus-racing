@@ -15,7 +15,7 @@ import {
   fetchLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys,
   seriesFromSamples, shortSessionLabel, validLapPredicate, type ValidLap,
 } from './lapData.js'
-import { validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
+import { alignComparisonBundles, validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
 import { layoutComplexes, layoutForSession, saveTrackComplexes } from './trackStore.js'
 
 // ─── Metrics ────────────────────────────────────────────────────────────────
@@ -409,7 +409,7 @@ export async function buildCoachPacket(con: DuckDBConnection, opts: PacketOption
     version: 2, units: opts.system, trackLabel: context.trackLabel, totalM, context,
     vehicleLabel: vehicleLabelOf(anchor), sessions, laps, complexes, complexSource: source, stats, bestLap, idealMs,
     allTimePb, garminOptimalMs, opportunities, lapNumberPace, previousFocus: [], evidence: {}, successMetrics: [],
-    comparisons: bundles.map((bundle, i) => comparisonFor(bundle, `D${i + 1}`, complexes)),
+    comparisons: alignComparisonBundles(bundles, anchor.mean_line_guid, totalM).map((bundle, i) => comparisonFor(bundle, `D${i + 1}`, complexes)),
   }
   packet.previousFocus = await checkPreviousFocus(con, packet)
   packet.evidence = buildEvidence(packet)

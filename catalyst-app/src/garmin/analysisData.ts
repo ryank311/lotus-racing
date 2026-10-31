@@ -15,7 +15,7 @@ import { fetchLapSamples, fetchOptimalLapSeries, fetchOptimalLapTimes, fetchVali
 import { selectLaps, type LapFilter } from '../shared/coachingScope.js'
 import { assertComparable, fetchSessionMeta, sessionLayout, vehicleLabelOf } from './coachPacket.js'
 import { buildComparison } from './driverComparison.js'
-import { comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
+import { alignComparisonBundles, comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
 
 // Canonical m/s → the active display unit. Threaded from buildAnalysis so a unit
 // toggle reflows the whole Analysis page on the next fetch.
@@ -699,8 +699,9 @@ export async function buildAnalysis(
     for (const lap of laps) series.set(lapKey(lap), seriesFromSamples(samples.get(lapKey(lap))!))
 
     // Compared drivers' laps join the same maps (session GUIDs are unique
-    // across the analysis) and are overlaid on the distance charts and map.
-    const compared = comparisonLaps(comparisons)
+    // across the analysis) and are overlaid on the distance charts and map,
+    // after moving them onto your mean line.
+    const compared = comparisonLaps(alignComparisonBundles(comparisons, meanLineGuid, totalDistM))
     for (const lap of compared) {
       samples.set(lapKey(lap.meta), lap.samples)
       series.set(lapKey(lap.meta), seriesFromSamples(lap.samples))

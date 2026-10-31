@@ -47,6 +47,9 @@ export interface DbSessionRow {
   // list can flag PB sessions and warn about mixed selections.
   layout_key?: string | null
   layout_best_ms?: number | null
+  // Garmin's course ID. Unlike the mean line it is shared by every driver,
+  // so it matches another driver's sessions to yours.
+  track_configuration_id?: number | null
   lap_count: number
   sample_count: number
   weather_description: string | null

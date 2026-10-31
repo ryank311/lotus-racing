@@ -5,8 +5,9 @@
 
 import { isLapSamples, lapLabel, shortSessionLabel, type LapSamples } from './lapData.js'
 import type { LapMeta } from './analysisData.js'
-import { sameTrackLayout, type TrackLayoutIdentity } from '../shared/trackLayout.js'
+import { sameCourse, type TrackLayoutIdentity } from '../shared/trackLayout.js'
 import { MAX_COMPARE_DRIVERS } from '../shared/comparison.js'
+import { isMeanLineTrace, mapToOwnLine, ownLine, remapLapSamples, type MeanLineTrace } from './meanLineAlign.js'
 
 export interface ComparisonSession {
   sg: string
@@ -35,6 +36,9 @@ export interface ComparisonExport {
   sessions: ComparisonSession[]
   laps: ComparisonLap[]
   excludedLapCount: number
+  // The mean line their lap distances are measured along (thinned), so the
+  // receiving backend can move their laps onto its own (meanLineAlign.ts).
+  line?: MeanLineTrace | null
 }
 
 // The export plus the driver's name, added by the server.
@@ -54,10 +58,12 @@ function isBundle(value: unknown): value is ComparisonBundle {
     && b.sessions.every(s => s && typeof s.sg === 'string' && !!s.sg)
     && b.laps.every(l => l && typeof l.sg === 'string' && Number.isInteger(l.lapIndex)
       && typeof l.durationMs === 'number' && l.durationMs > 0 && isLapSamples(l.samples))
+    && (b.line == null || isMeanLineTrace(b.line))
 }
 
-// Compared sessions must be on your layout, and no session may appear twice:
-// laps are keyed by session GUID throughout Analysis.
+// Compared sessions must be on your course, and no session may appear twice:
+// laps are keyed by session GUID throughout Analysis. Their mean line is
+// their own device's, so the course is matched by Garmin's course ID.
 export function validateComparisonBundles(bundles: unknown, own: TrackLayoutIdentity, ownGuids: string[]): asserts bundles is ComparisonBundle[] {
   if (!Array.isArray(bundles)) throw new Error('Invalid driver comparison.')
   if (bundles.length > MAX_COMPARE_DRIVERS) throw new Error(`Compare up to ${MAX_COMPARE_DRIVERS} drivers at a time.`)
@@ -69,7 +75,7 @@ export function validateComparisonBundles(bundles: unknown, own: TrackLayoutIden
     if (!isBundle(bundle)) throw new Error('Comparison telemetry was incomplete. Try again.')
     const sessionIds = new Set(bundle.sessions.map(s => s.sg))
     for (const session of bundle.sessions) {
-      if (!sameTrackLayout(own, layoutOf(session))) {
+      if (!sameCourse(own, layoutOf(session))) {
         const theirs = [session.trackName, session.configName].filter(Boolean).join(' · ') || 'an unknown layout'
         throw new Error(`${bundle.driver}'s session from ${shortSessionLabel(session.start)} is on ${theirs}. Compare sessions from ${own.trackLabel || 'your course configuration'}.`)
       }
@@ -80,6 +86,21 @@ export function validateComparisonBundles(bundles: unknown, own: TrackLayoutIden
     }
     if (bundle.laps.some(lap => !sessionIds.has(lap.sg))) throw new Error('Comparison telemetry was incomplete. Try again.')
   }
+}
+
+// Their laps measured along your mean line, so distances, corners and
+// segments mean the same spot on track for both of you. `layoutTotalM` is
+// your lap length if your mean line file is missing.
+export function alignComparisonBundles(bundles: ComparisonBundle[], ownGuid: string | null, layoutTotalM: number): ComparisonBundle[] {
+  if (!bundles.length) return bundles
+  const own = ownLine(ownGuid, layoutTotalM)
+  return bundles.map(bundle => {
+    const theirGuid = bundle.sessions.find(s => s.meanLineGuid)?.meanLineGuid ?? bundle.line?.guid ?? null
+    const lapEndM = Math.max(0, ...bundle.laps.map(lap => lap.samples.dist.at(-1) ?? 0))
+    const map = mapToOwnLine(theirGuid, bundle.line, lapEndM, own)
+    if (!map) return bundle
+    return { ...bundle, laps: bundle.laps.map(lap => ({ ...lap, samples: remapLapSamples(lap.samples, map, own.totalM) })) }
+  })
 }
 
 // Compared laps as Analysis laps: labelled with the driver, indexed by their

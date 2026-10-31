@@ -2,13 +2,14 @@
 // on your layout, in a list modelled on the Sessions page. Applying writes
 // the choice to the Analysis URL (`compare=<driver>:<session>`).
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { startLabel } from './reviewTimeline'
 import { driverColor } from './chartSeries'
 import { useUnits } from '../units'
 import { compareParams, driverKey, MAX_COMPARE_DRIVERS, MAX_COMPARE_SESSIONS, parseCompareParams, type ComparisonRequest, type DriverAccount } from '../../shared/comparison'
 import type { DbSessionRow } from '../../shared/types'
+import { sameCourse, trackLayoutKey, type TrackLayoutIdentity } from '../../shared/trackLayout'
 import './compare.css'
 
 type SortKey = 'date' | 'best'
@@ -22,6 +23,18 @@ function vehicleLabel(r: DbSessionRow): string {
 
 function trackLabel(r: Pick<DbSessionRow, 'track_name' | 'track_configuration_name'>): string {
   return [r.track_name, r.track_configuration_name].map(s => (s ?? '').trim()).filter(Boolean).join(' · ') || 'Unknown layout'
+}
+
+// Course identity for matching another driver's sessions to yours. Mean
+// lines differ between drivers' devices, so this goes by Garmin's course ID
+// (see sameCourse); layout_key is the mean line when there is one.
+function courseOf(r: DbSessionRow): TrackLayoutIdentity {
+  const id = r.track_configuration_id == null ? NaN : Number(r.track_configuration_id)
+  return {
+    configurationId: Number.isFinite(id) ? id : null,
+    meanLineGuid: r.layout_key ?? null,
+    trackLabel: [r.track_name, r.track_configuration_name].map(s => (s ?? '').trim()).join(' · '),
+  }
 }
 
 // The URL sorts compare values, which fixes each driver's colour. Order the
@@ -51,7 +64,12 @@ export function ComparePicker({ ownRows, ownGuids, value, lapFilterLabel, onAppl
   const [attempt, setAttempt] = useState(0)
   const dialogRef = useRef<HTMLDivElement>(null)
 
-  const ownLayout = ownRows.find(r => r.layout_key)?.layout_key ?? null
+  // Unidentifiable (no course ID, mean line or full name): show everything.
+  const ownCourse = useMemo(() => {
+    const course = ownRows[0] ? courseOf(ownRows[0]) : null
+    return course && trackLayoutKey(course) ? course : null
+  }, [ownRows])
+  const onOwnCourse = useCallback((r: DbSessionRow) => !ownCourse || sameCourse(ownCourse, courseOf(r)), [ownCourse])
   const ownTrack = ownRows[0] ? trackLabel(ownRows[0]) : 'your layout'
   const ownBest = useMemo(() => {
     const times = ownRows.map(r => r.best_lap_ms).filter((ms): ms is number => ms != null && ms > 0)
@@ -108,7 +126,7 @@ export function ComparePicker({ ownRows, ownGuids, value, lapFilterLabel, onAppl
     if (ownGuids.has(r.session_guid)) return 'Already in your analysis'
     const elsewhere = draft.find(x => driverKey(x.driver) !== driverKey(active!) && x.sessionGuids.includes(r.session_guid))
     if (elsewhere) return `Picked for ${elsewhere.driver}`
-    if (ownLayout && r.layout_key !== ownLayout) return 'Different layout'
+    if (!onOwnCourse(r)) return 'Different layout'
     if (!r.details_loaded) return 'Telemetry not downloaded'
     if (!activePicks.includes(r.session_guid)) {
       if (activeVehicle && r.vehicle_guid && r.vehicle_guid !== activeVehicle) return 'One car per driver'
@@ -118,10 +136,10 @@ export function ComparePicker({ ownRows, ownGuids, value, lapFilterLabel, onAppl
     return null
   }
 
-  const sameLayoutCount = ownLayout ? rows.filter(r => r.layout_key === ownLayout).length : rows.length
+  const sameLayoutCount = rows.filter(onOwnCourse).length
   const visible = useMemo(() => {
     let out = rows
-    if (ownLayout && !allLayouts) out = out.filter(r => r.layout_key === ownLayout)
+    if (!allLayouts) out = out.filter(onOwnCourse)
     const q = query.trim().toLowerCase()
     if (q) out = out.filter(r => [trackLabel(r), vehicleLabel(r), r.session_start ?? '', startLabel(r.session_start), r.weather_description ?? '']
       .some(text => text.toLowerCase().includes(q)))
@@ -129,7 +147,7 @@ export function ComparePicker({ ownRows, ownGuids, value, lapFilterLabel, onAppl
     return [...out].sort(sort === 'best'
       ? (a, b) => time(a) - time(b)
       : (a, b) => (b.session_start ?? '').localeCompare(a.session_start ?? ''))
-  }, [rows, ownLayout, allLayouts, query, sort])
+  }, [rows, onOwnCourse, allLayouts, query, sort])
 
   const toggle = (r: DbSessionRow) => {
     if (!active || (blocked(r) && !activePicks.includes(r.session_guid))) return
@@ -199,7 +217,7 @@ export function ComparePicker({ ownRows, ownGuids, value, lapFilterLabel, onAppl
               </div>
               <div className="compare-results">
                 <span>{state?.rows ? `${sameLayoutCount} of ${rows.length} on this layout` : state?.error ? 'Sessions unavailable' : 'Loading sessions…'}</span>
-                {ownLayout && rows.length > sameLayoutCount && (
+                {ownCourse && rows.length > sameLayoutCount && (
                   <button type="button" className="compare-link" onClick={() => setAllLayouts(v => !v)}>
                     {allLayouts ? 'Hide other layouts' : `Show ${rows.length - sameLayoutCount} on other layouts`}
                   </button>
@@ -223,7 +241,7 @@ export function ComparePicker({ ownRows, ownGuids, value, lapFilterLabel, onAppl
                         aria-label={`Compare ${active}'s session ${startLabel(r.session_start)}`} />
                       <span className="compare-session-main">
                         <strong>{startLabel(r.session_start, !r.session_start?.startsWith(thisYear))}</strong>
-                        <small>{[allLayouts || !ownLayout ? trackLabel(r) : r.track_configuration_name || null, vehicleLabel(r) || null].filter(Boolean).join(' · ')}</small>
+                        <small>{[allLayouts || !ownCourse ? trackLabel(r) : r.track_configuration_name || null, vehicleLabel(r) || null].filter(Boolean).join(' · ')}</small>
                       </span>
                       <span className="compare-session-time">
                         <strong>{msToLap(r.best_lap_ms)}</strong>

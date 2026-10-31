@@ -9,7 +9,7 @@ const path = require('node:path')
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-compare-'))
 process.env.CATALYST_INSTANCE_DIR = root
 const { initSchema, withDb, releaseSharedInstance } = require('../dist-main/garmin/loadToDb.js')
-const { DB_PATH, TRACKS_DIR } = require('../dist-main/garmin/paths.js')
+const { DB_PATH, TRACKS_DIR, MEAN_LINES_DIR } = require('../dist-main/garmin/paths.js')
 const { buildAnalysis } = require('../dist-main/garmin/analysisData.js')
 const { exportComparison } = require('../dist-main/garmin/driverComparison.js')
 const { buildCoachPacket, renderPacket } = require('../dist-main/garmin/coachPacket.js')
@@ -17,7 +17,7 @@ const { coachUserPrompt } = require('../dist-main/garmin/promptPack.js')
 const { buildCoachingTool } = require('../dist-main/garmin/coachingTool.js')
 const { registerApiHandlers } = require('../dist-main/main/ipc.js')
 const { parseCompareParams, compareParams, isCompareParam } = require('../dist-main/shared/comparison.js')
-const { TRACK_YAML, lapRows, seed } = require('./fixtures/compareFixture.cjs')
+const { TOTAL_M, OTHER_LINE, TRACK_YAML, lapRows, seed, speedAt, writeMeanLines } = require('./fixtures/compareFixture.cjs')
 
 const db = fn => withDb(fn, DB_PATH)
 
@@ -195,6 +195,43 @@ test('another driver’s laps overlay your analysis on the same layout', async t
     // Desktop IPC passes the renderer's request through unresolved.
     await assert.rejects(buildAnalysis(['mine-1'], 'metric', 'top10', [{ driver: 'Alex', sessionGuids: ['theirs-1'] }]), /needs the Catalyst server/)
     await assert.rejects(buildAnalysis(['mine-1'], 'metric', 'top10', [bundle, bundle, bundle, bundle, bundle]), /up to 4 drivers/)
+  })
+
+  // Every Catalyst device builds its own mean line, so another driver on
+  // your course has a different mean-line ID and lap length.
+  await t.test('a driver on their own mean line is compared on yours', async () => {
+    writeMeanLines(MEAN_LINES_DIR)
+    await db(con => seed(con, [{ sg: 'theirs-own-line', start: '2026-10-25 14:00:00', vehicle: 'their-car', meanLine: OTHER_LINE.meanLine, laps: [1.0] }]))
+    const exported = await exportComparison(['theirs-own-line'], 'top3')
+    assert.equal(exported.sessions[0].meanLineGuid, OTHER_LINE.meanLine)
+    assert.equal(exported.line.guid, OTHER_LINE.meanLine)
+    assert.equal(exported.line.totalM, OTHER_LINE.totalM)
+    assert.ok(exported.line.dist.length > 150 && exported.line.dist.length < 260, 'their mean line travels thinned to about every 5 m')
+    assert.equal(exported.laps[0].samples.dist.at(-1), OTHER_LINE.totalM)
+    const sam = { ...exported, driver: 'Sam' }
+
+    const data = await buildAnalysis(['mine-1'], 'metric', 'top10', [sam])
+    const [trace] = data.speedTraces.filter(tr => tr.driver === 'Sam')
+    assert.equal(trace.dist[0], 0)
+    assert.equal(trace.dist.at(-1), TOTAL_M, 'their lap ends where yours does')
+    // Their speed at each of your metres is the course's speed there. Scaling
+    // their 1,010 m to your 1,000 m instead would be ~5 m out before T1.
+    trace.dist.forEach((d, i) => assert.ok(Math.abs(trace.speed_mph[i] - speedAt(d, 1.0) * 3.6) < 0.3, `speed at ${d} m`))
+    const delta = data.timeDeltaTraces.find(tr => tr.driver === 'Sam')
+    assert.ok(Math.abs(delta.delta_s.at(-1) - (lapRows(1.0, OTHER_LINE).durationMs - data.bestLap.durationMs) / 1000) < 0.002, 'lap time is unchanged')
+    const t1 = data.comparison.corners.find(c => c.turn === 'T1')
+    assert.ok(Math.abs(t1.drivers[1].vminDistM - t1.drivers[0].vminDistM) <= 1, 'the same minimum-speed point')
+    assert.ok(Math.abs(t1.drivers[1].brakeOnsetM - t1.drivers[0].brakeOnsetM) <= 2, 'the same braking point')
+    const splitGap = data.comparison.segments.reduce((sum, seg) => sum + seg.bestLap[0] - seg.bestLap[1], 0)
+    assert.ok(Math.abs(splitGap - (data.bestLap.durationMs - lapRows(1.0, OTHER_LINE).durationMs) / 1000) < 0.005, 'splits cover the whole lap')
+
+    const packet = await db(con => buildCoachPacket(con, { sessionGuids: ['mine-1'], system: 'metric', lapFilter: 'top10', comparisons: [sam] }))
+    assert.deepEqual([packet.comparisons[0].driver, packet.comparisons[0].laps], ['Sam', 1])
+    assert.ok(packet.complexes.every(c => packet.comparisons[0].stats[c.id].time.best != null), 'every complex is measured on their lap')
+
+    // A different course is still refused, whatever the mean line.
+    const otherCourse = { ...sam, sessions: sam.sessions.map(x => ({ ...x, configurationId: 99, configName: 'Grand West' })) }
+    await assert.rejects(buildAnalysis(['mine-1'], 'metric', 'top10', [otherCourse]), /is on Test Raceway · Grand West/)
   })
 })
 
