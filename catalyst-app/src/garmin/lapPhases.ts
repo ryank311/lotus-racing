@@ -288,9 +288,29 @@ export function segmentBounds(segments: TrackSegment[], totalM: number): SplitBo
   }))
 }
 
-function cornerSpanLabel(turns: string[]): string {
+export function cornerSpanLabel(turns: string[]): string {
   if (!turns.length) return ''
   return turns.length === 1 ? turns[0] : `${turns[0]}–${turns[turns.length - 1]}`
+}
+
+// Complex IDs, corner lists and default names always come from the current
+// corners, so renaming or moving a corner never leaves a stale label behind.
+// A non-empty `name` is the driver's own and wins over the default.
+export function labelComplexes(
+  corners: TrackCorner[],
+  ranges: Array<{ startM: number; endM: number; name?: string | null }>,
+): ComplexDef[] {
+  const ordered = sortedCorners(corners)
+  return ranges.map((r, i) => {
+    const inside = ordered.filter(c => c.apex_idx >= r.startM && c.apex_idx < r.endM)
+    const first = inside[0], last = inside[inside.length - 1]
+    const firstName = first?.name && first.name !== first.turn ? first.name : ''
+    const lastName = last && last !== first && last.name && last.name !== last.turn && last.name !== first?.name ? last.name : ''
+    const auto = inside.length
+      ? [cornerSpanLabel(inside.map(c => c.turn)), [firstName, lastName].filter(Boolean).join(' to ')].filter(Boolean).join(' · ')
+      : i === 0 && r.startM === 0 ? 'Start straight' : `Complex ${i + 1}`
+    return { id: `C${i + 1}`, name: r.name?.trim() || auto, startM: r.startM, endM: r.endM, corners: inside.map(c => c.turn) }
+  })
 }
 
 // Corner complexes run from one real braking zone to the next, measured on a
@@ -315,16 +335,7 @@ export function deriveComplexes(corners: TrackCorner[], reference: LapSeries, to
   // A boundary whose stretch holds no apex (a second braking stage before the
   // same corner) merges into the stretch before it.
   bounds = bounds.filter((b, i) => i === 0 || apexesIn(b.startM, i + 1 < bounds.length ? bounds[i + 1].startM : end).length > 0)
-  return bounds.map((b, i) => {
-    const endM = i + 1 < bounds.length ? bounds[i + 1].startM : end
-    const inside = apexesIn(b.startM, endM)
-    const first = inside[0], last = inside[inside.length - 1]
-    const label = inside.length ? cornerSpanLabel(inside.map(c => c.turn)) : 'Start straight'
-    const firstName = first?.name && first.name !== first.turn ? first.name : ''
-    const lastName = last && last !== first && last.name && last.name !== last.turn && last.name !== first?.name ? last.name : ''
-    const name = [label, [firstName, lastName].filter(Boolean).join(' to ')].filter(Boolean).join(' · ')
-    return { id: `C${i + 1}`, name, startM: b.startM, endM, corners: inside.map(c => c.turn) }
-  })
+  return labelComplexes(ordered, bounds.map((b, i) => ({ startM: b.startM, endM: i + 1 < bounds.length ? bounds[i + 1].startM : end })))
 }
 
 // When a layout has no named corners, Garmin segments stand in for complexes.

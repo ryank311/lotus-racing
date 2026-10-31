@@ -1,9 +1,9 @@
 import { PreparingPanel } from '../components/Preparing'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, msToLap } from '../api'
+import { api, isRemote, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
 import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart } from '../components/Charts'
-import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName } from '../components/chartSeries'
+import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName, driverColor } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
@@ -11,8 +11,11 @@ import { useNavigation, useRoute } from '../navigation'
 import { humanSessionLabel, sanitizeCoachingResult } from '../../shared/sessionIdentity'
 import { coachingLapFilter, DEFAULT_LAP_FILTER, isLapFilter, LAP_FILTERS, lapFilterLabel, lapFilterPhrase, type LapFilter } from '../../shared/coachingScope'
 import { CoachProgress } from '../components/CoachProgress'
+import { ComparePicker } from '../components/ComparePicker'
+import { DriverComparisonPanel } from '../components/DriverComparison'
+import { compareParams, driverKey, parseCompareParams, type ComparisonRequest } from '../../shared/comparison'
 import type { AnalysisData } from '../../garmin/analysisData'
-import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec, FocusVerdict } from '../../shared/types'
+import type { CoachingSession, CoachingResult, CoachAnnotation, CoachLineWaypoint, CoachSetupRec, DbSessionRow, FocusVerdict } from '../../shared/types'
 import type { CoachLinePoint } from '../../garmin/analysisData'
 import './analysis-extras.css'
 
@@ -61,6 +64,15 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const lapFilter: LapFilter = isLapFilter(lapParam) && lapParam !== 'all' ? lapParam : DEFAULT_LAP_FILTER
   const setLapFilter = (laps: LapFilter) => query({ laps, report: null })
   const focusParam = params.get('focus')
+  // Other drivers' sessions overlaid on yours (compare=<driver>:<session>).
+  const compareKey = JSON.stringify(params.getAll('compare'))
+  const comparisons = useMemo(() => parseCompareParams(JSON.parse(compareKey)), [compareKey])
+  const setComparisons = (next: ComparisonRequest[]) => query({ compare: compareParams(next) })
+  const removeComparedDriver = (name: string) => setComparisons(comparisons.filter(c => driverKey(c.driver) !== driverKey(name)))
+  const comparedNames = comparisons.map(c => c.driver).join(', ')
+  const [compareOpen, setCompareOpen] = useState(false)
+  // Your selected sessions as listed (layout, car, best lap) for the picker.
+  const [ownRows, setOwnRows] = useState<DbSessionRow[]>([])
   const [coachMenuOpen, setCoachMenuOpen] = useState(false)
   const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const [hoveredRef, setHoveredRef] = useState<string | null>(null)
@@ -198,9 +210,10 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
         const sessions = await api.listSessions(null)
         if (cancelled) return
         const requested = sessions.filter(s => selected.has(s.session_guid))
+        setOwnRows(requested)
         if (requested.length !== selected.size) throw new Error('Some sessions are unavailable. Return to Sessions to update your selection.')
         if (requested.some(s => !s.details_loaded)) throw new Error('Telemetry is missing. Return to Sessions and download the selected telemetry.')
-        const d = (await api.buildAnalysis([...selected], system, lapFilter)) as AnalysisData
+        const d = (await api.buildAnalysis([...selected], system, lapFilter, comparisons)) as AnalysisData
         if (!d) throw new Error('The server returned no analysis. Please try again.')
         if (!cancelled) setData(d)
       } catch (e: any) {
@@ -211,7 +224,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       }
     })()
     return () => { cancelled = true; clearTimeout(timeout) }
-  }, [selected, system, lapFilter, loadAttempt])
+  }, [selected, system, lapFilter, comparisons, loadAttempt])
 
   const displayCoachResult = useMemo(() => {
     if (!coachResult) return null
@@ -277,7 +290,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       <header className="analysis-toolbar">
         <div className="analysis-context">
           <strong title={data?.config}>{data?.config || 'Analysis'}</strong>
-          <span>{selected.size} session{selected.size === 1 ? '' : 's'} · {loading ? 'Loading…' : data ? plural(data.laps.length, 'lap') : 'Telemetry'}</span>
+          <span>{selected.size} session{selected.size === 1 ? '' : 's'} · {loading ? 'Loading…' : data ? plural(data.laps.length, 'lap') : 'Telemetry'}{comparisons.length ? ` · vs ${comparedNames}` : ''}</span>
         </div>
 
         <div className="analysis-mobile-tabs" role="group" aria-label="Analysis view">
@@ -290,6 +303,18 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           value={lapFilter} disabled={loading} onChange={e => setLapFilter(e.target.value as LapFilter)}>
           {LAP_FILTERS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
         </select>
+
+        {/* Other drivers live on the Catalyst server; the desktop IPC workspace has only you. */}
+        {isRemote && (
+          <button type="button" className={`btn ghost analysis-compare-btn${comparisons.length ? ' is-on' : ''}`}
+            title="Compare against other drivers" aria-haspopup="dialog" disabled={!ownRows.length}
+            onClick={() => setCompareOpen(true)}>
+            {comparisons.length
+              ? <>{comparisons.map((c, i) => <i key={c.driver} className="driver-dot" style={{ background: driverColor(i + 1) }} />)}
+                vs {comparisons.length === 1 ? comparisons[0].driver : `${comparisons.length} drivers`}</>
+              : '⇄ Compare'}
+          </button>
+        )}
 
         <div className="ask-coach-split">
           <button
@@ -327,7 +352,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           standalone
           eyebrow="analysis"
           title="Preparing analysis"
-          detail={`${plural(selected.size, 'session')} · ${lapFilterLabel(lapFilter)}`}
+          detail={`${plural(selected.size, 'session')} · ${lapFilterLabel(lapFilter)}${comparisons.length ? ` · vs ${comparedNames}` : ''}`}
           startedAt={loadStartedAt}
           status="Crunching telemetry…"
           stepsLabel="Being prepared"
@@ -335,6 +360,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             { label: 'Valid laps', detail: 'Garmin-flagged and excluded laps are left out', state: 'todo' },
             { label: 'Splits and braking', detail: 'Timestamped splits, braking points, corner minimums', state: 'todo' },
             { label: 'Lap comparisons', detail: 'Deltas to your fastest, theoretical and Garmin optimal laps', state: 'todo' },
+            ...(comparisons.length ? [{ label: 'Other drivers', detail: `${comparedNames}: their laps on this layout`, state: 'todo' as const }] : []),
           ]}
         />
       </div> : <div
@@ -352,13 +378,15 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
                 <div style={{ color: 'var(--red)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{err}</div>
                 <div className="btn-row">
                   <button className="btn primary" onClick={() => setLoadAttempt(attempt => attempt + 1)}>Retry analysis</button>
+                  {comparisons.length > 0 && <button className="btn ghost" onClick={() => setCompareOpen(true)}>Edit comparison</button>}
+                  {comparisons.length > 0 && <button className="btn ghost" onClick={() => setComparisons([])}>Stop comparing</button>}
                   <button className="btn ghost" onClick={onBack}>Back to Sessions</button>
                 </div>
               </div>
             )}
 
             {data && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} coachNotice={staleNotice} onFocusRef={ref => { setFocusedRef(ref); if (ref) setMobileView('map') }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
+              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onEditComparison={() => setCompareOpen(true)} onRemoveDriver={removeComparedDriver} hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} coachNotice={staleNotice} onFocusRef={ref => { setFocusedRef(ref); if (ref) setMobileView('map') }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
             )}
           </div>
         </div>
@@ -377,6 +405,12 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
       {coachError && (
         <CoachErrorModal message={coachError} onDismiss={() => setCoachError(null)} />
+      )}
+
+      {compareOpen && (
+        <ComparePicker ownRows={ownRows} ownGuids={selected} value={comparisons} lapFilterLabel={lapFilterLabel(lapFilter)}
+          onClose={() => setCompareOpen(false)}
+          onApply={next => { setCompareOpen(false); setComparisons(next) }} />
       )}
     </>
   )
@@ -501,10 +535,12 @@ function TrackMapPanel({ data, hoverDistanceM, coachAnnotations, focusCorner, ho
   )
 }
 
-function AnalysisBody({ data, selected, setSelected, hoverDistanceM, onHoverDistance, coachResult, coachNotice, onFocusRef, onHoverRef, onFocusAnnotation }: {
+function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveDriver, hoverDistanceM, onHoverDistance, coachResult, coachNotice, onFocusRef, onHoverRef, onFocusAnnotation }: {
   data: AnalysisData
   selected: Set<string>
   setSelected: (s: Set<string>) => void
+  onEditComparison: () => void
+  onRemoveDriver: (name: string) => void
   hoverDistanceM: number | null
   onHoverDistance: (d: number | null) => void
   coachResult?: CoachingResult | null
@@ -575,6 +611,14 @@ function AnalysisBody({ data, selected, setSelected, hoverDistanceM, onHoverDist
       )}
       </div>
 
+      {/* DRIVER COMPARISON — other drivers' laps are also overlaid on the
+          distance charts and the map, in the colours shown here. */}
+      {data.comparison && (
+        <DriverComparisonPanel comparison={data.comparison} speedUnit={data.speedUnit}
+          onEdit={onEditComparison} onRemoveDriver={onRemoveDriver}
+          onHoverRef={onHoverRef} onFocusRef={onFocusRef} />
+      )}
+
       {/* COACH NOTES */}
       {coachNotice}
       {coachResult && <CoachNotesPanel result={coachResult} onFocusRef={onFocusRef} onHoverRef={onHoverRef} onFocusAnnotation={onFocusAnnotation} />}
@@ -592,6 +636,14 @@ function AnalysisBody({ data, selected, setSelected, hoverDistanceM, onHoverDist
       {coachResult && <CarSetupPanel setup={coachResult.setup} />}
 
       {/* CHARTS */}
+      {data.comparison && (
+        <div className="analysis-compare-legend" aria-label="Driver colours">
+          {data.comparison.drivers.map(d => (
+            <span key={d.index}><i className="driver-dot" style={{ background: driverColor(d.index) }} />{d.name}{d.bestLap ? ` · ${msToLap(d.bestLap.durationMs)}` : ''}</span>
+          ))}
+          <span className="muted">thick line = each driver’s fastest lap</span>
+        </div>
+      )}
       <div className="analysis-charts">
         <ChartCard
           channel="SPEED"

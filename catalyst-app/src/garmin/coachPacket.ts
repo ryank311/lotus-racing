@@ -6,6 +6,7 @@ import type { DuckDBConnection } from '@duckdb/node-api'
 import type { CoachingContext, FocusCheck, FocusItem, FocusUnit } from '../shared/types.js'
 import { speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem } from '../shared/units.js'
 import { lapFilterPhrase, selectLaps, type LapFilter } from '../shared/coachingScope.js'
+import { sameTrackLayout, trackLayoutKey, type TrackLayoutIdentity } from '../shared/trackLayout.js'
 import {
   complexesFromSegments, complexPhases, deriveComplexes, median, plausibleMin, segmentBounds, stdev,
   type ComplexDef, type ComplexPhase, type LapSeries,
@@ -14,7 +15,7 @@ import {
   fetchLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys,
   shortSessionLabel, validLapPredicate, type ValidLap,
 } from './lapData.js'
-import { loadTrackYaml, resolveTrackYamlPath, saveTrackYamlComplexes, type TrackYaml } from './trackYaml.js'
+import { layoutComplexes, layoutForSession, saveTrackComplexes } from './trackStore.js'
 
 // ─── Metrics ────────────────────────────────────────────────────────────────
 
@@ -193,15 +194,23 @@ export async function fetchSessionMeta(con: DuckDBConnection, guids: string[]): 
   `, guids)
 }
 
-// Coaching compares like with like: one layout and one car per packet.
-export function assertComparable(sessions: SessionMeta[]): void {
-  const layouts = new Set(sessions.map(s => s.mean_line_guid ?? String(s.track_configuration_id ?? s.track_configuration_name ?? '')))
-  if (layouts.size > 1) {
+export function sessionLayout(session: SessionMeta): TrackLayoutIdentity {
+  return {
+    meanLineGuid: session.mean_line_guid, configurationId: session.track_configuration_id,
+    trackLabel: `${session.track_name ?? ''} · ${session.track_configuration_name ?? ''}`,
+  }
+}
+
+// Analysis and coaching both require one layout and one car per comparison.
+export function assertComparable(sessions: SessionMeta[], purpose = 'AI coaching'): void {
+  const layouts = new Set(sessions.map(s => trackLayoutKey(sessionLayout(s))))
+  const configurations = new Set(sessions.map(s => s.track_configuration_id).filter(id => id != null))
+  if (layouts.size > 1 || configurations.size > 1 || (sessions.length > 1 && layouts.has(null))) {
     const names = [...new Set(sessions.map(s => [s.track_name, s.track_configuration_name].filter(Boolean).join(' · ')))]
-    throw new Error(`AI coaching requires one track layout at a time. Selected: ${names.join(', ')}.`)
+    throw new Error(`${purpose} requires one track layout at a time. Selected: ${names.filter(Boolean).join(', ') || 'Unknown layout'}. Choose sessions from the same course configuration.`)
   }
   const vehicles = new Set(sessions.map(s => s.vehicle_guid).filter(Boolean))
-  if (vehicles.size > 1) throw new Error('AI coaching requires sessions from one vehicle at a time so setup and pace comparisons stay valid.')
+  if (vehicles.size > 1) throw new Error(`${purpose} requires sessions from one vehicle at a time so setup and pace comparisons stay valid.`)
 }
 
 export function vehicleLabelOf(s: SessionMeta | undefined): string {
@@ -209,46 +218,33 @@ export function vehicleLabelOf(s: SessionMeta | undefined): string {
   return [s.vehicle_year, s.vehicle_make, s.vehicle_model].filter(Boolean).join(' ') || 'Unknown vehicle'
 }
 
-export function trackYamlFor(session: SessionMeta): { path: string; yaml: TrackYaml; exists: boolean } {
-  const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', session.mean_line_guid)
-  return { ...resolved, yaml: loadTrackYaml(resolved.path) }
-}
-
 // Complex boundaries must stay put between sessions so focus items can be
-// checked later. They live in the track YAML; the first time a layout is
-// coached they are derived from its fastest valid lap and saved there.
+// checked later. They live with the layout in the workspace database; the
+// first time a layout is coached they are derived from its fastest valid lap
+// and saved there. Corner lists and default names always follow the current
+// corners, so renamed turns reach the coach immediately.
 export async function resolveComplexes(
   con: DuckDBConnection,
   session: SessionMeta,
 ): Promise<{ complexes: ComplexDef[]; source: CoachPacket['complexSource']; totalM: number }> {
-  const { path, yaml, exists } = trackYamlFor(session)
-  const compatible = !yaml.mean_line_guid || !session.mean_line_guid || yaml.mean_line_guid === session.mean_line_guid
-  const totalM = Number(yaml.total_dist_m) || 0
-  if (compatible && yaml.complexes?.length) {
-    return {
-      source: 'track', totalM,
-      complexes: yaml.complexes.map(c => ({
-        id: String(c.id), name: String(c.name), startM: Number(c.start_m), endM: Number(c.end_m),
-        corners: String(c.corners ?? '').split(',').map(s => s.trim()).filter(Boolean),
-      })),
-    }
-  }
-  if (compatible && yaml.corners.length) {
+  const layout = await layoutForSession(con, session)
+  const totalM = layout?.totalDistM ?? 0
+  if (layout?.complexes.length) return { complexes: layoutComplexes(layout), source: 'track', totalM }
+  if (layout?.corners.length) {
     const reference = await fastestLayoutLap(con, session)
     if (reference) {
-      const derived = deriveComplexes(yaml.corners, reference, totalM)
+      const derived = deriveComplexes(layout.corners, reference, totalM)
       if (derived.length) {
-        if (exists) {
-          try {
-            saveTrackYamlComplexes(path, derived.map(c => ({ id: c.id, name: c.name, start_m: c.startM, end_m: c.endM, corners: c.corners.join(',') })))
-          } catch { /* read-only tracks directory: derive again next time */ }
+        try {
+          await saveTrackComplexes(con, layout.meanLineGuid, derived.map(c => ({ startM: c.startM, endM: c.endM, name: null })), 'derived')
+        } catch (error) {
+          console.warn('[coach] derived complexes not saved; they will be derived again:', error instanceof Error ? error.message : error)
         }
         return { complexes: derived, source: 'derived', totalM }
       }
     }
   }
-  const segments = compatible ? yaml.segments : []
-  return { complexes: complexesFromSegments(segmentBounds(segments, totalM)), source: 'segments', totalM }
+  return { complexes: complexesFromSegments(segmentBounds(layout?.segments ?? [], totalM)), source: 'segments', totalM }
 }
 
 async function fastestLayoutLap(con: DuckDBConnection, session: SessionMeta): Promise<LapSeries | null> {
@@ -256,8 +252,10 @@ async function fastestLayoutLap(con: DuckDBConnection, session: SessionMeta): Pr
   const key = session.mean_line_guid ? 's.mean_line_guid = ?' : 's.track_configuration_id = ?'
   const lap = (await rows(con, `
     SELECT l.session_guid, l.lap_index FROM laps l JOIN sessions s ON s.session_guid = l.session_guid
-    WHERE ${key} AND ${predicate} ORDER BY l.duration_ms LIMIT 1
-  `, [session.mean_line_guid ?? session.track_configuration_id]))[0]
+    WHERE ${key} AND ${predicate}
+      ${session.track_configuration_id != null ? 'AND (s.track_configuration_id IS NULL OR s.track_configuration_id = ?)' : ''}
+    ORDER BY l.duration_ms LIMIT 1
+  `, [session.mean_line_guid ?? session.track_configuration_id, ...(session.track_configuration_id != null ? [session.track_configuration_id] : [])]))[0]
   return lap ? fetchLapSeries(con, String(lap.session_guid), Number(lap.lap_index)) : null
 }
 
@@ -290,6 +288,7 @@ function statFor(key: MetricKey, laps: PacketLap[], complexIndex: number, bestLa
 export async function buildCoachPacket(con: DuckDBConnection, opts: PacketOptions): Promise<CoachPacket> {
   const meta = await fetchSessionMeta(con, opts.sessionGuids)
   if (!meta.length) throw new Error('no sessions matched the provided GUIDs.')
+  if (meta.length !== new Set(opts.sessionGuids).size) throw new Error('Some selected sessions are unavailable. Select the sessions again.')
   assertComparable(meta)
   const f = formatters(opts.system)
   const anchor = meta[meta.length - 1]
@@ -346,8 +345,10 @@ export async function buildCoachPacket(con: DuckDBConnection, opts: PacketOption
     SELECT l.duration_ms, CAST(s.session_start AS VARCHAR) AS start, l.lap_index FROM laps l JOIN sessions s ON s.session_guid = l.session_guid
     WHERE ${predicate} AND ${anchor.mean_line_guid ? 's.mean_line_guid = ?' : 's.track_configuration_id = ?'}
       AND s.vehicle_guid IS NOT DISTINCT FROM ? AND s.account IS NOT DISTINCT FROM ?
+      ${anchor.track_configuration_id != null ? 'AND (s.track_configuration_id IS NULL OR s.track_configuration_id = ?)' : ''}
     ORDER BY l.duration_ms LIMIT 1
-  `, [anchor.mean_line_guid ?? anchor.track_configuration_id, anchor.vehicle_guid, anchor.account]))[0]
+  `, [anchor.mean_line_guid ?? anchor.track_configuration_id, anchor.vehicle_guid, anchor.account,
+    ...(anchor.track_configuration_id != null ? [anchor.track_configuration_id] : [])]))[0]
   const allTimePb = pbRow ? { ms: Number(pbRow.duration_ms), label: lapLabel(pbRow.start, Number(pbRow.lap_index)) } : null
   const optimal = await fetchOptimalLapTimes(con, meta.map(m => m.session_guid))
   const garminOptimalMs = optimal.size ? Math.min(...optimal.values()) : null
@@ -542,7 +543,7 @@ export function checkFocus(item: FocusItem, laps: Array<{ series: LapSeries; rep
 export interface StoredFocus { reportId: string; createdAt: string; latestSessionStart: string | null; items: FocusItem[] }
 
 // The most recent report with focus items for this car, layout and driver.
-export async function latestFocus(con: DuckDBConnection, context: Pick<CoachingContext, 'vehicleGuid' | 'meanLineGuid' | 'account'>, before?: string | null): Promise<StoredFocus | null> {
+export async function latestFocus(con: DuckDBConnection, context: Pick<CoachingContext, 'vehicleGuid' | 'account'> & TrackLayoutIdentity, before?: string | null): Promise<StoredFocus | null> {
   const reports = await rows(con, `
     SELECT id, CAST(created_at AS VARCHAR) AS created_at, parsed_result, review_result
     FROM coaching_sessions WHERE parsed_result IS NOT NULL OR review_result IS NOT NULL
@@ -553,7 +554,7 @@ export async function latestFocus(con: DuckDBConnection, context: Pick<CoachingC
     const ctx: CoachingContext | undefined = result?.context
     const items: FocusItem[] = result?.focus ?? []
     if (!ctx || !items.length) continue
-    if (ctx.vehicleGuid !== context.vehicleGuid || ctx.meanLineGuid !== context.meanLineGuid || ctx.account !== context.account) continue
+    if (ctx.vehicleGuid !== context.vehicleGuid || ctx.account !== context.account || !sameTrackLayout(ctx, context)) continue
     if (before && ctx.latestSessionStart && ctx.latestSessionStart >= before) continue
     return { reportId: String(r.id), createdAt: String(r.created_at), latestSessionStart: ctx.latestSessionStart, items }
   }

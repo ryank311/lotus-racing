@@ -25,3 +25,7 @@ export const LAP_PALETTE = [
   PALETTE.purple, PALETTE.pink, '#94a3b8', '#fbbf24',
   '#a5b4fc', '#86efac', '#fde68a', '#fca5a5',
 ]
+
+// Compared drivers, in order (you stay signal-orange). Chosen to stay apart
+// from each other and from orange on the dark plot background.
+export const DRIVER_PALETTE = [PALETTE.cyan, PALETTE.purple, PALETTE.green, PALETTE.amber]

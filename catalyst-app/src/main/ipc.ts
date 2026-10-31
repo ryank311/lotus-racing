@@ -36,16 +36,18 @@ import {
   getCoachingSession,
   deleteCoachingSession,
 } from '../garmin/loadToDb.js'
-import { MEAN_LINES_DIR, TRACKS_DIR } from '../garmin/paths.js'
+import { MEAN_LINES_DIR } from '../garmin/paths.js'
 import { buildTrackGeometry } from '../garmin/trackGeometry.js'
-import { loadTrackYaml, resolveTrackYamlPath, saveTrackYamlCorners, TrackCorner } from '../garmin/trackYaml.js'
+import {
+  customComplexNames, getTrackLayout, saveTrackComplexes, saveTrackCorners, trackLayoutCornerCounts, type TrackCorner,
+} from '../garmin/trackStore.js'
 import { driverContext, runBrief, runCoach } from '../garmin/promptPack.js'
 import { buildCoachPacket, resolveComplexes, type CoachPacket, type SessionMeta } from '../garmin/coachPacket.js'
 import { buildDashboard, focusForSession } from '../garmin/focusService.js'
-import { saveTrackYamlComplexes } from '../garmin/trackYaml.js'
 import { parseCoachingReport, parseCoachResponse } from '../garmin/coachParser.js'
 import { runAgent } from '../garmin/agentHarness.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
+import { exportComparison, type ComparisonBundle } from '../garmin/driverComparison.js'
 import { syncSessions, validateSessionGuids } from '../garmin/sessionSync.js'
 import { ReviewService } from '../garmin/reviewStore.js'
 import { buildReviewCoachPrompt, parseReviewCoaching, reviewCoachingTool } from '../garmin/reviewCoach.js'
@@ -705,19 +707,19 @@ export function registerApiHandlers(
 
   // ── Tracks editor ─────────────────────────────────────────────────────────
   //
-  // The Tracks workspace tab is for cleaning up corner annotations. We expose:
+  // The Tracks workspace tab is for cleaning up corner annotations. Layouts
+  // live in the workspace database (track YAML only seeds it). We expose:
   //   tracks:listAll        — every (track, config, meanLineGuid) we have data
-  //                            for, paired with its YAML path (resolved or to-
-  //                            be-created), session count, and corner count.
+  //                            for, with session count and saved corner count.
   //   tracks:get(guid)      — geometry (centerline + edges + sectors) plus the
-  //                            parsed YAML corners — everything the editor needs.
-  //   tracks:saveCorners    — rewrite just the corners block in the YAML; lat/
-  //                            lon are filled in from the mean_line's apex_idx
-  //                            so the renderer doesn't have to ship them back.
+  //                            saved corners — everything the editor needs.
+  //   tracks:saveCorners    — replace the layout's corners; lat/lon are filled
+  //                            in from the mean_line's apex_idx so the renderer
+  //                            doesn't have to ship them back.
 
   register('tracks:listAll', async () => {
     if (!fs.existsSync(DB_PATH)) return []
-    const rows = await withDb(async con => {
+    const { rows, cornerCounts } = await withDb(async con => {
       const reader = await con.runAndReadAll(`
         SELECT tc.track_name, tc.track_configuration_name, s.mean_line_guid,
                COUNT(*) AS session_count
@@ -727,20 +729,17 @@ export function registerApiHandlers(
         GROUP BY 1, 2, 3
         ORDER BY session_count DESC
       `)
-      return reader.getRowsJson()
+      return { rows: reader.getRowsJson(), cornerCounts: await trackLayoutCornerCounts(con) }
     }, DB_PATH)
     const out = rows.map((r: any) => {
       const trackName = String(r[0] ?? 'Unknown')
       const configName = String(r[1] ?? '')
       const meanLineGuid = r[2] != null ? String(r[2]) : null
       const sessionCount = Number(r[3] ?? 0)
-      const resolved = meanLineGuid ? resolveTrackYamlPath(trackName, configName, meanLineGuid) : null
-      const yaml = resolved?.exists ? loadTrackYaml(resolved.path) : null
       return {
         trackName, configName, meanLineGuid, sessionCount,
-        yamlPath: resolved?.path ?? null,
-        yamlExists: !!resolved?.exists,
-        cornerCount: yaml?.corners?.length ?? 0,
+        saved: !!meanLineGuid && cornerCounts.has(meanLineGuid),
+        cornerCount: (meanLineGuid && cornerCounts.get(meanLineGuid)) || 0,
         meanLineExists: meanLineGuid
           ? fs.existsSync(path.join(MEAN_LINES_DIR, `${meanLineGuid}.pb`))
           : false,
@@ -749,12 +748,11 @@ export function registerApiHandlers(
     return out
   })
 
-  register('tracks:get', (_e, meanLineGuid: string) => {
+  register('tracks:get', async (_e, meanLineGuid: string) => {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(meanLineGuid)) throw new Error('invalid mean-line id')
     const geom = buildTrackGeometry(meanLineGuid)
     if (!geom) return null
-    const resolved = resolveTrackYamlPath(geom.trackName, geom.configName, meanLineGuid)
-    const yaml = resolved.exists ? loadTrackYaml(resolved.path) : null
+    const layout = fs.existsSync(DB_PATH) ? await withDb(con => getTrackLayout(con, meanLineGuid), DB_PATH) : null
     return {
       geometry: {
         meanLineGuid: geom.meanLineGuid,
@@ -768,18 +766,41 @@ export function registerApiHandlers(
         rightEdge: geom.rightEdge,
         sectorMarks: geom.sectorMarks,
       },
-      yamlPath: resolved.path,
-      yamlExists: resolved.exists,
-      corners: yaml?.corners ?? [],
+      saved: !!layout,
+      corners: layout?.corners ?? [],
     }
   })
 
   // The renderer sends back corners without lat/lon (and possibly without
   // dist_idx_start/end). We enrich each one from the mean-line geometry so
-  // the YAML is fully populated for downstream consumers (Analysis charts,
-  // brief generator). Defaults: zone = apex ± 50 m clamped to [0, total], and
-  // apex_radius_m derived from local curvature.
+  // the stored layout is fully populated for downstream consumers (Analysis
+  // charts, coaching, session review). Defaults: zone = apex ± 50 m clamped to
+  // [0, total], and apex_radius_m derived from local curvature.
   const DEFAULT_ZONE_HALF = 50
+
+  // Corner labels and notes reach the AI coach verbatim, so keep them short
+  // and well-formed; turn labels must be unique within a layout.
+  function validTrackCorners(input: unknown): TrackCorner[] {
+    if (!Array.isArray(input) || input.length > 200) throw new Error('Invalid corners')
+    const text = (value: unknown, max: number) => typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined
+    const num = (value: unknown) => value == null || value === '' || !Number.isFinite(Number(value)) ? undefined : Number(value)
+    const seen = new Set<string>()
+    return input.map((c: any, i) => {
+      const turn = text(c?.turn, 100)
+      if (!turn || turn.length > 16) throw new Error(`Corner ${i + 1} needs a turn label of 16 characters or fewer`)
+      if (seen.has(turn)) throw new Error(`Turn ${turn} is used twice`)
+      seen.add(turn)
+      const apex = num(c.apex_idx)
+      if (apex == null || apex < 0) throw new Error(`${turn} needs an apex point on the map`)
+      const corner = { turn, name: text(c.name, 120) ?? '', apex_idx: apex } as TrackCorner
+      const optional: Partial<TrackCorner> = {
+        direction: text(c.direction, 16), character: text(c.character, 500),
+        dist_idx_start: num(c.dist_idx_start), dist_idx_end: num(c.dist_idx_end), apex_radius_m: num(c.apex_radius_m),
+      }
+      for (const [key, value] of Object.entries(optional)) if (value !== undefined) (corner as any)[key] = value
+      return corner
+    })
+  }
 
   function curvatureRadiusAt(
     centerline: Array<{ x: number; y: number }>,
@@ -800,16 +821,15 @@ export function registerApiHandlers(
   }
 
   register('tracks:saveCorners', async (_e, opts: {
-    yamlPath: string
     meanLineGuid: string
     corners: TrackCorner[]
   }) => {
-    assertPathInside(TRACKS_DIR, opts.yamlPath)
-    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(opts.meanLineGuid)) throw new Error('invalid mean-line id')
+    if (!opts || typeof opts.meanLineGuid !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(opts.meanLineGuid)) throw new Error('invalid mean-line id')
+    const corners = validTrackCorners(opts.corners)
     const geom = buildTrackGeometry(opts.meanLineGuid)
     const maxIdx = geom ? geom.centerline.length - 1 : 0
 
-    const enriched = opts.corners.map(c => {
+    const enriched = corners.map(c => {
       const out: TrackCorner = { ...c }
       if (geom && c.apex_idx != null) {
         const i = Math.max(0, Math.min(maxIdx, Math.round(c.apex_idx)))
@@ -827,9 +847,17 @@ export function registerApiHandlers(
       }
       return out
     })
-    await reviews.foreground(async () => { saveTrackYamlCorners(opts.yamlPath, enriched) })
+    // A layout created here (no seed file) takes its identity and Garmin's
+    // reference segments from the mean line.
+    const identity = {
+      trackName: geom?.trackName || null, configName: geom?.configName || null, totalDistM: geom?.totalDistM ?? null,
+      segments: (geom?.segments ?? []).map(s => ({
+        id: s.id, start_dist_m: s.start_dist_m, end_dist_m: s.end_dist_m, length_m: Math.round(s.end_dist_m - s.start_dist_m), flag: s.flag,
+      })),
+    }
+    await reviews.foreground(() => withDb(con => saveTrackCorners(con, opts.meanLineGuid, identity, enriched), DB_PATH))
     if (reviewReady) await reviews.refresh()
-    return { savedTo: opts.yamlPath, cornerCount: enriched.length }
+    return { cornerCount: enriched.length }
   })
 
   // ── Corner complexes (braking zone to braking zone) per layout ─────────────
@@ -846,31 +874,47 @@ export function registerApiHandlers(
   }
   async function complexesResponse(meanLineGuid: string): Promise<import('../shared/types.js').TrackComplexesResponse> {
     const session = await layoutSession(meanLineGuid)
-    const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', meanLineGuid)
-    if (!fs.existsSync(DB_PATH)) return { complexes: [], source: 'segments', yamlPath: resolved.exists ? resolved.path : null }
-    const { complexes, source } = await withDb(con => resolveComplexes(con, session))
-    return { complexes, source, yamlPath: resolved.exists ? resolved.path : null }
+    if (!fs.existsSync(DB_PATH)) return { complexes: [], source: 'segments', saved: false }
+    return withDb(async con => {
+      const { complexes, source } = await resolveComplexes(con, session)
+      const layout = await getTrackLayout(con, meanLineGuid)
+      // Only a stored complex can carry a name the driver typed.
+      return {
+        complexes: complexes.map((c, i) => ({ ...c, custom: source === 'track' && layout?.complexes[i]?.name != null })),
+        source, saved: !!layout,
+      }
+    }, DB_PATH)
   }
   register('tracks:complexes', (_e, meanLineGuid: string) => complexesResponse(meanLineGuid))
   register('tracks:saveComplexes', async (_e, meanLineGuid: string, complexes: import('../shared/types.js').TrackComplexPayload[]) => {
-    const session = await layoutSession(meanLineGuid)
-    const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', meanLineGuid)
-    if (!resolved.exists) throw new Error('Save the corners for this layout before editing complexes.')
+    await layoutSession(meanLineGuid)
     if (!Array.isArray(complexes) || complexes.length > 60) throw new Error('Invalid complexes')
-    const clean = complexes.map((c, i) => {
-      const startM = Math.round(Number(c.startM)), endM = Math.round(Number(c.endM))
+    const ranges = complexes.map((c, i) => {
+      const startM = Math.round(Number(c?.startM)), endM = Math.round(Number(c?.endM))
       if (!Number.isFinite(startM) || !Number.isFinite(endM) || startM < 0 || endM <= startM) throw new Error(`Complex ${i + 1} has an invalid range`)
-      const name = String(c.name ?? '').slice(0, 120) || `Complex ${i + 1}`
-      const corners = Array.isArray(c.corners) ? c.corners.map(String).filter(t => /^[A-Za-z0-9]{1,8}$/.test(t)) : []
-      return { id: `C${i + 1}`, name, start_m: startM, end_m: endM, corners: corners.join(',') }
-    }).sort((a, b) => a.start_m - b.start_m).map((c, i) => ({ ...c, id: `C${i + 1}` }))
-    await reviews.foreground(async () => { saveTrackYamlComplexes(resolved.path, clean) })
+      // Untouched names are the defaults the corners give; they are not stored,
+      // so later corner renames still reach the complex.
+      const name = c.custom === false ? null : String(c.name ?? '').trim().slice(0, 120) || null
+      return { startM, endM, name }
+    }).sort((a, b) => a.startM - b.startM)
+    ranges.forEach((c, i) => { if (i > 0 && c.startM < ranges[i - 1].endM) throw new Error(`Complex ${i + 1} starts before the previous complex ends`) })
+    if (!fs.existsSync(DB_PATH)) throw new Error('Save the corners for this layout before editing complexes.')
+    await reviews.foreground(() => withDb(async con => {
+      const layout = await getTrackLayout(con, meanLineGuid)
+      if (!layout) throw new Error('Save the corners for this layout before editing complexes.')
+      await saveTrackComplexes(con, meanLineGuid, customComplexNames(layout.corners, ranges), 'edited')
+    }, DB_PATH))
     return complexesResponse(meanLineGuid)
   })
+  // Clearing the stored complexes makes the next read derive them again from
+  // the current corners and the fastest valid lap.
   register('tracks:regenerateComplexes', async (_e, meanLineGuid: string) => {
-    const session = await layoutSession(meanLineGuid)
-    const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', meanLineGuid)
-    if (resolved.exists) await reviews.foreground(async () => { saveTrackYamlComplexes(resolved.path, []) })
+    await layoutSession(meanLineGuid)
+    if (fs.existsSync(DB_PATH)) {
+      await reviews.foreground(() => withDb(async con => {
+        if (await getTrackLayout(con, meanLineGuid)) await saveTrackComplexes(con, meanLineGuid, [], 'derived')
+      }, DB_PATH))
+    }
     return complexesResponse(meanLineGuid)
   })
 
@@ -933,10 +977,16 @@ export function registerApiHandlers(
     revealPath(p)
   })
 
-  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter) => {
+  // `comparisons` arrives already resolved: the server replaces the
+  // renderer's requests with each compared driver's exported laps.
+  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?: ComparisonBundle[]) => {
     await ensureSessionDetails(sessionGuids)
-    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapFilter)
+    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapFilter, comparisons ?? [])
   })
+
+  // Read-only: the server calls this on a compared driver's backend. Uses
+  // only telemetry already in this workspace; never syncs or downloads.
+  register('compare:export', (_e, sessionGuids: string[], lapFilter?: LapFilter) => exportComparison(sessionGuids, lapFilter))
 
   // ---- workers ---------------------------------------------------------
 

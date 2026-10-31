@@ -4,6 +4,7 @@
 import type { CatalystBridge, WorkerEvent } from '../shared/types'
 import type { UnitSystem } from '../shared/units'
 import type { LapFilter } from '../shared/coachingScope'
+import type { ComparisonRequest } from '../shared/comparison'
 
 const params = new URLSearchParams(window.location.search)
 const configuredServer = params.get('catalystServer')
@@ -121,8 +122,12 @@ const remoteBridge: CatalystBridge = {
   onLog: cb => subscribe('app:log', cb),
   onSaveRequest: () => () => {},
 
-  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter) =>
-    rpc('analysis:build', sessionGuids, units, lapFilter),
+  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?: ComparisonRequest[]) =>
+    rpc('analysis:build', sessionGuids, units, lapFilter, comparisons ?? []),
+  listDrivers: async () => (await requestJson('/api/drivers')).drivers ?? [],
+  listDriverSessions: async driver => (await requestJson('/api/driver-sessions', {
+    method: 'POST', body: JSON.stringify({ driver }),
+  })).result ?? [],
   runCoach: opts => rpc('coach:run', opts),
   listCoachSessions: () => rpc('coach:list'),
   getCoachSession: id => rpc('coach:get', id),

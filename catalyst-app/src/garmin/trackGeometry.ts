@@ -9,7 +9,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { MEAN_LINES_DIR } from './paths.js'
-import { decodeMeanLine } from './decodePerformance.js'
+import { decodeMeanLine, type MeanLineSegment } from './decodePerformance.js'
 
 const R_EARTH = 6_378_137  // WGS84 equatorial radius in metres
 const DEG = Math.PI / 180
@@ -35,6 +35,8 @@ export interface TrackGeometry {
   // Sector boundaries from the proto's ReferenceSegments (with flag=1, the
   // "primary" sectors). distM marks the position along the centerline.
   sectorMarks: { distM: number; type: 'start' | 'end' }[]
+  // Garmin's reference segments, as decoded from the mean line.
+  segments: MeanLineSegment[]
 }
 
 export function projectLatLon(lat: number, lon: number, p: Projection): { x: number; y: number } {
@@ -139,5 +141,6 @@ export function buildTrackGeometry(meanLineGuid: string): TrackGeometry | null {
     rightEdge,
     bbox: { minX, maxX, minY, maxY },
     sectorMarks,
+    segments: ml.segments,
   }
 }

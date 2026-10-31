@@ -228,8 +228,9 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
   const [showOptimalLine, setShowOptimalLine] = useState(false)
   const [showCoachLine,   setShowCoachLine] = useState(true)
   const hasOptimalLine = !!coachLine && coachLine.length > 1
-  // Index 0 = best lap; indices 1+ = comparison laps. Best lap selected by default.
-  const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(new Set([0]))
+  // Index 0 = best lap; indices 1+ = comparison laps. Best lap selected by
+  // default, plus each compared driver's fastest lap.
+  const [selectedLapIdxs, setSelectedLapIdxs] = useState<Set<number>>(() => new Set([0, ...racingLines.flatMap((lap, i) => (i > 0 && lap.driverBest ? [i] : []))]))
   const [metric,          setMetric]        = useState<TrackMetric>('speed_mph')
 
   // Hover state — index into bestLap arrays, plus container-relative position
@@ -1169,6 +1170,11 @@ function TrackMapContent({ data, height = 560, hoverDistanceM = null, edit, coac
             ⭐ {lapName(bestLap)} · {msToLapTime(bestLap.durationMs)}
           </div>
         )}
+        {racingLines.map((lap, i) => i > 0 && lap.driverBest && selectedLapIdxs.has(i) && (
+          <div key={`driver-${lap.sg}-${lap.lapIdx}`} className="track-map-legend-best" style={{ color: lapColor(lap) }}>
+            ── {lapName(lap)} · {msToLapTime(lap.durationMs)}
+          </div>
+        ))}
         {crosshair && hoverDistanceM != null && (
           <div className="track-map-legend-hover">
             {Math.round(hoverDistanceM)} m · {crosshair.speed.toFixed(1)} {speedUnit}

@@ -117,7 +117,11 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
   const vehicleFilter = params.get('vehicle')
   const setVehicleFilter = (value: string | null) => query({ vehicle: value })
   const trackFilter = params.get('track')
-  const setTrackFilter = (value: string | null) => query({ track: value })
+  const setTrackFilter = (value: string | null) => query({
+    track: value,
+    // Choosing a course also narrows the selection sent to Analysis / AI Coach.
+    ...(value ? { selected: rows.filter(r => selected.has(r.session_guid) && r.layout_key === value).map(r => r.session_guid) } : {}),
+  })
   const { tempFromC, tempUnit } = useUnits()
   const temperature = (r: DbSessionRow) => r.temperature_c == null ? null : `${Math.round(tempFromC(r.temperature_c))}${tempUnit}`
   const sortKey = (params.get('sort') ?? 'date') as SortKey
@@ -391,7 +395,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
           <div className="selected-laptimes">
             {selectedRows.slice(0, 10).map(r => (
               <span key={r.session_guid} className="chip cyan">
-                {(r.session_start ?? '').slice(0, 10)} · {msToLap(r.best_lap_ms)}
+                {r.track_configuration_name || 'Unknown layout'} · {(r.session_start ?? '').slice(0, 10)} · {msToLap(r.best_lap_ms)}
                 <span className="x" onClick={e => { e.stopPropagation(); toggle(r.session_guid) }}>×</span>
               </span>
             ))}

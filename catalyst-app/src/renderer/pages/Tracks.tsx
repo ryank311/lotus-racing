@@ -2,8 +2,9 @@ import { useResource } from '../useResource'
 import { InlineLoadStatus, LoadingRows, ChartPlaceholder } from '../components/Loading'
 // Tracks editor — list every (track, configuration) we have data for, and
 // let the user click on the SVG track map to set / correct the apex point of
-// each named corner. Saves back to tracks/*.yaml so briefs and the Analysis
-// page pick up the cleaned-up corners on their next run.
+// each named corner. Saves to the workspace database (track YAML only seeds
+// it), so Analysis, session review and the AI coach use the cleaned-up
+// corners on their next run.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
@@ -62,8 +63,7 @@ function zoneHalfWidth(c: EditableCorner, defaultHalf = 50): number {
 
 interface LoadedTrack {
   geometry: any   // typed loosely — the structural fields TrackMap consumes
-  yamlPath: string
-  yamlExists: boolean
+  saved: boolean  // the workspace already holds corners for this layout
   corners: EditableCorner[]
 }
 
@@ -94,7 +94,7 @@ function TrackSilhouette({ preview }: { preview?: TrackPreview }) {
 // ── corner complexes ─────────────────────────────────────────────────────────
 
 const COMPLEX_SOURCE: Record<TrackComplexesResponse['source'], string> = {
-  track: 'From the track file',
+  track: 'Saved for this layout',
   derived: 'Derived from the fastest valid lap',
   segments: 'Garmin segments (fallback until the layout has corners and a valid lap)',
 }
@@ -212,7 +212,7 @@ function ComplexesPanel({ state, totalM, cornersDirty }: {
   const [confirming, setConfirming] = useState(false)
   const errors = useMemo(() => complexErrors(draft, totalM), [draft, totalM])
   const gaps = draft.slice(1).filter((c, i) => Number.isFinite(c.startM) && c.startM > draft[i].endM).length
-  const hasTrackFile = !!saved?.yamlPath
+  const hasTrackFile = !!saved?.saved
   const numberValue = (n: number) => (Number.isFinite(n) ? n : '')
   const parse = (value: string) => (value.trim() === '' ? NaN : Number(value))
 
@@ -252,8 +252,11 @@ function ComplexesPanel({ state, totalM, cornersDirty }: {
                     <tr key={c.id + i}>
                       <td className="small">{i + 1}</td>
                       <td>
+                        {/* A typed name is kept; a cleared one goes back to the corners' default. */}
                         <input className="tracks-corner-name" aria-label={`Complex ${i + 1} name`} value={c.name}
-                          onChange={e => state.update(i, { name: e.target.value })} disabled={busy || !hasTrackFile} />
+                          placeholder="Named from its corners"
+                          onChange={e => state.update(i, { name: e.target.value, custom: e.target.value.trim() !== '' })}
+                          disabled={busy || !hasTrackFile} />
                       </td>
                       <td>
                         <input className="tracks-corner-zone tracks-complexes-num" type="number" min={0} step={10}
@@ -278,7 +281,7 @@ function ComplexesPanel({ state, totalM, cornersDirty }: {
           {errors.length === 0 && gaps > 0 && (
             <p className="tracks-complexes-note">{gaps} {gaps === 1 ? 'gap' : 'gaps'} between complexes: time spent there is not measured.</p>
           )}
-          {!hasTrackFile && <p className="tracks-complexes-note">Save this layout's corners first; complexes are stored in its track file.</p>}
+          {!hasTrackFile && <p className="tracks-complexes-note">Save this layout's corners first; complexes are stored with them.</p>}
 
           {confirming && (
             <div className="tracks-complexes-confirm" role="group" aria-label="Confirm regenerating complexes">
@@ -457,15 +460,15 @@ export function Tracks() {
     setSavingMsg('saving…')
     try {
       const res = await api.saveTrackCorners({
-        yamlPath: loaded.yamlPath,
         meanLineGuid: selectedGuid,
-        corners: corners.filter(c => c.apex_idx != null) as any[],
+        corners: corners.filter(c => c.apex_idx != null).map(({ _key, ...corner }) => corner),
       })
       setSavingMsg(`saved ${res.cornerCount} corners`)
       setDirty(false)
-      // refresh list to update yamlExists / cornerCount badges
+      setLoaded(current => current && { ...current, saved: true })
+      // refresh list to update saved / cornerCount badges
       void listResource.reload()
-      // A new track file lets complexes be derived and saved.
+      // Complexes follow the corners: reload their names, or the newly derived set.
       if (!complexes.dirty) complexes.reload()
       setTimeout(() => setSavingMsg(null), 2500)
       return true
@@ -566,7 +569,7 @@ export function Tracks() {
                       {t.configName || '(unnamed layout)'}
                       <span className="muted" style={{ marginLeft: 6, fontSize: 9 }}>
                         · {t.sessionCount}s
-                        {t.yamlExists ? ` · ${t.cornerCount} corners` : ' · no yaml'}
+                        {t.saved ? ` · ${t.cornerCount} corners` : ' · no corners'}
                       </span>
                     </NavLink>
                   ))}
@@ -680,7 +683,6 @@ export function Tracks() {
                   className="btn primary"
                   onClick={save}
                   disabled={!dirty}
-                  title={loaded.yamlPath}
                 >
                   {dirty ? 'Save changes' : 'Saved'}
                 </button>
@@ -688,9 +690,7 @@ export function Tracks() {
                   Revert
                 </button>
                 <span className="muted small" style={{ marginLeft: 'auto' }}>
-                  {savingMsg ?? (loaded.yamlExists
-                    ? `→ ${loaded.yamlPath.split('/').slice(-1)[0]}`
-                    : 'new file will be created')}
+                  {savingMsg ?? (loaded.saved ? 'Saved in this workspace' : 'Not saved yet')}
                 </span>
               </div>
             </aside>

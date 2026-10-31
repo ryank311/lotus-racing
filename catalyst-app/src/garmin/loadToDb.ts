@@ -10,6 +10,7 @@ import { decodeOptimalLap, decodePerformance } from './decodePerformance.js'
 import type { CoachingSession } from '../shared/types.js'
 import type { SessionSummary } from './catalystClient.js'
 import { initReviewSchema, markReviewDirty } from './reviewSchema.js'
+import { initTrackSchema } from './trackStore.js'
 
 export function isoDurationToMs(s: string | undefined | null): number | null {
   if (!s || typeof s !== 'string' || !s.startsWith('PT')) return null
@@ -214,6 +215,7 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
     );
   `)
   await initReviewSchema(con)
+  await initTrackSchema(con)
   await migrateLocalSessionStarts(con)
   await migrateOptimalLaps(con)
 }

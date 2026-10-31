@@ -91,8 +91,11 @@ const bridge: CatalystBridge = {
     return () => ipcRenderer.off('app:save', handler)
   },
 
-  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter) =>
-    ipcRenderer.invoke('analysis:build', sessionGuids, units, lapFilter),
+  buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?) =>
+    ipcRenderer.invoke('analysis:build', sessionGuids, units, lapFilter, comparisons),
+  // The desktop IPC workspace is a single driver; comparisons need the server.
+  listDrivers: async () => [],
+  listDriverSessions: async () => [],
 
   // AI Coach
   runCoach: (opts: CoachOptions) => ipcRenderer.invoke('coach:run', opts),
@@ -112,7 +115,7 @@ const bridge: CatalystBridge = {
   // Tracks editor
   listTracks: () => ipcRenderer.invoke('tracks:listAll'),
   getTrack: (meanLineGuid: string) => ipcRenderer.invoke('tracks:get', meanLineGuid),
-  saveTrackCorners: (opts: { yamlPath: string; meanLineGuid: string; corners: any[] }) =>
+  saveTrackCorners: (opts: { meanLineGuid: string; corners: any[] }) =>
     ipcRenderer.invoke('tracks:saveCorners', opts),
 }
 

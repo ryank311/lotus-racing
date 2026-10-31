@@ -12,7 +12,8 @@ import { aiContextDocuments, ensureGarageSeeded, resolveGarageProfile, resolveGa
 import { openDb } from './loadToDb.js'
 import { DEFAULT_UNIT_SYSTEM, speedUnitLabel, type UnitSystem } from '../shared/units.js'
 import { DEFAULT_LAP_FILTER, type LapFilter } from '../shared/coachingScope.js'
-import { buildCoachPacket, fetchSessionMeta, renderPacket, stripResearch, type CoachPacket } from './coachPacket.js'
+import { buildCoachPacket, fetchSessionMeta, renderPacket, sessionLayout, stripResearch, type CoachPacket } from './coachPacket.js'
+import { sameTrackLayout } from '../shared/trackLayout.js'
 import { buildCoachingTool, COACHING_TOOL_NAME } from './coachingTool.js'
 import { lapLabel } from './lapData.js'
 
@@ -139,8 +140,7 @@ export async function runBrief(opts: BriefRunOpts): Promise<{ outPath: string; s
     const meta = await fetchSessionMeta(con, guids)
     if (!meta.length) throw new Error('no sessions matched.')
     const latest = meta[meta.length - 1]
-    const layoutOf = (m: typeof latest) => m.mean_line_guid ?? String(m.track_configuration_id ?? m.track_configuration_name ?? '')
-    const chosen = meta.filter(m => layoutOf(m) === layoutOf(latest) && (m.vehicle_guid ?? '') === (latest.vehicle_guid ?? ''))
+    const chosen = meta.filter(m => (m === latest || sameTrackLayout(sessionLayout(m), sessionLayout(latest))) && (m.vehicle_guid ?? '') === (latest.vehicle_guid ?? ''))
     const packet = await buildCoachPacket(con, { sessionGuids: chosen.map(m => m.session_guid), lapFilter: DEFAULT_LAP_FILTER, system })
     const profile = await resolveProfileName(con, latest.session_guid, opts.profile, dbPath)
     const context = opts.includeGuides === false ? '' : await driverContext(profile, packet.trackLabel, dbPath)

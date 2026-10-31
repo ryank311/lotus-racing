@@ -3,14 +3,27 @@
 // hot-reload the chart components cleanly — Fast Refresh forbids modules that
 // export both components and non-component values.
 
-import { PALETTE, LAP_PALETTE } from './chartTheme'
+import { PALETTE, LAP_PALETTE, DRIVER_PALETTE } from './chartTheme'
 import type { LineSeries } from './Charts'
 import type { AnalysisData, LapMeta, TimeDeltaTrace } from '../../garmin/analysisData'
 
 // One colour per lap on every chart and the map: the fastest lap is signal
-// orange, the rest use the stable palette slot the server assigned.
-export function lapColor(lap: Pick<LapMeta, 'isBest' | 'colorIndex'>): string {
+// orange, the rest use the stable palette slot the server assigned. When
+// other drivers are compared, colour identifies the driver instead: all of
+// your laps are orange and each compared driver has their own colour.
+export function lapColor(lap: Pick<LapMeta, 'isBest' | 'colorIndex' | 'driverIndex'>): string {
+  if (lap.driverIndex != null) return driverColor(lap.driverIndex)
   return lap.isBest ? PALETTE.signal : LAP_PALETTE[(lap.colorIndex ?? 0) % LAP_PALETTE.length]
+}
+
+// 0 = you; 1+ = compared drivers in order.
+export function driverColor(index: number): string {
+  return index <= 0 ? PALETTE.signal : DRIVER_PALETTE[(index - 1) % DRIVER_PALETTE.length]
+}
+
+// Drawn prominently: your fastest lap and each compared driver's fastest.
+export function isLeadLap(lap: Pick<LapMeta, 'isBest' | 'driverBest'>): boolean {
+  return lap.isBest || !!lap.driverBest
 }
 
 // "May 24 16:15 · L3" — falls back to the lap number for payloads built
@@ -21,10 +34,10 @@ export function lapName(lap: Pick<LapMeta, 'label' | 'lapIdx'>): string {
 
 export function speedSeries(data: AnalysisData): LineSeries[] {
   return data.speedTraces.map(t => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}${lapName(t)}`,
+    id: `${t.sg}-${t.lapIdx}`, label: `${isLeadLap(t) ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist, ys: t.speed_mph,
     color: lapColor(t),
-    width: t.isBest ? 2.5 : 1.4, opacity: t.isBest ? 1 : 0.6,
+    width: isLeadLap(t) ? 2.5 : 1.4, opacity: isLeadLap(t) ? 1 : 0.6,
   }))
 }
 
@@ -58,12 +71,12 @@ export function speedDeltaSeries(data: AnalysisData): LineSeries[] {
     }
     return {
       id: `${trace.sg}-${trace.lapIdx}`,
-      label: `${trace.isBest ? '★ ref ' : ''}${lapName(trace)}`,
+      label: `${trace.isBest ? '★ ref ' : trace.driverBest ? '★ ' : ''}${lapName(trace)}`,
       xs,
       ys,
       color: lapColor(trace),
-      width: trace.isBest ? 1.8 : 1.4,
-      opacity: trace.isBest ? 0.85 : 0.65,
+      width: isLeadLap(trace) ? 1.8 : 1.4,
+      opacity: isLeadLap(trace) ? 0.85 : 0.65,
     }
   })
 }
@@ -80,12 +93,12 @@ export function lateralSeries(data: AnalysisData): LineSeries[] {
 export function timeDeltaSeries(data: AnalysisData): LineSeries[] {
   return (data.timeDeltaTraces ?? []).map(t => ({
     id: `${t.sg}-${t.lapIdx}`,
-    label: `${t.isBest ? '★ ref ' : ''}${lapName(t)}`,
+    label: `${t.isBest ? '★ ref ' : t.driverBest ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist,
     ys: t.delta_s,
     color: lapColor(t),
-    width: t.isBest ? 1.8 : 1.5,
-    opacity: t.isBest ? 0.8 : 0.75,
+    width: isLeadLap(t) ? 1.8 : 1.5,
+    opacity: isLeadLap(t) ? 0.8 : 0.75,
   }))
 }
 
@@ -94,12 +107,12 @@ export function timeDeltaSeries(data: AnalysisData): LineSeries[] {
 function referenceDeltaSeries(traces: TimeDeltaTrace[] | undefined): LineSeries[] {
   return (traces ?? []).map(t => ({
     id: `${t.sg}-${t.lapIdx}`,
-    label: `${t.isBest ? '★ best ' : ''}${lapName(t)}`,
+    label: `${t.isBest ? '★ best ' : t.driverBest ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist,
     ys: t.delta_s,
     color: lapColor(t),
-    width: t.isBest ? 2.4 : 1.5,
-    opacity: t.isBest ? 1 : 0.72,
+    width: isLeadLap(t) ? 2.4 : 1.5,
+    opacity: isLeadLap(t) ? 1 : 0.72,
   }))
 }
 
@@ -113,9 +126,9 @@ export function garminOptimalTimeDeltaSeries(data: AnalysisData): LineSeries[] {
 
 export function longGSeries(data: AnalysisData): LineSeries[] {
   return data.longgTraces.map(t => ({
-    id: `${t.sg}-${t.lapIdx}`, label: `${t.isBest ? '★ ' : ''}${lapName(t)}`,
+    id: `${t.sg}-${t.lapIdx}`, label: `${isLeadLap(t) ? '★ ' : ''}${lapName(t)}`,
     xs: t.dist, ys: t.long_g,
     color: lapColor(t),
-    width: t.isBest ? 2.5 : 1.2, opacity: t.isBest ? 1 : 0.5,
+    width: isLeadLap(t) ? 2.5 : 1.2, opacity: isLeadLap(t) ? 1 : 0.5,
   }))
 }

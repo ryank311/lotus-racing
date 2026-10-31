@@ -124,6 +124,32 @@ async function run() {
       await until(()=>host.innerText.includes(falseEmpty),'confirmed empty list')
     })
   }
+  await test('Choosing a VIR course narrows selected sessions for Analysis and AI Coach',async()=>{
+    handlers.listSessions=()=>[
+      ['full-1','Full Course','full-line'],['full-2','Full Course','full-line'],['grand','Grand West Course','grand-line'],
+    ].map(([session_guid,track_configuration_name,layout_key])=>({
+      session_guid,track_configuration_name,layout_key,track_name:'Virginia International Raceway',
+      session_start:'2026-10-30 14:00:00',details_loaded:true,vehicle_guid:'car',vehicle_model:'Lotus',
+      best_lap_ms:130000,lap_count:5,sample_count:100,account:'driver',
+    }))
+    const router=await mount('/sessions?selected=full-1&selected=grand')
+    await until(()=>!!host.querySelector('.selection-warning'),'mixed-course warning')
+    const track=host.querySelector<HTMLSelectElement>('select[aria-label="Track"]')!
+    track.value='full-line';track.dispatchEvent(new Event('change',{bubbles:true}))
+    await until(()=>new URLSearchParams(router.state.location.search).getAll('selected').join(',')==='full-1','Full Course selection')
+    assert(!host.querySelector('.selection-warning'),'Same-course selection can be analyzed')
+    assert(host.querySelector('.selected-laptimes')?.textContent?.includes('Full Course'),'Selection shows its configuration')
+    assert(!host.querySelector('.selected-laptimes')?.textContent?.includes('Grand West'),'Hidden Grand West is not selected')
+    ;(host.querySelector('.session-select-all') as HTMLButtonElement).click()
+    await until(()=>new URLSearchParams(router.state.location.search).getAll('selected').length===2,'select both Full Course sessions')
+    for(const destination of ['/analysis','/coach']) {
+      const link=host.querySelector<HTMLAnchorElement>(`a[href^="${destination}?"]`)!
+      const ids=new URL(link.href).searchParams.getAll('session').sort().join(',')
+      assert(ids==='full-1,full-2',`${destination} only receives the selected course`)
+    }
+    track.value='grand-line';track.dispatchEvent(new Event('change',{bubbles:true}))
+    await until(()=>!host.querySelector('.selection-bar'),'switching courses clears the previous selection')
+  })
   await test('Changed data scope and overlapping requests ignore stale results',async()=>{
     root?.unmount();root=createRoot(host)
     const requests: ReturnType<typeof deferred<string>>[]=[]

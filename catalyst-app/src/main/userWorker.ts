@@ -11,6 +11,7 @@ import type { AiKeyStore, AiKeys } from './aiKeyStore.js'
 import { registerApiHandlers, type ApiHandler, type BackendEventTarget } from './ipc.js'
 import { DB_PATH, seedUserData } from '../garmin/paths.js'
 import { initSchema, openDb } from '../garmin/loadToDb.js'
+import { seedTrackLayouts } from '../garmin/trackStore.js'
 
 interface RpcRequest {
   type: 'rpc'
@@ -83,7 +84,11 @@ async function start(): Promise<void> {
   seedUserData()
   if (fs.existsSync(DB_PATH)) {
     const db = await openDb(DB_PATH)
-    try { await initSchema(db.con) } finally { await db.close() }
+    try {
+      await initSchema(db.con)
+      // Track YAML seeds the database once per layout; edits live in DuckDB.
+      try { await seedTrackLayouts(db.con) } catch (error) { console.error('[tracks] seed import failed:', error) }
+    } finally { await db.close() }
   }
 
   const backend = registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, aiKeys)

@@ -2,6 +2,7 @@
 
 import type { UnitSystem } from './units.js'
 import type { LapFilter } from './coachingScope.js'
+import type { ComparisonRequest, DriverAccount } from './comparison.js'
 import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
 
 export interface SessionSummary {
@@ -250,8 +251,10 @@ export interface SessionNotes {
 export interface AiContextFile { name: string; included: boolean; defaultIncluded: boolean; bytes: number }
 
 // A corner complex (braking zone to braking zone) on a track layout.
-export interface TrackComplexPayload { id: string; name: string; startM: number; endM: number; corners: string[] }
-export interface TrackComplexesResponse { complexes: TrackComplexPayload[]; source: 'track' | 'derived' | 'segments'; yamlPath: string | null }
+// `custom` marks a name the driver typed; other names come from the corners
+// inside the complex and follow them when corners are renamed.
+export interface TrackComplexPayload { id: string; name: string; startM: number; endM: number; corners: string[]; custom?: boolean }
+export interface TrackComplexesResponse { complexes: TrackComplexPayload[]; source: 'track' | 'derived' | 'segments'; saved: boolean }
 
 // Where a coaching report applies, so its focus can be checked later.
 export interface CoachingContext {
@@ -365,7 +368,7 @@ export interface LapRow {
 export type AnalysisDataPayload = unknown
 
 // Tracks editor types — kept loose for the same reason as AnalysisDataPayload;
-// the page imports concrete shapes from garmin/trackGeometry and trackYaml.
+// the page imports concrete shapes from garmin/trackGeometry and trackStore.
 export type TrackGeometryDetailed = unknown
 export type TrackCornerPayload = unknown
 export interface TrackListEntry {
@@ -373,15 +376,13 @@ export interface TrackListEntry {
   configName: string
   meanLineGuid: string | null
   sessionCount: number
-  yamlPath: string | null
-  yamlExists: boolean
+  saved: boolean              // the workspace database holds a layout for this mean line
   cornerCount: number
   meanLineExists: boolean
 }
 export interface TrackDetail {
   geometry: TrackGeometryDetailed
-  yamlPath: string
-  yamlExists: boolean
+  saved: boolean
   corners: TrackCornerPayload[]
 }
 
@@ -462,7 +463,11 @@ export interface CatalystBridge {
   getAccountStats(): Promise<AccountStats>
 
   // Analysis (Plotly data)
-  buildAnalysis(sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter): Promise<AnalysisDataPayload>
+  buildAnalysis(sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?: ComparisonRequest[]): Promise<AnalysisDataPayload>
+  // Other drivers on this Catalyst server, for Analysis comparisons. Empty
+  // outside server mode.
+  listDrivers(): Promise<DriverAccount[]>
+  listDriverSessions(driver: string): Promise<DbSessionRow[]>
 
   // Focus tracking, dashboard, notes
   getDashboard(): Promise<DashboardLayout[]>
@@ -479,10 +484,9 @@ export interface CatalystBridge {
   listTracks(): Promise<TrackListEntry[]>
   getTrack(meanLineGuid: string): Promise<TrackDetail | null>
   saveTrackCorners(opts: {
-    yamlPath: string
     meanLineGuid: string
     corners: TrackCornerPayload[]
-  }): Promise<{ savedTo: string; cornerCount: number }>
+  }): Promise<{ cornerCount: number }>
 }
 
 declare global {

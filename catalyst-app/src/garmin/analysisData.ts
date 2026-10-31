@@ -7,12 +7,14 @@ import fs from 'node:fs'
 import { DuckDBConnection } from '@duckdb/node-api'
 import { openDb } from './loadToDb.js'
 import { DB_PATH } from './paths.js'
-import { loadTrackYaml, resolveTrackYamlPath, TrackCorner, TrackSegment } from './trackYaml.js'
+import { layoutForSession, type TrackCorner, type TrackSegment } from './trackStore.js'
 import { buildTrackGeometry, projectLatLon, TrackGeometry } from './trackGeometry.js'
 import { DEFAULT_UNIT_SYSTEM, speedFromMps, speedUnitLabel, type UnitSystem } from '../shared/units.js'
 import { cornerPhases, plausibleMin, segmentBounds, spanTimeMs, valueAt, type LapSeries, type SplitBound } from './lapPhases.js'
-import { fetchLapSeries, fetchOptimalLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys } from './lapData.js'
+import { fetchLapSamples, fetchOptimalLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys, seriesFromSamples, type LapSamples } from './lapData.js'
 import { selectLaps, type LapFilter } from '../shared/coachingScope.js'
+import { assertComparable, fetchSessionMeta, sessionLayout, vehicleLabelOf } from './coachPacket.js'
+import { buildComparison, comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './driverComparison.js'
 
 // Canonical m/s → the active display unit. Threaded from buildAnalysis so a unit
 // toggle reflows the whole Analysis page on the next fetch.
@@ -33,6 +35,13 @@ export interface LapMeta {
   // Stable palette slot so a lap has the same colour on every chart and the map.
   colorIndex: number
   representative: boolean
+  // Set on every lap when other drivers are compared: 0 = you, 1+ = the
+  // compared driver at that position in `comparison.drivers`.
+  driverIndex?: number
+  // Compared driver's name; absent on your own laps.
+  driver?: string
+  // That driver's fastest lap in the comparison (drawn prominently).
+  driverBest?: boolean
 }
 
 export interface SpeedTrace extends LapMeta {
@@ -150,6 +159,58 @@ export interface CoachLinePoint {
   y: number
 }
 
+// ---- Driver comparison -----------------------------------------------------
+
+export interface DriverSummary {
+  index: number              // 0 = you
+  name: string
+  self: boolean
+  vehicle: string
+  sessions: Array<{ sg: string; start: string | null; bestLapMs: number | null; weather: string | null; tempC: number | null }>
+  lapCount: number
+  excludedLapCount: number
+  bestLap: { sg: string; lapIdx: number; label: string; durationMs: number } | null
+  theoreticalBestMs: number | null
+  avgLapMs: number | null
+  avgLapCount: number
+  topSpeed: number | null    // best lap's top speed, display unit
+}
+
+// Per split, indexed by driver (seconds). `best` is that driver's plausible
+// best split (their theoretical-best piece); `bestLap` is the split on their
+// fastest lap.
+export interface SegmentComparisonRow {
+  id: string
+  startM: number
+  endM: number
+  best: Array<number | null>
+  bestLap: Array<number | null>
+}
+
+// Each driver's fastest lap through one corner. Speeds in the display unit;
+// distances are metres along the lap.
+export interface CornerComparisonCell {
+  entry: number | null       // speed where braking starts (or at the corner start)
+  apex: number | null        // V-min
+  exit: number | null        // 100 m after V-min
+  vminDistM: number | null
+  brakeOnsetM: number | null
+  peakBrakeG: number | null
+}
+
+export interface CornerComparisonRow {
+  turn: string
+  name: string
+  apexM: number
+  drivers: Array<CornerComparisonCell | null>
+}
+
+export interface ComparisonData {
+  drivers: DriverSummary[]   // [you, ...compared drivers]
+  segments: SegmentComparisonRow[]
+  corners: CornerComparisonRow[]
+}
+
 export interface AnalysisData {
   config: string
   totalDistM: number
@@ -193,6 +254,10 @@ export interface AnalysisData {
   coachLine: CoachLinePoint[] | null
   // Display unit label for every speed field above ("mph" or "km/h").
   speedUnit: string
+  // Other drivers' laps, when compared. Their traces are also overlaid on
+  // speedTraces, longgTraces, the time-delta traces and racingLines; every
+  // other field describes your laps only.
+  comparison: ComparisonData | null
 }
 
 // ---------------------------------------------------------------------------
@@ -224,46 +289,36 @@ async function fetchLapMeta(con: DuckDBConnection, sgList: string[]): Promise<La
   return laps
 }
 
-async function fetchSpeedTraces(con: DuckDBConnection, laps: LapMeta[], conv: SpeedConv, strideM = 25): Promise<SpeedTrace[]> {
-  const out: SpeedTrace[] = []
-  for (const lap of laps) {
-    const r = await rows(con, `
-      SELECT distance_m, gnss_speed_mps
-      FROM samples
-      WHERE session_guid = ? AND lap_index = ?
-        AND distance_m % ? = 0
-        AND gnss_speed_mps IS NOT NULL
-      ORDER BY distance_m
-    `, [lap.sg, lap.lapIdx, strideM])
-    if (!r.length) continue
-    out.push({
-      ...lap,
-      dist: r.map(x => Number(x[0])),
-      speed_mph: r.map(x => conv(Number(x[1])) ?? 0),
+// The traces below are derived from one in-memory read of each lap, so your
+// laps and another driver's (sent by their backend) take the same path.
+const lapKey = (lap: Pick<LapMeta, 'sg' | 'lapIdx'>) => `${lap.sg}:${lap.lapIdx}`
+
+function speedTraces(laps: LapMeta[], samples: Map<string, LapSamples>, conv: SpeedConv, strideM = 25): SpeedTrace[] {
+  return laps.flatMap(lap => {
+    const s = samples.get(lapKey(lap))
+    if (!s) return []
+    const dist: number[] = [], speed_mph: number[] = []
+    s.dist.forEach((d, i) => {
+      const v = s.speed[i]
+      if (d % strideM !== 0 || v == null) return
+      dist.push(d); speed_mph.push(conv(v) ?? 0)
     })
-  }
-  return out
+    return dist.length ? [{ ...lap, dist, speed_mph }] : []
+  })
 }
 
-async function fetchLateralTraces(con: DuckDBConnection, laps: LapMeta[], strideM = 25): Promise<LateralTrace[]> {
-  const out: LateralTrace[] = []
-  for (const lap of laps) {
-    const r = await rows(con, `
-      SELECT distance_m, lateral_position
-      FROM samples
-      WHERE session_guid = ? AND lap_index = ?
-        AND distance_m % ? = 0
-        AND lateral_position IS NOT NULL
-      ORDER BY distance_m
-    `, [lap.sg, lap.lapIdx, strideM])
-    if (!r.length) continue
-    out.push({
-      ...lap,
-      dist: r.map(x => Number(x[0])),
-      pos: r.map(x => Number(x[1])),
+function lateralTraces(laps: LapMeta[], samples: Map<string, LapSamples>, strideM = 25): LateralTrace[] {
+  return laps.flatMap(lap => {
+    const s = samples.get(lapKey(lap))
+    if (!s) return []
+    const dist: number[] = [], pos: number[] = []
+    s.dist.forEach((d, i) => {
+      const v = s.lateral[i]
+      if (d % strideM !== 0 || v == null) return
+      dist.push(d); pos.push(v)
     })
-  }
-  return out
+    return dist.length ? [{ ...lap, dist, pos }] : []
+  })
 }
 
 // Long G from the calibrated lap series, so the chart shows what the braking
@@ -380,41 +435,38 @@ function ggData(laps: LapMeta[], series: Map<string, LapSeries>, conv: SpeedConv
   return { lat_g, long_g, speed_mph, dist, p95_g: Math.round(p95 * 100) / 100, circle }
 }
 
-async function fetchRacingLines(
-  con: DuckDBConnection,
+function racingLines(
   laps: LapMeta[],
+  samples: Map<string, LapSamples>,
   geom: TrackGeometry,
   conv: SpeedConv,
   corners: TrackCorner[],
   series: Map<string, LapSeries>,
   totalM: number,
   strideM = 5,
-): Promise<RacingLineLap[]> {
+): RacingLineLap[] {
   const out: RacingLineLap[] = []
   for (const lap of laps) {
-    const r = await rows(con, `
-      SELECT distance_m, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2
-      FROM samples
-      WHERE session_guid = ? AND lap_index = ?
-        AND lat IS NOT NULL AND lon IS NOT NULL
-      ORDER BY distance_m
-    `, [lap.sg, lap.lapIdx])
-    if (!r.length) continue
+    const s = samples.get(lapKey(lap))
+    if (!s) continue
     const xs: number[] = [], ys: number[] = [], ds: number[] = []
     const speeds: number[] = [], lg: number[] = [], yg: number[] = []
     const exact = new Map<number, { x: number; y: number }>()
-    for (const row of r) {
-      const d = Number(row[0])
-      const pos = projectLatLon(Number(row[1]), Number(row[2]), geom.projection)
+    for (let i = 0; i < s.dist.length; i++) {
+      const lat = s.lat[i], lon = s.lon[i]
+      if (lat == null || lon == null) continue
+      const d = s.dist[i]
+      const pos = projectLatLon(lat, lon, geom.projection)
       exact.set(d, pos)
       if (d % strideM !== 0) continue
       xs.push(pos.x); ys.push(pos.y); ds.push(d)
-      speeds.push(conv(Number(row[3])) ?? 0)
-      lg.push(G(Number(row[4])) ?? 0)
-      yg.push(G(Number(row[5])) ?? 0)
+      speeds.push(conv(s.speed[i] ?? 0) ?? 0)
+      lg.push(G(s.accelX[i] ?? 0) ?? 0)
+      yg.push(G(s.accelY[i] ?? 0) ?? 0)
     }
+    if (!exact.size) continue
     // The exact sample where each corner's own minimum speed happened.
-    const trace = series.get(`${lap.sg}:${lap.lapIdx}`)
+    const trace = series.get(lapKey(lap))
     const cornerVMins: CornerVMinPoint[] = []
     for (const phase of trace ? cornerPhases(trace, corners, totalM) : []) {
       if (phase.vminM == null || phase.vminMps == null) continue
@@ -428,21 +480,16 @@ async function fetchRacingLines(
   return out
 }
 
-async function fetchTrackMap(con: DuckDBConnection, best: LapMeta, conv: SpeedConv, strideM = 10): Promise<TrackMapData> {
-  const r = await rows(con, `
-    SELECT distance_m, lat, lon, gnss_speed_mps
-    FROM samples
-    WHERE session_guid = ? AND lap_index = ?
-      AND distance_m % ? = 0
-      AND lat IS NOT NULL AND lon IS NOT NULL
-    ORDER BY distance_m
-  `, [best.sg, best.lapIdx, strideM])
-  return {
-    dist: r.map(x => Number(x[0])),
-    lat: r.map(x => Number(x[1])),
-    lon: r.map(x => Number(x[2])),
-    speed_mph: r.map(x => conv(Number(x[3])) ?? 0),
-  }
+function trackMapFor(s: LapSamples | undefined, conv: SpeedConv, strideM = 10): TrackMapData {
+  const out: TrackMapData = { dist: [], lat: [], lon: [], speed_mph: [] }
+  if (!s) return out
+  s.dist.forEach((d, i) => {
+    const lat = s.lat[i], lon = s.lon[i]
+    if (d % strideM !== 0 || lat == null || lon == null) return
+    out.dist.push(d); out.lat.push(lat); out.lon.push(lon)
+    out.speed_mph.push(conv(s.speed[i] ?? 0) ?? 0)
+  })
+  return out
 }
 
 // Split times from real timestamps over the tiled segment bounds; they sum
@@ -567,58 +614,42 @@ export async function buildAnalysis(
   sessionGuids: string[],
   system: UnitSystem = DEFAULT_UNIT_SYSTEM,
   lapFilter?: LapFilter,
+  // Other drivers' laps, fetched from their backends by the server.
+  comparisons: ComparisonBundle[] = [],
 ): Promise<AnalysisData> {
   if (!fs.existsSync(DB_PATH)) throw new Error(`no database at ${DB_PATH} — run "Rebuild DB" first`)
-  console.log(`[analysis] building for ${sessionGuids.length} session(s)`)
+  console.log(`[analysis] building for ${sessionGuids.length} session(s)${comparisons.length ? ` vs ${comparisons.length} driver(s)` : ''}`)
   const analysisDb = await openDb(DB_PATH)
   const con = analysisDb.con
   try {
+    const meta = await fetchSessionMeta(con, sessionGuids)
+    if (!meta.length) throw new Error('No sessions matched the selection.')
+    if (meta.length !== new Set(sessionGuids).size) throw new Error('Some selected sessions are unavailable. Select the sessions again.')
+    assertComparable(meta, 'Analysis')
+    // Compared drivers must have driven this layout; checked before any
+    // telemetry is read.
+    validateComparisonBundles(comparisons, sessionLayout(meta[meta.length - 1]), sessionGuids)
     // Canonical m/s → the active display unit. All speed fields below carry
     // this unit; `speedUnit` labels it for the renderer.
     const toSpeed: SpeedConv = (mps) => mps == null ? null : speedFromMps(mps, system)
     const speedUnit = speedUnitLabel(system)
 
     const placeholders = sessionGuids.map(() => '?').join(',')
-    const sessRows = await rows(con, `
-      SELECT s.session_guid, CAST(s.session_start AS VARCHAR), s.best_lap_ms,
-        COALESCE(s.track_configuration_name, tc.track_configuration_name), tc.track_configuration_id, s.mean_line_guid,
-        s.weather_description, s.temperature_c, s.humidity_pct,
-        s.wind_speed_mps, s.wind_direction_deg, COALESCE(s.track_name, tc.track_name)
-      FROM sessions s
-      LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
-      WHERE s.session_guid IN (${placeholders})
-      ORDER BY s.session_start DESC
-    `, sessionGuids)
-
-    const sessions = sessRows.map(r => ({
-      sg: String(r[0]),
-      start: r[1] ? String(r[1]) : null,
-      bestLapMs: r[2] != null ? Number(r[2]) : null,
-      trackConfig: r[3] ? String(r[3]) : null,
-      weather: r[6] != null ? String(r[6]) : null,
-      tempC: r[7] != null ? Number(r[7]) : null,
-      humidityPct: r[8] != null ? Number(r[8]) : null,
-      windMps: r[9] != null ? Number(r[9]) : null,
-      windDeg: r[10] != null ? Number(r[10]) : null,
+    const sessions = [...meta].reverse().map(s => ({
+      sg: s.session_guid, start: s.start, bestLapMs: s.best_lap_ms, trackConfig: s.track_configuration_name,
+      weather: s.weather_description, tempC: s.temperature_c, humidityPct: s.humidity_pct,
+      windMps: s.wind_speed_mps, windDeg: s.wind_direction_deg,
     }))
 
-    // Pick the layout the majority of selected sessions share, by mean line.
-    const majority = <T,>(values: T[]): T | null => {
-      const counts = new Map<T, number>()
-      for (const v of values) if (v != null) counts.set(v, (counts.get(v) ?? 0) + 1)
-      return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
-    }
-    const meanLineGuid = majority(sessRows.map(r => (r[5] != null ? String(r[5]) : null)).filter(Boolean) as string[])
-    const config = majority(sessions.map(s => s.trackConfig).filter(Boolean) as string[]) ?? 'Unknown'
-    const trackName = majority(sessRows.map(r => (r[11] != null ? String(r[11]) : null)).filter(Boolean) as string[]) ?? ''
-    // Resolve by mean line first (the Tracks editor stamps it), then by track
-    // and configuration name together so another track's "Full Course" is
-    // never used.
-    const trackYaml = loadTrackYaml(resolveTrackYamlPath(trackName, config, meanLineGuid).path)
-    const compatible = !trackYaml.mean_line_guid || !meanLineGuid || trackYaml.mean_line_guid === meanLineGuid
-    const segments = compatible ? trackYaml.segments ?? [] : []
-    const corners = compatible ? trackYaml.corners ?? [] : []
-    const totalDistM = Number(trackYaml.total_dist_m) || 0
+    const anchor = meta[meta.length - 1]
+    const meanLineGuid = anchor.mean_line_guid
+    const config = anchor.track_configuration_name || 'Unknown'
+    // The layout saved for this mean line (named corners never cross mean
+    // lines); a session without one falls back to its track and configuration.
+    const layout = await layoutForSession(con, anchor)
+    const segments = layout?.segments ?? []
+    const corners = layout?.corners ?? []
+    const totalDistM = layout?.totalDistM ?? 0
 
     const driven = (await rows(con, `SELECT COUNT(*) FROM laps WHERE session_guid IN (${placeholders}) AND lap_type = 'DRIVEN'`, sessionGuids))[0]?.[0]
     const allLaps = await fetchLapMeta(con, sessionGuids)
@@ -634,7 +665,7 @@ export async function buildAnalysis(
       heatmap: null, cornerRows: [],
       theoreticalBestMs: null, avgLapMs: null, avgLapCount: 0, coachLine: null,
       garminOptimalMs: null, garminOptimalTimeDeltaTraces: [], excludedLapCount,
-      speedUnit,
+      speedUnit, comparison: null,
     }
     if (!laps.length) return empty
     for (const lap of allLaps) lap.isBest = false
@@ -644,26 +675,40 @@ export async function buildAnalysis(
     // IMPORTANT: serialize. @duckdb/node-api crashes (SIGSEGV in
     // duckdb_destroy_result) when multiple prepared-statement Execute workers
     // overlap on the same connection. Every fetcher below runs sequentially.
+    // One read per lap; every trace below is derived from it.
+    const samples = new Map<string, LapSamples>()
+    for (const lap of laps) samples.set(lapKey(lap), await fetchLapSamples(con, lap.sg, lap.lapIdx))
     const series = new Map<string, LapSeries>()
-    for (const lap of laps) series.set(`${lap.sg}:${lap.lapIdx}`, await fetchLapSeries(con, lap.sg, lap.lapIdx))
+    for (const lap of laps) series.set(lapKey(lap), seriesFromSamples(samples.get(lapKey(lap))!))
 
-    const speedTraces = await fetchSpeedTraces(con, laps, toSpeed, 25)
-    const lateralTraces = await fetchLateralTraces(con, laps, 25)
-    const longgTraces = longGTraces(laps, series, 25)
+    // Compared drivers' laps join the same maps (session GUIDs are unique
+    // across the analysis) and are overlaid on the distance charts and map.
+    const compared = comparisonLaps(comparisons)
+    for (const lap of compared) {
+      samples.set(lapKey(lap.meta), lap.samples)
+      series.set(lapKey(lap.meta), seriesFromSamples(lap.samples))
+    }
+    const otherLaps = compared.map(lap => lap.meta)
+    if (otherLaps.length) for (const lap of laps) lap.driverIndex = 0
+    const overlaid = [...laps, ...otherLaps]
+
+    const speed = speedTraces(overlaid, samples, toSpeed, 25)
+    const lateral = lateralTraces(laps, samples, 25)
+    const longgTraces = longGTraces(overlaid, series, 25)
 
     // Splits tile the lap from each segment start to the next; a split more
     // than 5% faster than the representative median is treated as a cut or
     // timing glitch.
     const bounds = segmentBounds(segments, totalDistM)
-    const splits = new Map(laps.map(lap => [`${lap.sg}:${lap.lapIdx}`, lapSplits(series.get(`${lap.sg}:${lap.lapIdx}`), bounds)]))
+    const splits = new Map(laps.map(lap => [lapKey(lap), lapSplits(series.get(lapKey(lap)), bounds)]))
     const repLaps = laps.filter(lap => lap.representative)
     const pb = bounds.map((_, i) => plausibleMin(
-      laps.map(lap => splits.get(`${lap.sg}:${lap.lapIdx}`)![i]),
-      repLaps.map(lap => splits.get(`${lap.sg}:${lap.lapIdx}`)![i]),
+      laps.map(lap => splits.get(lapKey(lap))![i]),
+      repLaps.map(lap => splits.get(lapKey(lap))![i]),
     ))
     const winners = bounds.map((_, i) => {
-      const lap = laps.find(l => pb[i] != null && splits.get(`${l.sg}:${l.lapIdx}`)![i] === pb[i])
-      return lap ? `${lap.sg}:${lap.lapIdx}` : null
+      const lap = laps.find(l => pb[i] != null && splits.get(lapKey(l))![i] === pb[i])
+      return lap ? lapKey(lap) : null
     })
     const theoreticalBestMs = pb.length && pb.every(v => v != null)
       ? Math.round(pb.reduce((a, b) => a! + b!, 0)! * 1000) : null
@@ -673,15 +718,19 @@ export async function buildAnalysis(
     const garminSeries = garminEntry ? await fetchOptimalLapSeries(con, garminEntry[0]) : null
     const garminOptimal = garminEntry && garminSeries ? { series: garminSeries, durationMs: garminEntry[1] } : null
 
-    const deltas = buildTimeDeltaTraces(laps, series, bestLap, bounds, winners, totalDistM, garminOptimal, 25)
+    // Every reference (fastest, theoretical, Garmin optimal) is yours; a
+    // compared driver's line shows where they gain or lose against it.
+    const deltas = buildTimeDeltaTraces(overlaid, series, bestLap, bounds, winners, totalDistM, garminOptimal, 25)
     const { rows: cornerRows, braking: cornerBrakingRows } = cornerTables(laps, series, corners, totalDistM, toSpeed)
     const gg = ggData(laps, series, toSpeed)
-    const trackMap = await fetchTrackMap(con, bestLap, toSpeed, 10)
+    const trackMap = trackMapFor(samples.get(lapKey(bestLap)), toSpeed, 10)
 
     // SVG track geometry plus projected racing lines for the fastest eight
-    // laps; the map draws the best prominently and the rest faintly.
+    // laps; the map draws the best prominently and the rest faintly. Each
+    // compared driver adds their three fastest laps after yours.
     let trackGeometry: TrackGeometryPayload | null = null
-    let racingLines: RacingLineLap[] = []
+    let ownLines: RacingLineLap[] = []
+    let otherLines: RacingLineLap[] = []
     if (meanLineGuid) {
       const geom = buildTrackGeometry(meanLineGuid)
       if (geom) {
@@ -697,28 +746,39 @@ export async function buildAnalysis(
           rightEdge: geom.rightEdge,
           sectorMarks: geom.sectorMarks,
         }
-        const top = [...laps].sort((a, b) => a.durationMs - b.durationMs).slice(0, 8)
-        racingLines = await fetchRacingLines(con, top, geom, toSpeed, corners, series, totalDistM, 5)
+        const fastest = (list: LapMeta[], n: number) => [...list].sort((a, b) => a.durationMs - b.durationMs).slice(0, n)
+        ownLines = racingLines(fastest(laps, 8), samples, geom, toSpeed, corners, series, totalDistM, 5)
+        const byDriver = new Map<number, LapMeta[]>()
+        for (const lap of otherLaps) byDriver.set(lap.driverIndex!, [...(byDriver.get(lap.driverIndex!) ?? []), lap])
+        otherLines = racingLines([...byDriver.values()].flatMap(list => fastest(list, 3)), samples, geom, toSpeed, corners, series, totalDistM, 5)
       }
     }
 
     const heatmap = buildHeatmap(laps, splits, bounds, pb)
-    const coachLine = racingLines.length && bounds.length ? computeCoachLine(racingLines, bounds, winners) : null
+    const coachLine = ownLines.length && bounds.length ? computeCoachLine(ownLines, bounds, winners) : null
 
     const representative = laps.filter(l => l.representative)
     const avgLapMs = representative.length
       ? Math.round(representative.reduce((a, l) => a + l.durationMs, 0) / representative.length)
       : null
 
-    console.log(`[analysis] complete — ${racingLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs / 1000).toFixed(3) + 's' : 'n/a'}`)
+    const comparison = comparisons.length ? buildComparison({
+      self: {
+        vehicle: vehicleLabelOf(anchor), sessions, laps, excludedLapCount,
+      },
+      others: comparisons, otherLaps, series, bounds, corners, totalDistM, conv: toSpeed,
+    }) : null
+
+    console.log(`[analysis] complete — ${ownLines.length + otherLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs / 1000).toFixed(3) + 's' : 'n/a'}`)
     return {
       ...empty,
       laps, bestLap,
-      speedTraces, lateralTraces, longgTraces,
+      speedTraces: speed, lateralTraces: lateral, longgTraces,
       timeDeltaTraces: deltas.fastest, optimalTimeDeltaTraces: deltas.optimal, cornerBrakingRows,
-      gg, trackMap, trackGeometry, racingLines, heatmap, cornerRows,
+      gg, trackMap, trackGeometry, racingLines: [...ownLines, ...otherLines], heatmap, cornerRows,
       theoreticalBestMs, avgLapMs, avgLapCount: representative.length, coachLine,
       garminOptimalMs: garminOptimal?.durationMs ?? null, garminOptimalTimeDeltaTraces: deltas.garmin,
+      comparison,
     }
   } finally {
     await analysisDb.close()

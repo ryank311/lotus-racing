@@ -87,6 +87,30 @@ internet. Back up the configured data directory to preserve every user.
 desktop/CLI overrides. HTTP workers always keep data inside their driver's
 workspace; use `CATALYST_SERVER_DATA_DIR` to relocate the server's workspaces.
 
+## Comparing against other drivers
+
+In server mode, **Analysis → ⇄ Compare** overlays other drivers' sessions on
+your own. The picker lists the other drivers on this server and their
+sessions on your layout, in the same format as the Sessions page, with each
+session's best lap and its gap to yours. Sessions on other layouts, without
+downloaded telemetry, or already in your analysis are shown but cannot be
+picked. You can compare up to 4 drivers and 20 sessions per driver. The
+choice is kept in the URL (`compare=<driver>:<session>`).
+
+Their laps use your lap filter. They are overlaid on the speed, time-delta
+and long-G charts and on the map, in one colour per driver (your laps are
+orange). Every reference line (fastest lap, theoretical best, Garmin
+optimal) stays yours. A **Driver comparison** card shows each driver's best,
+theoretical and average lap and top speed, where the time goes split by
+split, and each corner on everyone's fastest lap. The stat strip, segment
+heatmap, G-G, corner charts and AI coach still describe only your laps.
+
+Each driver's backend owns its database, so the server asks the compared
+driver's backend for a read-only export of the selected laps
+(`compare:export`, which never syncs or downloads) and hands it to yours.
+The desktop IPC workspace has a single driver, so comparisons need the
+server.
+
 ## CLI scripts (run individually without the GUI)
 
 ```bash
@@ -148,8 +172,16 @@ exclusions are dropped), narrowed by the lap filter: Top 10, 5 or 3 overall,
 Session bests, or Top 3 per session:
 
 - **Corner complexes** run from one braking zone to the next. They are derived
-  once from the layout's fastest valid lap and saved in the track YAML
-  (`complexes:`), editable on the Tracks page.
+  from the layout's fastest valid lap and saved with the layout in the
+  workspace database, editable on the Tracks page. A complex stores only its
+  boundaries (and any name you type); its corner list and default name come
+  from the current corners, so renaming a turn updates the coach immediately.
+  Saving corners re-derives complexes the app derived, but keeps ones you edited.
+- **Track layouts** (named corners, segments, complexes) live in the workspace
+  database (`src/garmin/trackStore.ts`). `tracks/*.yaml` files are seeds only:
+  on startup, and on first use, each layout without a database record is
+  imported from its YAML once; after that the YAML is never read or written
+  for that layout.
 - **Phases per complex:** braking point, peak deceleration, brake release,
   minimum speed and where it happens, throttle pickup, coasting distance, and
   speed 100/200 m after the minimum (`src/garmin/lapPhases.ts`; braking and

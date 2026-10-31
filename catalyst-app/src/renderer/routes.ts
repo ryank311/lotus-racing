@@ -1,5 +1,6 @@
 import type { CoachingSession } from '../shared/types'
 import { coachingLapFilter } from '../shared/coachingScope'
+import { isCompareParam } from '../shared/comparison'
 
 export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'account' | 'logs' | 'sign-in' | 'not-found'
 export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', account: '/account', logs: '/logs' } as const
@@ -58,7 +59,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
   if (route.page === 'not-found') return { url: pathname + search }
   const allowed: Partial<Record<Page, string[]>> = {
     progress: ['anchor', 'surface', 'temp'],
-    sessions: ['q', 'vehicle', 'track', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report', 'focus'],
+    sessions: ['q', 'vehicle', 'track', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report', 'focus', 'compare'],
     coach: ['session'], tracks: ['track', 'turn'], logs: ['q', 'level', 'follow'], 'sign-in': ['returnTo'],
   }
   const input = new URLSearchParams(search), output = new URLSearchParams()
@@ -66,12 +67,14 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
   for (const key of [...(allowed[route.page] ?? []), 'remote', 'catalystServer', 'desktopDriver']) {
     let values = input.getAll(key)
     if (!values.length) continue
-    if (['session', 'selected', 'level'].includes(key)) values = [...new Set(values)].sort()
+    if (['session', 'selected', 'level', 'compare'].includes(key)) values = [...new Set(values)].sort()
     else values = values.slice(0, 1)
     for (const value of values) {
       if (!value) continue
       if (key === 'surface' && !['any', 'dry', 'damp', 'wet', 'mixed', 'unknown'].includes(value)) { error = 'Invalid surface.'; continue }
       if (key === 'focus' && !/^[A-Za-z0-9-]{1,16}$/.test(value)) { error = 'Invalid corner.'; continue }
+      // <driver>:<session guid>; driver names may contain spaces.
+      if (key === 'compare' && !isCompareParam(value)) { error = 'Invalid driver comparison.'; continue }
       if (key === 'temp' && (!Number.isFinite(Number(value)) || Number(value) < -60 || Number(value) > 70)) { error = 'Invalid temperature.'; continue }
       if (key === 'anchor' && !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) { error = 'Invalid session identifier.'; continue }
       if (enums[key]) {

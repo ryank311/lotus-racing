@@ -4,7 +4,7 @@
 import type { DuckDBConnection } from '@duckdb/node-api'
 import type { DashboardLayout, FocusCheck, FocusItem, FocusStatus } from '../shared/types.js'
 import type { UnitSystem } from '../shared/units.js'
-import { checkFocus, fetchSessionMeta, latestFocus, vehicleLabelOf } from './coachPacket.js'
+import { checkFocus, fetchSessionMeta, latestFocus, sessionLayout, vehicleLabelOf } from './coachPacket.js'
 import type { LapSeries } from './lapPhases.js'
 import { fetchLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys, shortSessionLabel, validLapPredicate } from './lapData.js'
 
@@ -33,7 +33,7 @@ async function checkOnSessions(con: DuckDBConnection, items: FocusItem[], sessio
 export async function focusForSession(con: DuckDBConnection, sessionGuid: string, system: UnitSystem): Promise<FocusStatus | null> {
   const [meta] = await fetchSessionMeta(con, [sessionGuid])
   if (!meta) return null
-  const stored = await latestFocus(con, { vehicleGuid: meta.vehicle_guid, meanLineGuid: meta.mean_line_guid, account: meta.account }, meta.start)
+  const stored = await latestFocus(con, { ...sessionLayout(meta), vehicleGuid: meta.vehicle_guid, account: meta.account }, meta.start)
   if (!stored) return null
   return {
     reportId: stored.reportId, reportTitle: await reportTitle(con, stored.reportId), createdAt: stored.createdAt, items: stored.items,
@@ -73,7 +73,7 @@ export async function buildDashboard(con: DuckDBConnection, system: UnitSystem, 
     `, [last.session_guid]))[0]?.best
     const optimal = await fetchOptimalLapTimes(con, guids)
     let focus: FocusStatus | null = null
-    const stored = await latestFocus(con, { vehicleGuid: last.vehicle_guid, meanLineGuid: last.mean_line_guid, account: last.account })
+    const stored = await latestFocus(con, { ...sessionLayout(last), vehicleGuid: last.vehicle_guid, account: last.account })
     if (stored) {
       // Check on the most recent session driven after the report's sessions.
       const after = meta.filter(m => !stored.latestSessionStart || (m.start ?? '') > stored.latestSessionStart)

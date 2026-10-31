@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { DRIVER_NAME_RE, driverKey } from '../shared/comparison.js'
 
-export const USER_RE = /^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,39}$/u
+export const USER_RE = DRIVER_NAME_RE
 
 export function accountKey(username: string): string {
-  return username.normalize('NFKC').toLocaleLowerCase()
+  return driverKey(username)
 }
 
 export function userDirectory(dataDir: string, username: string): string {
@@ -20,4 +21,9 @@ export function defaultServerDataDir(): string {
     return path.join(os.homedir(), 'Library', 'Application Support', 'catalyst-coach', 'server')
   }
   return path.join(os.homedir(), '.config', 'catalyst-coach', 'server')
+}
+
+// Mirrors paths.ts for an instance directory (a driver workspace).
+export function workspaceDbPath(instanceDir: string): string {
+  return path.join(instanceDir, 'garmin', 'data', 'catalyst-app.duckdb')
 }

@@ -6,7 +6,7 @@ import { DB_PATH, MEAN_LINES_DIR } from './paths.js'
 import { initSchema, withDb } from './loadToDb.js'
 import { markReviewDirty } from './reviewSchema.js'
 import { decodeMeanLine } from './decodePerformance.js'
-import { loadTrackYaml, resolveTrackYamlPath } from './trackYaml.js'
+import { getTrackLayout } from './trackStore.js'
 import { aggregateLaps, buildComparison, finite, identityKey, inferSurface, measureLap, mean, minimum, REVIEW_VERSION } from './reviewMetrics.js'
 import { SURFACES, type ConditionOverride, type ProgressFilters, type ProgressResponse, type ReviewAggregate, type ReviewConditions, type ReviewLap, type ReviewRegion, type ReviewSnapshot, type ReviewStatus, type ReviewSummary, type SessionReviewResponse, type ReviewCoachingReport } from '../shared/review.js'
 
@@ -34,17 +34,15 @@ export function validateProgressFilters(filters: ProgressFilters): void {
 }
 
 export interface ReviewDefinition { regions: ReviewRegion[]; totalM: number; revision: string; map: ReviewAggregate['map'] }
-export function readReviewDefinition(session: any): ReviewDefinition {
-  const resolved = resolveTrackYamlPath(session.track_name ?? '', session.track_configuration_name ?? '', session.mean_line_guid)
-  const yaml = loadTrackYaml(resolved.path)
+export async function readReviewDefinition(con: DuckDBConnection, session: any): Promise<ReviewDefinition> {
+  // Named corners belong to one mean line; never borrow another's by name.
+  const layout = await getTrackLayout(con, session.mean_line_guid)
   const file = session.mean_line_guid && /^[a-zA-Z0-9_-]+$/.test(session.mean_line_guid)
     ? path.join(MEAN_LINES_DIR, `${session.mean_line_guid}.pb`) : null
   const ml = file && fs.existsSync(file) ? decodeMeanLine(new Uint8Array(fs.readFileSync(file))) : null
-  const totalM = ml?.points.at(-1)?.dist ?? yaml.total_dist_m ?? 0
-  // Do not apply another meanline's named corners via the legacy name fallback.
-  const compatible = !!session.mean_line_guid && yaml.mean_line_guid === session.mean_line_guid
-  const corners = compatible ? yaml.corners : []
-  const segments = compatible && yaml.segments.length ? yaml.segments : ml?.segments ?? []
+  const totalM = ml?.points.at(-1)?.dist ?? layout?.totalDistM ?? 0
+  const corners = layout?.corners ?? []
+  const segments = layout?.segments.length ? layout.segments : ml?.segments ?? []
   const regions: ReviewRegion[] = [
     ...corners.map(c => ({ id: `corner:${c.turn}`, name: c.name ? `${c.turn} · ${c.name}` : c.turn, kind: 'corner' as const, startM: c.dist_idx_start, endM: c.dist_idx_end })),
     ...segments.map(s => ({ id: `segment:S${s.id}`, name: `S${s.id}`, kind: 'segment' as const, startM: s.start_dist_m, endM: s.end_dist_m })),
@@ -76,12 +74,15 @@ export class ReviewService {
   private serial: Promise<unknown> = Promise.resolve()
   private initialized = false
   private definitionCache = new Map<string, ReviewDefinition>()
-  constructor(private options: { dbPath?: string; isBusy?: () => boolean; emit?: (event: ReviewStatus) => void; definition?: (session: any) => ReviewDefinition } = {}) {}
+  constructor(private options: { dbPath?: string; isBusy?: () => boolean; emit?: (event: ReviewStatus) => void; definition?: (session: any, con: DuckDBConnection) => ReviewDefinition | Promise<ReviewDefinition> } = {}) {}
   private db<T>(fn: (con: DuckDBConnection) => Promise<T>) { return withDb(fn, this.options.dbPath ?? DB_PATH) }
-  private definition(s: any): ReviewDefinition {
+  private async definition(con: DuckDBConnection, s: any): Promise<ReviewDefinition> {
     const key = String(s.mean_line_guid ?? s.track_configuration_id)
     let value = this.definitionCache.get(key)
-    if (!value) { value = (this.options.definition ?? readReviewDefinition)(s); this.definitionCache.set(key, value) }
+    if (!value) {
+      value = await (this.options.definition ? this.options.definition(s, con) : readReviewDefinition(con, s))
+      this.definitionCache.set(key, value)
+    }
     return value
   }
   private emit(sessionGuid: string, state: ReviewStatus['state'], error?: string) { this.options.emit?.({ sessionGuid, state, error }) }
@@ -113,7 +114,7 @@ export class ReviewService {
       const cached = aggregates.get(s.session_guid), job = jobs.get(s.session_guid)
       if (job && ['pending', 'processing'].includes(job.state)) continue
       let definition: ReviewDefinition
-      try { definition = this.definition(s) }
+      try { definition = await this.definition(con, s) }
       catch {
         // One corrupt definition must not prevent unrelated history from loading.
         if (job?.state !== 'failed') await markReviewDirty(con, s.session_guid)
@@ -151,7 +152,7 @@ export class ReviewService {
       try {
         const session = (await sessionRows(con)).find(s => s.session_guid === guid)
         if (!session) throw new Error('Session unavailable')
-        const definition = this.definition(session)
+        const definition = await this.definition(con, session)
         await con.run('UPDATE review_jobs SET attempt_revision=? WHERE session_guid=?', [reviewHash([REVIEW_VERSION, sourceRevision(session), definition.revision]), guid])
         const aggregate = await this.extract(con, session, definition)
         await con.run('BEGIN TRANSACTION')

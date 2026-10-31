@@ -84,6 +84,57 @@ export async function fetchLapSeries(con: DuckDBConnection, sg: string, lapIndex
   return seriesFromRows(rows)
 }
 
+// Every channel Analysis draws for one lap, in sample order. Columnar and
+// JSON-safe (missing values are null) so another driver's backend can send
+// it to yours unchanged.
+export interface LapSamples {
+  dist: number[]
+  timeMs: Array<number | null>
+  speed: Array<number | null>     // m/s
+  accelX: Array<number | null>    // m/s², braking negative
+  accelY: Array<number | null>    // m/s²
+  lat: Array<number | null>
+  lon: Array<number | null>
+  lateral: Array<number | null>   // 0 = left edge … 1 = right edge
+}
+
+export async function fetchLapSamples(con: DuckDBConnection, sg: string, lapIndex: number): Promise<LapSamples> {
+  const rows = (await con.runAndReadAll(`
+    SELECT distance_m, time_ms, gnss_speed_mps, accel_x_mps2, accel_y_mps2, lat, lon, lateral_position
+    FROM samples WHERE session_guid = ? AND lap_index = ? AND distance_m IS NOT NULL
+    ORDER BY distance_m, time_ms
+  `, [sg, lapIndex])).getRowsJson()
+  const out: LapSamples = { dist: [], timeMs: [], speed: [], accelX: [], accelY: [], lat: [], lon: [], lateral: [] }
+  const num = (v: unknown): number | null => {
+    if (v == null) return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  for (const row of rows) {
+    const d = num(row[0])
+    if (d == null) continue
+    out.dist.push(d)
+    out.timeMs.push(num(row[1])); out.speed.push(num(row[2]))
+    out.accelX.push(num(row[3])); out.accelY.push(num(row[4]))
+    out.lat.push(num(row[5])); out.lon.push(num(row[6])); out.lateral.push(num(row[7]))
+  }
+  return out
+}
+
+// The same calibrated series fetchLapSeries builds, from samples in memory.
+export function seriesFromSamples(samples: LapSamples): LapSeries {
+  return seriesFromRows(samples.dist.map((d, i) => [d, samples.timeMs[i], samples.speed[i], samples.accelX[i], samples.accelY[i]]))
+}
+
+// Structural check for samples received from another backend.
+export function isLapSamples(value: unknown): value is LapSamples {
+  const v = value as LapSamples
+  if (!v || typeof v !== 'object' || !Array.isArray(v.dist)) return false
+  const n = v.dist.length
+  return (['timeMs', 'speed', 'accelX', 'accelY', 'lat', 'lon', 'lateral'] as const).every(k => Array.isArray(v[k]) && v[k].length === n)
+    && v.dist.every(d => typeof d === 'number' && Number.isFinite(d))
+}
+
 export async function fetchOptimalLapSeries(con: DuckDBConnection, sg: string): Promise<LapSeries | null> {
   if (!await hasTable(con, 'optimal_lap_samples')) return null
   const rows = (await con.runAndReadAll(`
