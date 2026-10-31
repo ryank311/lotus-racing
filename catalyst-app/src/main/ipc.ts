@@ -48,6 +48,7 @@ import { parseCoachingReport, parseCoachResponse } from '../garmin/coachParser.j
 import { runAgent } from '../garmin/agentHarness.js'
 import { buildAnalysis } from '../garmin/analysisData.js'
 import { exportComparison, type ComparisonBundle } from '../garmin/driverComparison.js'
+import type { DriverDirectory } from './driverDirectory.js'
 import { syncSessions, validateSessionGuids } from '../garmin/sessionSync.js'
 import { ReviewService } from '../garmin/reviewStore.js'
 import { buildReviewCoachPrompt, parseReviewCoaching, reviewCoachingTool } from '../garmin/reviewCoach.js'
@@ -189,7 +190,21 @@ export function registerApiHandlers(
   getMainWindow: () => BackendEventTarget | null,
   revealPath: (filePath: string) => void = () => {},
   aiKeys: AiKeyStore = databaseAiKeyStore(DB_PATH),
+  // Desktop only: the local server's drivers, for comparisons. Server
+  // workers get comparisons already resolved by the server instead.
+  drivers?: () => DriverDirectory | null,
 ): { startReviews: () => Promise<void> } {
+  // Comparison requests from the desktop renderer are resolved through the
+  // local server; anything else (a server worker's input) is already the
+  // compared drivers' exported laps.
+  const comparisonBundles = async (lapFilter: unknown, value: unknown): Promise<ComparisonBundle[]> => {
+    const list = Array.isArray(value) ? value : []
+    const directory = drivers?.()
+    if (directory && list.some(item => item && typeof item === 'object' && !('laps' in item))) {
+      return await directory.resolve(null, lapFilter, list) as ComparisonBundle[]
+    }
+    return list as ComparisonBundle[]
+  }
   const reviews = new ReviewService({ isBusy: () => !!activeWorker, emit: event => {
     const target = getMainWindow()
     if (target && !target.isDestroyed()) target.webContents.send('review:event', event)
@@ -558,6 +573,7 @@ export function registerApiHandlers(
   register('coach:run', async (_e, opts: CoachOptions): Promise<{ sessionId: null }> => {
     if (opts.scope === 'session-review') return runReviewCoach(opts)
     const analysisScope = opts.scope
+    const comparisons = await comparisonBundles(opts.lapFilter, opts.comparisons)
     await ensureSessionDetails(opts.sessionGuids)
     if (activeWorker) throw new Error('Another worker is already running')
     activeWorker = { kind: 'coach' }
@@ -586,6 +602,7 @@ export function registerApiHandlers(
           scope: analysisScope,
           dbPath: DB_PATH,
           system: loadConfig().units ?? DEFAULT_UNIT_SYSTEM,
+          comparisons,
         })
         const { prompt, profile: resolvedProfile, packet } = coachRun
         sessionAliases = coachRun.sessionAliases
@@ -977,11 +994,20 @@ export function registerApiHandlers(
     revealPath(p)
   })
 
-  // `comparisons` arrives already resolved: the server replaces the
-  // renderer's requests with each compared driver's exported laps.
-  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?: ComparisonBundle[]) => {
+  // In a server worker `comparisons` arrives already resolved: the server
+  // replaces the renderer's requests with each driver's exported laps.
+  register('analysis:build', async (_e, sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?: unknown[]) => {
+    const bundles = await comparisonBundles(lapFilter, comparisons)
     await ensureSessionDetails(sessionGuids)
-    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapFilter, comparisons ?? [])
+    return buildAnalysis(sessionGuids, units ?? loadConfig().units ?? DEFAULT_UNIT_SYSTEM, lapFilter, bundles)
+  })
+
+  // Other drivers, for comparisons (desktop; the server answers browsers).
+  register('drivers:list', () => drivers?.()?.list(null) ?? [])
+  register('drivers:sessions', async (_e, driver: string) => {
+    const directory = drivers?.()
+    if (!directory) throw new Error('Comparing drivers needs the Catalyst server, which is not running.')
+    return directory.sessions(driver, null)
   })
 
   // Read-only: the server calls this on a compared driver's backend. Uses

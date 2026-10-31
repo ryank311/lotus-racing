@@ -93,9 +93,9 @@ const bridge: CatalystBridge = {
 
   buildAnalysis: (sessionGuids: string[], units?: UnitSystem, lapFilter?: LapFilter, comparisons?) =>
     ipcRenderer.invoke('analysis:build', sessionGuids, units, lapFilter, comparisons),
-  // The desktop IPC workspace is a single driver; comparisons need the server.
-  listDrivers: async () => [],
-  listDriverSessions: async () => [],
+  // Other drivers come from the local Catalyst server the app starts.
+  listDrivers: () => ipcRenderer.invoke('drivers:list'),
+  listDriverSessions: driver => ipcRenderer.invoke('drivers:sessions', driver),
 
   // AI Coach
   runCoach: (opts: CoachOptions) => ipcRenderer.invoke('coach:run', opts),

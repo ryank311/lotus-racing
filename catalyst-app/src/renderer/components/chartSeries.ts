@@ -3,7 +3,7 @@
 // hot-reload the chart components cleanly — Fast Refresh forbids modules that
 // export both components and non-component values.
 
-import { PALETTE, LAP_PALETTE, DRIVER_PALETTE } from './chartTheme'
+import { PALETTE, LAP_PALETTE, driverColor } from './chartTheme'
 import type { LineSeries } from './Charts'
 import type { AnalysisData, LapMeta, TimeDeltaTrace } from '../../garmin/analysisData'
 
@@ -16,10 +16,7 @@ export function lapColor(lap: Pick<LapMeta, 'isBest' | 'colorIndex' | 'driverInd
   return lap.isBest ? PALETTE.signal : LAP_PALETTE[(lap.colorIndex ?? 0) % LAP_PALETTE.length]
 }
 
-// 0 = you; 1+ = compared drivers in order.
-export function driverColor(index: number): string {
-  return index <= 0 ? PALETTE.signal : DRIVER_PALETTE[(index - 1) % DRIVER_PALETTE.length]
-}
+export { driverColor }
 
 // Drawn prominently: your fastest lap and each compared driver's fastest.
 export function isLeadLap(lap: Pick<LapMeta, 'isBest' | 'driverBest'>): boolean {

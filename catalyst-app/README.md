@@ -89,27 +89,40 @@ workspace; use `CATALYST_SERVER_DATA_DIR` to relocate the server's workspaces.
 
 ## Comparing against other drivers
 
-In server mode, **Analysis → ⇄ Compare** overlays other drivers' sessions on
-your own. The picker lists the other drivers on this server and their
-sessions on your layout, in the same format as the Sessions page, with each
-session's best lap and its gap to yours. Sessions on other layouts, without
-downloaded telemetry, or already in your analysis are shown but cannot be
-picked. You can compare up to 4 drivers and 20 sessions per driver. The
-choice is kept in the URL (`compare=<driver>:<session>`).
+**Analysis → ⇄ Compare** overlays other drivers' sessions on your own. The
+picker lists the other drivers on the server and their sessions on your
+layout, in the same format as the Sessions page, with each session's best lap
+and its gap to yours. Sessions on other layouts, without downloaded telemetry,
+or already in your analysis are shown but cannot be picked. You can compare up
+to 4 drivers and 20 sessions per driver. The choice is kept in the URL
+(`compare=<driver>:<session>`), in the sidebar's link back to Analysis, and in
+any coach report run with it.
 
-Their laps use your lap filter. They are overlaid on the speed, time-delta
-and long-G charts and on the map, in one colour per driver (your laps are
-orange). Every reference line (fastest lap, theoretical best, Garmin
-optimal) stays yours. A **Driver comparison** card shows each driver's best,
-theoretical and average lap and top speed, where the time goes split by
-split, and each corner on everyone's fastest lap. The stat strip, segment
-heatmap, G-G, corner charts and AI coach still describe only your laps.
+Their laps use your lap filter, and each driver has one colour (yours are
+orange):
+
+- Speed, time-delta and long-G charts and the map overlay their laps. Every
+  reference line (fastest lap, theoretical best, Garmin optimal) stays yours.
+- A **Driver comparison** card shows each driver's best, theoretical and
+  average lap and top speed, where the time goes split by split, and each
+  corner on everyone's fastest lap.
+- The segment heatmap shows **All drivers** (every lap against the best
+  plausible split by anyone) or **Your laps**. "Implausibly fast" is judged
+  within each driver's own laps.
+- G-G draws one cloud and p95 circle per driver. The corner, braking and
+  consistency charts add each driver's fastest lap (or spread) in their colour.
+- **Ask Coach** sends them too: the packet measures each driver on your corner
+  complexes (`driver.D1.*` evidence) and the coach uses their best passes as a
+  second reference. Focus items are still measured on your laps only.
+
+The stat strip, your own heatmap, and the AI coach's focus tracking describe
+only your laps.
 
 Each driver's backend owns its database, so the server asks the compared
 driver's backend for a read-only export of the selected laps
-(`compare:export`, which never syncs or downloads) and hands it to yours.
-The desktop IPC workspace has a single driver, so comparisons need the
-server.
+(`compare:export`, which never syncs or downloads) and hands it to yours. The
+desktop app does the same through the local server it starts, so its own
+workspace can be compared against that server's drivers.
 
 ## CLI scripts (run individually without the GUI)
 

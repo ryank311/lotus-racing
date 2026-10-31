@@ -1,8 +1,8 @@
 import { PreparingPanel } from '../components/Preparing'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, isRemote, msToLap } from '../api'
+import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
-import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart } from '../components/Charts'
+import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart, type GGOverlay } from '../components/Charts'
 import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName, driverColor } from '../components/chartSeries'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
@@ -38,7 +38,12 @@ function guidKey(guids: Iterable<string>): string {
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 // The sessions and lap filter a loaded coach report was generated for.
-interface CoachScope { guids: string[]; filter: LapFilter }
+interface CoachScope { guids: string[]; filter: LapFilter; compare: string }
+
+// Order-independent identity for a comparison (driver + sessions).
+function compareKeyOf(requests: ComparisonRequest[] | undefined): string {
+  return compareParams(requests ?? []).map(v => v.toLocaleLowerCase()).sort().join(',')
+}
 
 export function Analysis({ selected, setSelected, onBack, activeCoachSession, onClearCoachSession, busy, setBusy }: Props) {
   const { params } = useRoute()
@@ -95,7 +100,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     if (loadedCoachId.current === activeCoachSession.id) return
     loadedCoachId.current = activeCoachSession.id
     setCoachResult(activeCoachSession.parsed_result)
-    setCoachScope({ guids: activeCoachSession.session_guids, filter: coachingLapFilter(activeCoachSession) })
+    setCoachScope({ guids: activeCoachSession.session_guids, filter: coachingLapFilter(activeCoachSession), compare: compareKeyOf(activeCoachSession.parsed_result?.context?.comparisons) })
     resetMapFocus()
   }, [activeCoachSession])
 
@@ -133,6 +138,8 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     setBusy?.('coach')
     // The set submitted to the coach — the result will correspond to exactly this.
     const submitted = [...selected]
+    // Compared drivers go to the coach too, as a second reference.
+    const submittedComparisons = comparisons
     // Coaching a different lap filter from the menu: show those laps too, so
     // the report does not arrive already out of step with the charts.
     if (coachFilter !== lapFilter) setLapFilter(coachFilter)
@@ -148,7 +155,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           void api.getCoachSession(evt.payload).then(s => {
             if (s) {
               setCoachResult(s.parsed_result)
-              setCoachScope({ guids: submitted, filter: coachFilter })
+              setCoachScope({ guids: submitted, filter: coachFilter, compare: compareKeyOf(submittedComparisons) })
               resetMapFocus()
             }
           })
@@ -162,7 +169,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
       }
     })
     try {
-      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted, lapFilter: coachFilter })
+      await api.runCoach({ profile, scope: 'overview', sessionGuids: submitted, lapFilter: coachFilter, comparisons: submittedComparisons })
     } catch (e: any) {
       unsub()
       setCoachRunning(false)
@@ -241,14 +248,15 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
   const staleNotice = (() => {
     if (!coachResult || !coachScope) return null
     const sameSessions = guidKey(coachScope.guids) === guidKey(selected)
-    if (sameSessions && coachScope.filter === lapFilter) return null
-    const now = `${lapFilterPhrase(lapFilter)} of ${plural(selected.size, sameSessions || coachScope.guids.length !== selected.size ? 'session' : 'different session')}`
+    const sameDrivers = coachScope.compare === compareKeyOf(comparisons)
+    if (sameSessions && coachScope.filter === lapFilter && sameDrivers) return null
+    const now = `${lapFilterPhrase(lapFilter)} of ${plural(selected.size, sameSessions || coachScope.guids.length !== selected.size ? 'session' : 'different session')}${sameDrivers ? '' : comparisons.length ? `, compared with ${comparedNames}` : ', with no other drivers'}`
     return (
       <div className="coach-stale-banner" role="status">
         <div>
           <strong>Coach report is out of date for these charts</strong>
           <span>
-            This report was generated for {lapFilterPhrase(coachScope.filter)} of {plural(coachScope.guids.length, 'session')}; the charts now show {now}.
+            This report was generated for {lapFilterPhrase(coachScope.filter)} of {plural(coachScope.guids.length, 'session')}{coachScope.compare ? ' with other drivers' : ''}; the charts now show {now}.
           </span>
         </div>
         <div className="coach-stale-actions">
@@ -304,17 +312,15 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
           {LAP_FILTERS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
         </select>
 
-        {/* Other drivers live on the Catalyst server; the desktop IPC workspace has only you. */}
-        {isRemote && (
-          <button type="button" className={`btn ghost analysis-compare-btn${comparisons.length ? ' is-on' : ''}`}
-            title="Compare against other drivers" aria-haspopup="dialog" disabled={!ownRows.length}
-            onClick={() => setCompareOpen(true)}>
-            {comparisons.length
-              ? <>{comparisons.map((c, i) => <i key={c.driver} className="driver-dot" style={{ background: driverColor(i + 1) }} />)}
-                vs {comparisons.length === 1 ? comparisons[0].driver : `${comparisons.length} drivers`}</>
-              : '⇄ Compare'}
-          </button>
-        )}
+        {/* Other drivers on the Catalyst server (the desktop app asks its local server). */}
+        <button type="button" className={`btn ghost analysis-compare-btn${comparisons.length ? ' is-on' : ''}`}
+          title="Compare against other drivers" aria-haspopup="dialog" disabled={!ownRows.length}
+          onClick={() => setCompareOpen(true)}>
+          {comparisons.length
+            ? <>{comparisons.map((c, i) => <i key={c.driver} className="driver-dot" style={{ background: driverColor(i + 1) }} />)}
+              vs {comparisons.length === 1 ? comparisons[0].driver : `${comparisons.length} drivers`}</>
+            : '⇄ Compare'}
+        </button>
 
         <div className="ask-coach-split">
           <button
@@ -561,7 +567,14 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
   const timePlotSeries = useMemo(() => deltaMode === 'garmin' ? garminOptimalTimeDeltaSeries(data)
     : deltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data), [data, deltaMode])
   const longPlotSeries = useMemo(() => longGSeries(data), [data])
-  const hasIgnoredSplits = useMemo(() => !!data.heatmap?.z.some(row => row.some(v => v != null && v < 0)), [data.heatmap])
+  // With other drivers, the segment heatmap can show everyone's laps against
+  // the best split by anyone (default) or only yours.
+  const [heatmapScope, setHeatmapScope] = useState<'all' | 'mine'>('all')
+  const heatmap = heatmapScope === 'all' && data.comparison?.heatmap ? data.comparison.heatmap : data.heatmap
+  const hasIgnoredSplits = useMemo(() => !!heatmap?.z.some(row => row.some(v => v != null && v < 0)), [heatmap])
+  const ggOthers = useMemo<GGOverlay[] | undefined>(() => data.comparison?.gg.length
+    ? data.comparison.gg.map((gg, i) => ({ gg, name: data.comparison!.drivers[i + 1]?.name ?? 'Other driver', color: driverColor(i + 1) }))
+    : undefined, [data.comparison])
   const excludedLaps = data.excludedLapCount ?? 0
   const avgLapCount = data.avgLapCount ?? data.laps.length
   const sessionsSorted = useMemo(
@@ -671,14 +684,21 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
           />
         </ChartCard>
 
-        {data.heatmap && (
-          <ChartCard channel="SEGMENT Δ" meta={`seconds · best per segment = 0${hasIgnoredSplits ? ' · hatched = ignored (implausibly fast)' : ''}`}>
-            <HeatmapGrid hm={data.heatmap} onHoverSegment={onHoverRef} />
+        {heatmap && (
+          <ChartCard channel="SEGMENT Δ"
+            meta={`seconds · ${heatmap === data.heatmap ? 'your best per segment = 0' : 'best per segment by anyone = 0'}${hasIgnoredSplits ? ' · hatched = ignored (implausibly fast)' : ''}`}
+            controls={data.comparison?.heatmap ? (
+              <div className="chart-mode-toggle" role="group" aria-label="Laps in the segment heatmap">
+                <button type="button" className={heatmapScope === 'all' ? 'active' : ''} aria-pressed={heatmapScope === 'all'} onClick={() => setHeatmapScope('all')}>All drivers</button>
+                <button type="button" className={heatmapScope === 'mine' ? 'active' : ''} aria-pressed={heatmapScope === 'mine'} onClick={() => setHeatmapScope('mine')}>Your laps</button>
+              </div>
+            ) : undefined}>
+            <HeatmapGrid hm={heatmap} onHoverSegment={onHoverRef} />
           </ChartCard>
         )}
 
-        <ChartCard channel="G-G" meta={`p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
-          <GGChart gg={data.gg} height={420} onHoverDistance={onHoverDistance} speedUnit={data.speedUnit} />
+        <ChartCard channel="G-G" meta={ggOthers ? 'p95 friction circle per driver · colour = driver' : `p95 ≈ ${data.gg.p95_g.toFixed(2)}g`}>
+          <GGChart gg={data.gg} height={420} onHoverDistance={onHoverDistance} speedUnit={data.speedUnit} others={ggOthers} />
         </ChartCard>
 
         <ChartCard

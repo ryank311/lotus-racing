@@ -60,7 +60,7 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   }, [location.pathname, location.search, go])
   const clearWorkspace = useCallback(() => {
     clearScrollSnapshots()
-    try { sessionStorage.removeItem('catalyst:last-sessions') } catch { /* optional */ }
+    try { sessionStorage.removeItem('catalyst:last-sessions'); sessionStorage.removeItem('catalyst:last-analysis') } catch { /* optional */ }
   }, [])
   const lastSessions = useCallback(() => {
     try { const url = sessionStorage.getItem('catalyst:last-sessions'); return url?.startsWith('/sessions?') || url === '/sessions' ? safeReturnTo(url) : '/sessions' } catch { return '/sessions' }

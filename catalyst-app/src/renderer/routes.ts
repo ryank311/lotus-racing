@@ -1,6 +1,6 @@
 import type { CoachingSession } from '../shared/types'
 import { coachingLapFilter } from '../shared/coachingScope'
-import { isCompareParam } from '../shared/comparison'
+import { compareParams, isCompareParam } from '../shared/comparison'
 
 export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'account' | 'logs' | 'sign-in' | 'not-found'
 export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', account: '/account', logs: '/logs' } as const
@@ -33,7 +33,9 @@ export function routeUrl(path: string, values: Record<string, string | string[] 
 
 export function reportAnalysisUrl(report: CoachingSession): string {
   if (report.review_context) return `/review/${segment(report.review_context.sessionGuid)}`
-  return routeUrl('/analysis', { session: report.session_guids, report: report.id, laps: coachingLapFilter(report) })
+  // A report that compared other drivers reopens with them.
+  const compare = compareParams(report.parsed_result?.context?.comparisons ?? [])
+  return routeUrl('/analysis', { session: report.session_guids, report: report.id, laps: coachingLapFilter(report), compare })
 }
 
 export function safeReturnTo(value: string | null): string {

@@ -5,8 +5,8 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { accountKey, defaultServerDataDir, userDirectory, USER_RE, workspaceDbPath } from './serverStorage.js'
-import { MAX_COMPARE_DRIVERS, MAX_COMPARE_SESSIONS, type DriverAccount } from '../shared/comparison.js'
+import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
+import { createDriverDirectory, type DriverDirectory } from './driverDirectory.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
 import { serveStaticAsset } from './staticAssets.js'
 
@@ -24,6 +24,8 @@ export interface RunningCatalystServer {
   host: string
   port: number
   url: string
+  // The server's drivers, for the desktop app's comparisons.
+  drivers: DriverDirectory
   close(): Promise<void>
 }
 
@@ -291,60 +293,8 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
     return backend
   }
 
-  // ---- driver comparison --------------------------------------------------
-  // Drivers can read each other's sessions for Analysis comparisons. The
-  // server has no passwords, so this exposes nothing a login would not;
-  // access stays read-only (a session list and an export of lap telemetry)
-  // and never creates a workspace for an unknown name.
-  const accountName = (instanceDir: string): string | null => {
-    try {
-      const account = JSON.parse(fs.readFileSync(path.join(instanceDir, 'account.json'), 'utf8'))
-      return typeof account?.username === 'string' && USER_RE.test(account.username) ? account.username : null
-    } catch { return null }
-  }
-  const knownDriver = (name: unknown): string | null => {
-    if (typeof name !== 'string' || !USER_RE.test(name)) return null
-    return accountName(userDirectory(dataDir, name))
-  }
-  const listDrivers = (self: string): DriverAccount[] => {
-    let dirs: string[] = []
-    try { dirs = fs.readdirSync(usersDir) } catch { return [] }
-    return dirs.flatMap(dir => {
-      const instanceDir = path.join(usersDir, dir)
-      const username = accountName(instanceDir)
-      if (!username || accountKey(username) === accountKey(self)) return []
-      return [{ username, hasTelemetry: fs.existsSync(workspaceDbPath(instanceDir)) }]
-    }).sort((a, b) => a.username.localeCompare(b.username, undefined, { sensitivity: 'base' }))
-  }
-  // Replace the renderer's comparison requests with each driver's exported
-  // laps, so a backend only ever receives telemetry the server fetched.
-  const resolveComparisons = async (self: string, lapFilter: unknown, requests: unknown): Promise<unknown[]> => {
-    if (requests == null) return []
-    if (!Array.isArray(requests)) throw new Error('Invalid driver comparison.')
-    if (requests.length > MAX_COMPARE_DRIVERS) throw new Error(`Compare up to ${MAX_COMPARE_DRIVERS} drivers at a time.`)
-    const seen = new Set<string>()
-    const resolved = requests.map(request => {
-      const guids = request?.sessionGuids
-      if (!Array.isArray(guids) || !guids.length || guids.length > MAX_COMPARE_SESSIONS || guids.some(g => typeof g !== 'string' || !g || g.length > 200)) {
-        throw new Error(`Choose 1–${MAX_COMPARE_SESSIONS} sessions for each compared driver.`)
-      }
-      const name = knownDriver(request?.driver)
-      if (!name) throw new Error(`No driver named "${String(request?.driver ?? '').slice(0, 40)}" on this server.`)
-      if (accountKey(name) === accountKey(self)) throw new Error('Choose another driver to compare against; your own sessions are already in this analysis.')
-      if (seen.has(accountKey(name))) throw new Error(`${name} is listed twice in this comparison.`)
-      seen.add(accountKey(name))
-      return { name, guids: guids as string[] }
-    })
-    return Promise.all(resolved.map(async ({ name, guids }) => {
-      if (!fs.existsSync(workspaceDbPath(userDirectory(dataDir, name)))) throw new Error(`${name} has not synced any telemetry yet.`)
-      try {
-        const exported = await backendFor(name).call('compare:export', [guids, lapFilter])
-        return { ...(exported as object), driver: name }
-      } catch (error) {
-        throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }))
-  }
+  // Drivers can read each other's sessions and laps for comparisons.
+  const drivers = createDriverDirectory(dataDir, backendFor)
 
   const staticDir = options.staticDir ? path.resolve(options.staticDir) : null
   const server: Server = createServer(async (req, res) => {
@@ -418,26 +368,28 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
           return
         }
         const args = [...body.args]
-        if (body.channel === 'analysis:build') args[3] = await resolveComparisons(username, args[2], args[3])
+        // Comparison requests become the compared drivers' exported laps.
+        if (body.channel === 'analysis:build') args[3] = await drivers.resolve(username, args[2], args[3])
+        if (body.channel === 'coach:run' && args[0] && typeof args[0] === 'object') {
+          args[0] = { ...args[0], comparisons: await drivers.resolve(username, args[0].lapFilter, args[0].comparisons) }
+        }
         const result = await backendFor(username).call(body.channel, args)
         json(res, 200, { result }, origin)
         return
       }
       if (url.pathname === '/api/drivers' && req.method === 'GET') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
-        json(res, 200, { drivers: listDrivers(username) }, origin)
+        json(res, 200, { drivers: drivers.list(username) }, origin)
         return
       }
       if (url.pathname === '/api/driver-sessions' && req.method === 'POST') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         const body = await readJson(req)
-        const name = knownDriver(body?.driver)
-        if (!name || accountKey(name) === accountKey(username)) { json(res, 404, { error: 'No such driver on this server.' }, origin); return }
-        // A driver with no database has nothing to compare; avoid starting
-        // their backend just to say so.
-        const hasTelemetry = fs.existsSync(workspaceDbPath(userDirectory(dataDir, name)))
-        const result = hasTelemetry ? await backendFor(name).call('db:listSessions', [null]) : []
-        json(res, 200, { result }, origin)
+        try {
+          json(res, 200, { result: await drivers.sessions(body?.driver, username) }, origin)
+        } catch (error: any) {
+          json(res, error?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }, origin)
+        }
         return
       }
 
@@ -468,7 +420,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   const port = typeof address === 'object' && address ? address.port : requestedPort
   const publicHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
   return {
-    host, port, url: `http://${publicHost}:${port}`,
+    host, port, url: `http://${publicHost}:${port}`, drivers,
     close: async () => {
       closing = true
       // Give open requests a moment, then drop them so a restart stays short.

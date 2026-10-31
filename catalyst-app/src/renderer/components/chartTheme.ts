@@ -29,3 +29,8 @@ export const LAP_PALETTE = [
 // Compared drivers, in order (you stay signal-orange). Chosen to stay apart
 // from each other and from orange on the dark plot background.
 export const DRIVER_PALETTE = [PALETTE.cyan, PALETTE.purple, PALETTE.green, PALETTE.amber]
+
+// 0 = you; 1+ = compared drivers in order.
+export function driverColor(index: number): string {
+  return index <= 0 ? PALETTE.signal : DRIVER_PALETTE[(index - 1) % DRIVER_PALETTE.length]
+}

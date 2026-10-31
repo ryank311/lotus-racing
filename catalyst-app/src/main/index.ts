@@ -206,7 +206,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(iconPath) } catch {}
   }
-  registerIpc(() => mainWindow)
+  registerIpc(() => mainWindow, () => webServer?.drivers ?? null)
   installAppMenu(() => mainWindow)
   createWindow()
   hookConsoleToRenderer(() => mainWindow)

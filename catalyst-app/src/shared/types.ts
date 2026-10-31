@@ -266,6 +266,8 @@ export interface CoachingContext {
   lapFilter: LapFilter
   latestSessionStart: string | null
   units: UnitSystem
+  // Other drivers the report compared against, so reopening it restores them.
+  comparisons?: ComparisonRequest[]
 }
 
 export interface CoachingResult {
@@ -319,6 +321,8 @@ export interface CoachOptions {
   sessionGuids: string[]
   lapFilter?: LapFilter
   reviewRevision?: string
+  // Other drivers' sessions to compare against (Analysis coaching only).
+  comparisons?: ComparisonRequest[]
 }
 
 export type AiProvider = 'anthropic' | 'openai'

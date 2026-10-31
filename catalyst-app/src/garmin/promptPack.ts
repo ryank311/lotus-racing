@@ -16,6 +16,7 @@ import { buildCoachPacket, fetchSessionMeta, renderPacket, sessionLayout, stripR
 import { sameTrackLayout } from '../shared/trackLayout.js'
 import { buildCoachingTool, COACHING_TOOL_NAME } from './coachingTool.js'
 import { lapLabel } from './lapData.js'
+import type { ComparisonBundle } from './comparisonBundle.js'
 
 export function coachSystemPrompt(system: UnitSystem): string {
   return `You are the data coach for an upper-intermediate HPDE driver chasing personal bests. The driver reads your report between sessions and will act on at most three things next time out, so the report must be short, specific and usable in the car.
@@ -30,6 +31,7 @@ What good coaching looks like here:
 - Compare sessions only when conditions are similar; say so when temperature, surface or notes explain a difference.
 - Say what the data cannot show. Suggest a setup change only when the same balance problem appears on most representative laps, and only one change at a time. Garage notes are context, not measured proof.
 - Fewer, well-supported items beat a full list. If nothing clears the bar, say so and give no focus items.
+- If the packet lists comparison drivers, use their best passes as a second reference. Point out the complexes where they gain, say what they do differently (braking point, minimum speed and where it happens, throttle pickup, exit speed) and cite the driver.* evidence IDs. Say so when their car differs from yours. Your own best pass stays the target for focus items, which are always measured on your laps.
 
 Answer only by calling ${COACHING_TOOL_NAME}, once. Write to the driver as "you", in short plain sentences. Use ${speedUnitLabel(system)} for any speed you mention. No generic HPDE advice, and never mention database IDs other than evidence IDs.`
 }
@@ -56,7 +58,7 @@ ${context}
 ${renderPacket(packet)}
 </packet>
 
-Question: What should I work on next session to take time out of my repeatable laps${packet.previousFocus.length ? ', and did my last focus work' : ''}?`
+Question: What should I work on next session to take time out of my repeatable laps${packet.previousFocus.length ? ', and did my last focus work' : ''}${packet.comparisons.length ? `, and what can I learn from ${packet.comparisons.map(d => d.driver).join(' and ')}` : ''}?`
 }
 
 export interface CoachRunOpts {
@@ -66,6 +68,8 @@ export interface CoachRunOpts {
   scope: 'overview' | 'corner' | 'compare'
   dbPath?: string
   system?: UnitSystem
+  // Other drivers' exported laps to compare against.
+  comparisons?: ComparisonBundle[]
 }
 
 export interface CoachRun {
@@ -90,7 +94,7 @@ export async function runCoach(opts: CoachRunOpts): Promise<CoachRun> {
   const system = opts.system ?? DEFAULT_UNIT_SYSTEM
   const db = await openDb(dbPath)
   try {
-    const packet = await buildCoachPacket(db.con, { sessionGuids: opts.sessionGuids, lapFilter: opts.lapFilter, system })
+    const packet = await buildCoachPacket(db.con, { sessionGuids: opts.sessionGuids, lapFilter: opts.lapFilter, system, comparisons: opts.comparisons })
     const profile = await resolveProfileName(db.con, packet.sessions.at(-1)!.sg, opts.profile, dbPath)
     const context = await driverContext(profile, packet.trackLabel, dbPath)
     const sessionAliases = Object.fromEntries(packet.sessions.map(s => [s.sg, s.label]))

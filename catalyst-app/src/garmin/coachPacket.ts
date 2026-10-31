@@ -13,8 +13,9 @@ import {
 } from './lapPhases.js'
 import {
   fetchLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys,
-  shortSessionLabel, validLapPredicate, type ValidLap,
+  seriesFromSamples, shortSessionLabel, validLapPredicate, type ValidLap,
 } from './lapData.js'
+import { validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
 import { layoutComplexes, layoutForSession, saveTrackComplexes } from './trackStore.js'
 
 // ─── Metrics ────────────────────────────────────────────────────────────────
@@ -94,6 +95,21 @@ export interface Opportunity {
   compare: string
 }
 
+// Another driver on this layout, measured on the same complexes and lap
+// filter as you. Reference only: focus items are always measured on your laps.
+export interface PacketComparison {
+  id: string                  // D1, D2…
+  driver: string
+  vehicle: string
+  sessions: number
+  laps: number
+  bestMs: number | null
+  bestLabel: string | null
+  medianMs: number | null
+  idealMs: number | null
+  stats: Record<string, Record<MetricKey, MetricStat>>
+}
+
 export interface CoachPacket {
   version: 2
   units: UnitSystem
@@ -115,12 +131,15 @@ export interface CoachPacket {
   previousFocus: Array<{ item: FocusItem; check: FocusCheck }>
   evidence: Record<string, string>
   successMetrics: string[]
+  comparisons: PacketComparison[]
 }
 
 export interface PacketOptions {
   sessionGuids: string[]
   lapFilter?: LapFilter
   system: UnitSystem
+  // Other drivers' exported laps (resolved by the server).
+  comparisons?: ComparisonBundle[]
 }
 
 // ─── Formatting ─────────────────────────────────────────────────────────────
@@ -290,6 +309,8 @@ export async function buildCoachPacket(con: DuckDBConnection, opts: PacketOption
   if (!meta.length) throw new Error('no sessions matched the provided GUIDs.')
   if (meta.length !== new Set(opts.sessionGuids).size) throw new Error('Some selected sessions are unavailable. Select the sessions again.')
   assertComparable(meta)
+  const bundles = opts.comparisons ?? []
+  validateComparisonBundles(bundles, sessionLayout(meta[meta.length - 1]), opts.sessionGuids)
   const f = formatters(opts.system)
   const anchor = meta[meta.length - 1]
   const { complexes, source, totalM } = await resolveComplexes(con, anchor)
@@ -381,12 +402,14 @@ export async function buildCoachPacket(con: DuckDBConnection, opts: PacketOption
     trackLabel: [anchor.track_name, anchor.track_configuration_name].filter(Boolean).join(' · ') || 'Unknown track',
     lapFilter: opts.lapFilter ?? 'all',
     latestSessionStart: anchor.start, units: opts.system,
+    ...(bundles.length ? { comparisons: bundles.map(b => ({ driver: b.driver, sessionGuids: b.sessions.map(s => s.sg) })) } : {}),
   }
 
   const packet: CoachPacket = {
     version: 2, units: opts.system, trackLabel: context.trackLabel, totalM, context,
     vehicleLabel: vehicleLabelOf(anchor), sessions, laps, complexes, complexSource: source, stats, bestLap, idealMs,
     allTimePb, garminOptimalMs, opportunities, lapNumberPace, previousFocus: [], evidence: {}, successMetrics: [],
+    comparisons: bundles.map((bundle, i) => comparisonFor(bundle, `D${i + 1}`, complexes)),
   }
   packet.previousFocus = await checkPreviousFocus(con, packet)
   packet.evidence = buildEvidence(packet)
@@ -396,6 +419,39 @@ export async function buildCoachPacket(con: DuckDBConnection, opts: PacketOption
   }).map(k => `${c.id}.${k}`))
   return packet
 }
+
+// The same complex statistics for another driver's laps. Representative laps
+// are chosen within their own selection, exactly as for yours.
+function comparisonFor(bundle: ComparisonBundle, id: string, complexes: ComplexDef[]): PacketComparison {
+  const sessionIds = new Map([...bundle.sessions].sort((a, b) => (a.start ?? '').localeCompare(b.start ?? '')).map((s, i) => [s.sg, `${id}S${i + 1}`]))
+  const valid = bundle.laps.map(lap => ({ sg: lap.sg, lapIndex: lap.lapIndex, durationMs: lap.durationMs, sessionStart: lap.sessionStart }))
+  const repKeys = representativeKeys(valid)
+  const laps: PacketLap[] = bundle.laps.map(lap => ({
+    sg: lap.sg, lapIndex: lap.lapIndex, durationMs: lap.durationMs, sessionStart: lap.sessionStart,
+    id: `${sessionIds.get(lap.sg)}L${lap.lapIndex + 1}`, sessionId: sessionIds.get(lap.sg)!,
+    label: `${bundle.driver} · ${lapLabel(lap.sessionStart, lap.lapIndex)}`,
+    representative: repKeys.has(`${lap.sg}:${lap.lapIndex}`),
+    phases: complexPhases(seriesFromSamples(lap.samples), complexes),
+  }))
+  const best = laps.reduce<PacketLap | null>((a, b) => (!a || b.durationMs < a.durationMs ? b : a), null)
+  const stats: PacketComparison['stats'] = {}
+  complexes.forEach((c, i) => {
+    stats[c.id] = Object.fromEntries((Object.keys(METRICS) as MetricKey[]).map(k => [k, statFor(k, laps, i, best)])) as Record<MetricKey, MetricStat>
+  })
+  const bests = complexes.map(c => stats[c.id].time.best)
+  return {
+    id, driver: bundle.driver,
+    vehicle: [...new Set(bundle.sessions.map(s => s.vehicle))].join(', ') || 'Unknown vehicle',
+    sessions: bundle.sessions.length, laps: laps.length,
+    bestMs: best?.durationMs ?? null, bestLabel: best?.label ?? null,
+    medianMs: median(laps.filter(l => l.representative).map(l => l.durationMs)),
+    idealMs: bests.length && bests.every(v => v != null) ? bests.reduce((a, b) => a! + b!, 0) : null,
+    stats,
+  }
+}
+
+// Phases compared on each driver's best pass through a complex.
+const COMPARE_PHASES: MetricKey[] = ['brake_onset', 'brake_peak', 'brake_release', 'vmin', 'vmin_at', 'throttle_at', 'neutral', 'exit100', 'exit200']
 
 function compareExecution(s: Record<MetricKey, MetricStat>, f: ReturnType<typeof formatters>): string {
   const parts: string[] = []
@@ -457,6 +513,25 @@ function buildEvidence(p: CoachPacket): Record<string, string> {
     }
     const opp = p.opportunities.find(o => o.complexId === c.id)
     if (opp) ev[`${c.id}.compare`] = `${c.name} — median lap ${f.value('ms', opp.medianGapMs)} slower than your best pass. ${opp.compare}`
+  }
+  for (const d of p.comparisons) {
+    const mine = p.bestLap?.durationMs
+    const gap = d.bestMs != null && mine != null
+      ? `, ${f.value('ms', Math.abs(d.bestMs - mine))} ${d.bestMs < mine ? 'quicker' : 'slower'} than your fastest (${f.lapTime(mine)})` : ''
+    ev[`driver.${d.id}.pace`] = `${d.driver} (${d.vehicle}; ${d.sessions} session${d.sessions === 1 ? '' : 's'}, ${d.laps} laps, same lap filter): fastest valid lap ${f.lapTime(d.bestMs)}${d.bestLabel ? ` (${d.bestLabel})` : ''}${gap}; median representative lap ${f.lapTime(d.medianMs)}; ideal lap from their best complexes ${f.lapTime(d.idealMs)}.`
+    for (const c of p.complexes) {
+      const ours = p.stats[c.id], theirs = d.stats[c.id]
+      const tt = theirs.time.best, mt = ours.time.best
+      if (tt == null) continue
+      const parts = [`best pass ${f.value('ms', tt)} vs your ${f.value('ms', mt)}${mt != null ? ` (${d.driver} ${f.value('ms', Math.abs(mt - tt))} ${tt < mt ? 'quicker' : 'slower'})` : ''}`]
+      if (theirs.time.median != null) parts.push(`median ${f.value('ms', theirs.time.median)} vs your ${f.value('ms', ours.time.median)}`)
+      for (const key of COMPARE_PHASES) {
+        const a = theirs[key].bestExec, b = ours[key].bestExec
+        if (a == null || b == null) continue
+        parts.push(`${METRICS[key].label.toLowerCase()} ${f.value(METRICS[key].unit, a)} vs your ${f.value(METRICS[key].unit, b)}`)
+      }
+      ev[`driver.${d.id}.${c.id}`] = `${d.driver} — ${c.name}: ${parts.join('; ')}. Phase values are on each driver's best pass through the complex.`
+    }
   }
   for (const { item, check } of p.previousFocus) {
     ev[`focus.${item.id}`] = `Previous focus "${item.cue}" (${item.complexName}, ${item.metricLabel}): baseline ${check.display.baseline}, target ${check.display.target}, now ${check.display.current} over ${check.laps} laps — ${check.verdict.replace('_', ' ')}.`
@@ -621,6 +696,27 @@ export function renderPacket(p: CoachPacket): string {
   if (p.opportunities.length) {
     out.push('### Largest repeatable opportunities', '')
     for (const o of p.opportunities) out.push(`- [${o.complexId}.compare] ${p.evidence[`${o.complexId}.compare`]}`)
+    out.push('')
+  }
+
+  if (p.comparisons.length) {
+    out.push('### Comparison drivers (reference)', '')
+    out.push('Other drivers on this layout that you chose to compare against: same complexes, same lap filter, valid laps only. Their car may differ from yours. Gap = your best pass minus theirs (positive: they are quicker).', '')
+    for (const d of p.comparisons) out.push(`- [driver.${d.id}.pace] ${p.evidence[`driver.${d.id}.pace`]}`)
+    out.push('')
+    table(['Complex', 'Your best pass', ...p.comparisons.flatMap(d => [`${d.driver} best pass`, `Gap to ${d.driver}`])], p.complexes.map(c => {
+      const mine = p.stats[c.id].time.best
+      return [c.id, f.value('ms', mine), ...p.comparisons.flatMap(d => {
+        const theirs = d.stats[c.id].time.best
+        return [f.value('ms', theirs), mine != null && theirs != null ? f.value('ms', mine - theirs, true) : '—']
+      })]
+    }))
+    for (const d of p.comparisons) {
+      for (const c of p.complexes) {
+        const id = `driver.${d.id}.${c.id}`
+        if (p.evidence[id]) out.push(`- [${id}] ${p.evidence[id]}`)
+      }
+    }
     out.push('')
   }
 

@@ -14,7 +14,8 @@ import { cornerPhases, plausibleMin, segmentBounds, spanTimeMs, valueAt, type La
 import { fetchLapSamples, fetchOptimalLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys, seriesFromSamples, type LapSamples } from './lapData.js'
 import { selectLaps, type LapFilter } from '../shared/coachingScope.js'
 import { assertComparable, fetchSessionMeta, sessionLayout, vehicleLabelOf } from './coachPacket.js'
-import { buildComparison, comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './driverComparison.js'
+import { buildComparison } from './driverComparison.js'
+import { comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
 
 // Canonical m/s → the active display unit. Threaded from buildAnalysis so a unit
 // toggle reflows the whole Analysis page on the next fetch.
@@ -134,6 +135,10 @@ export interface HeatmapData {
   cols: string[]
   rows: string[]
   zmax: number
+  // Comparison heatmaps: the driver of each row (0 = you) and, per split,
+  // the driver who set the reference time in the last row.
+  rowDrivers?: number[]
+  bestDrivers?: Array<number | null>
 }
 
 // Per lap and corner. "entry" is the speed where braking starts (or at the
@@ -151,6 +156,9 @@ export interface CornerRow {
   vmin_dist_m: number
   exit_mph: number
   max_lat_g: number
+  // Set on compared drivers' rows (comparison.cornerRows).
+  driverIndex?: number
+  driverBest?: boolean
 }
 
 export interface CoachLinePoint {
@@ -209,6 +217,13 @@ export interface ComparisonData {
   drivers: DriverSummary[]   // [you, ...compared drivers]
   segments: SegmentComparisonRow[]
   corners: CornerComparisonRow[]
+  // Every driver's laps against the best plausible split by anyone.
+  heatmap: HeatmapData | null
+  // Compared drivers only, in order (drivers[1], drivers[2], …).
+  gg: GGData[]
+  // Compared drivers' corner and braking rows (yours are cornerRows above).
+  cornerRows: CornerRow[]
+  cornerBrakingRows: CornerBrakingRow[]
 }
 
 export interface AnalysisData {
@@ -600,6 +615,8 @@ function cornerTables(laps: LapMeta[], series: Map<string, LapSeries>, corners: 
       if (entryMps == null || phase.exit100Mps == null) continue
       rowsOut.push({
         sg: lap.sg, lapIdx: lap.lapIdx, turn: phase.turn, name: corner.name, lapLbl: lap.label, isBest: lap.isBest,
+        // Only compared drivers' rows are tagged; yours match a solo analysis.
+        ...(lap.driverIndex ? { driverIndex: lap.driverIndex, driverBest: !!lap.driverBest } : {}),
         entry_mph: conv(entryMps)!, apex_mph: conv(phase.vminMps)!, vmin_dist_m: phase.vminM,
         exit_mph: conv(phase.exit100Mps)!, max_lat_g: phase.maxLatG ?? 0,
       })
@@ -768,6 +785,13 @@ export async function buildAnalysis(
       },
       others: comparisons, otherLaps, series, bounds, corners, totalDistM, conv: toSpeed,
     }) : null
+    if (comparison) {
+      // The G-G cloud and corner charts draw compared drivers beside yours.
+      comparison.gg = comparisons.map((_, i) => ggData(otherLaps.filter(l => l.driverIndex === i + 1), series, toSpeed))
+      const theirs = cornerTables(otherLaps, series, corners, totalDistM, toSpeed)
+      comparison.cornerRows = theirs.rows
+      comparison.cornerBrakingRows = theirs.braking
+    }
 
     console.log(`[analysis] complete — ${ownLines.length + otherLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs / 1000).toFixed(3) + 's' : 'n/a'}`)
     return {

@@ -48,6 +48,17 @@ function CoachToast({ onView, onDismiss }: { onView: () => void; onDismiss: () =
   )
 }
 
+// The last Analysis view in this browser tab (cleared on sign-out with the rest
+// of the workspace's navigation state).
+const LAST_ANALYSIS_KEY = 'catalyst:last-analysis'
+interface LastAnalysis { session: string[]; compare: string[]; laps: string | null }
+function readLastAnalysis(): LastAnalysis | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(LAST_ANALYSIS_KEY) ?? 'null')
+    return value && Array.isArray(value.session) && Array.isArray(value.compare) ? value : null
+  } catch { return null }
+}
+
 export function App() {
   const [{ addLogEntry, logStore, statusStore }] = useState(createActivityStore)
   const { page, id, params, location } = useRoute()
@@ -58,7 +69,24 @@ export function App() {
   const selectionKey = JSON.stringify(params.getAll(page === 'sessions' ? 'selected' : 'session').sort())
   const selected = useMemo(() => new Set<string>(JSON.parse(selectionKey)), [selectionKey])
   const setSelected = (next: Set<string>) => query({ [page === 'sessions' ? 'selected' : 'session']: [...next], ...(page === 'analysis' ? { report: null } : {}) })
-  const destination = (key: NavKey) => key === 'sessions' ? lastSessions() : ['analysis', 'coach'].includes(key) ? routeUrl(paths[key], { session: [...selected] }) : paths[key]
+  // The sidebar returns to the last Analysis view (sessions, compared drivers
+  // and lap filter) from pages without a selection, and keeps the compared
+  // drivers when the selection is unchanged.
+  const lastAnalysis = useRef<LastAnalysis | null>(readLastAnalysis())
+  useEffect(() => {
+    if (page !== 'analysis' || !selected.size) return
+    lastAnalysis.current = { session: [...selected].sort(), compare: params.getAll('compare'), laps: params.get('laps') }
+    try { sessionStorage.setItem(LAST_ANALYSIS_KEY, JSON.stringify(lastAnalysis.current)) } catch { /* optional */ }
+  }, [page, selected, params])
+  const analysisDestination = () => {
+    const last = lastAnalysis.current
+    if (last && !selected.size) return routeUrl(paths.analysis, { session: last.session, compare: last.compare, laps: last.laps })
+    const same = last && JSON.stringify(last.session) === selectionKey
+    return routeUrl(paths.analysis, { session: [...selected], ...(same ? { compare: last!.compare, laps: last!.laps } : {}) })
+  }
+  const destination = (key: NavKey) => key === 'sessions' ? lastSessions()
+    : key === 'analysis' ? analysisDestination()
+    : key === 'coach' ? routeUrl(paths.coach, { session: [...selected] }) : paths[key]
   const setPage = (key: NavKey) => go(destination(key))
   const [accountRevision, setAccountRevision] = useState(0)
   const resourceScope = String(accountRevision)

@@ -82,6 +82,26 @@ test('drivers on one server can compare sessions read-only', { timeout: 60000 },
     assert.equal((await (await build([])).json()).result.comparison, null)
   })
 
+  await t.test('coach:run receives the compared drivers’ laps, never raw requests', async () => {
+    const coach = comparisons => request('/api/rpc', { channel: 'coach:run', args: [{ profile: '', scope: 'overview', sessionGuids: ['ryan-1'], lapFilter: 'top10', comparisons }] }, cookie)
+    const unknown = await coach([{ driver: 'Nobody', sessionGuids: ['x'] }])
+    assert.equal(unknown.status, 500)
+    assert.match((await unknown.json()).error, /No driver named "Nobody"/)
+    // Resolution succeeds; the run itself then stops for want of an API key.
+    const started = await coach([{ driver: 'Alex', sessionGuids: ['alex-1'] }])
+    assert.equal(started.status, 200, await started.clone().text())
+  })
+
+  await t.test('the desktop app reaches the same drivers through the running server', async () => {
+    assert.deepEqual(server.drivers.list(null).map(d => d.username), ['Alex', 'New Driver', 'Ryan'])
+    assert.deepEqual(server.drivers.list('ryan').map(d => d.username), ['Alex', 'New Driver'])
+    assert.deepEqual((await server.drivers.sessions('Alex', null)).map(r => r.session_guid).sort(), ['alex-1', 'alex-grand'])
+    const [bundle] = await server.drivers.resolve(null, 'top3', [{ driver: 'alex', sessionGuids: ['alex-1'] }])
+    assert.equal(bundle.driver, 'Alex')
+    assert.equal(bundle.laps.length, 2)
+    assert.equal(bundle.laps[0].samples.dist.length, 1001)
+  })
+
   await t.test('invalid comparisons are rejected with a clear reason', async () => {
     const reason = async comparisons => {
       const response = await build(comparisons)

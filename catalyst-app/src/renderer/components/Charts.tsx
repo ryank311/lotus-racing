@@ -2,7 +2,7 @@
 // Canvas rendering is ~10× faster than Plotly's SVG for multi-lap line data.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { PALETTE, LAP_PALETTE } from './chartTheme'
+import { PALETTE, LAP_PALETTE, driverColor } from './chartTheme'
 import { ChartActions } from './ChartSurface'
 import { useChartTouch, TouchHint } from './useChartTouch'
 import { clampRange, pinchRange } from './chartGestures'
@@ -488,7 +488,10 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
 
 // ─── GGChart ─────────────────────────────────────────────────────────────────
 
-export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg: GGData; height: number; onHoverDistance?: (d: number | null) => void; speedUnit?: string }) {
+// `others`: compared drivers' clouds. With them, every driver is drawn in
+// their own colour (yours orange) instead of the speed ramp.
+export interface GGOverlay { name: string; color: string; gg: GGData }
+export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph', others }: { gg: GGData; height: number; onHoverDistance?: (d: number | null) => void; speedUnit?: string; others?: GGOverlay[] }) {
   const canvasRef   = useRef<HTMLCanvasElement>(null)
   const rafRef      = useRef(0)
   const wrapRef     = useRef<HTMLDivElement>(null)
@@ -516,7 +519,8 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
     ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
 
-    const gMax = Math.max(0.1, gg.p95_g * 1.35)
+    const comparing = !!others?.length
+    const gMax = Math.max(0.1, gg.p95_g * 1.35, ...(others ?? []).map(o => o.gg.p95_g * 1.35))
     // Asymmetric padding so the plot fills the full canvas.
     // Scale is determined by the tighter dimension; the wider dimension just
     // shows more of the axis range — the circle stays circular.
@@ -562,9 +566,13 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     ctx.moveTo(cx, padT); ctx.lineTo(cx, padT + plotH)
     ctx.stroke()
 
-    // p95 circle
-    ctx.strokeStyle = PALETTE.signal; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.globalAlpha = 0.55
+    // p95 circle (one per driver when comparing)
+    ctx.strokeStyle = PALETTE.signal; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.globalAlpha = comparing ? 0.9 : 0.55
     ctx.beginPath(); ctx.arc(cx, cy, gg.p95_g * sc, 0, Math.PI * 2); ctx.stroke()
+    for (const o of others ?? []) {
+      ctx.strokeStyle = o.color
+      ctx.beginPath(); ctx.arc(cx, cy, o.gg.p95_g * sc, 0, Math.PI * 2); ctx.stroke()
+    }
     ctx.setLineDash([]); ctx.globalAlpha = 1
 
     const smin = Math.min(...gg.speed_mph), smax = Math.max(...gg.speed_mph)
@@ -573,8 +581,14 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
 
     // All points (dimmed when something is hovered)
     const basAlpha = hi !== null ? 0.18 : 0.35
+    for (const o of others ?? []) {
+      ctx.fillStyle = o.color; ctx.globalAlpha = basAlpha * 0.8
+      for (let i = 0; i < o.gg.lat_g.length; i += 3) {
+        ctx.beginPath(); ctx.arc(toX(o.gg.lat_g[i]), toY(o.gg.long_g[i]), 1.5, 0, Math.PI * 2); ctx.fill()
+      }
+    }
     for (let i = 0; i < gg.lat_g.length; i += 3) {
-      ctx.fillStyle = rampColor((gg.speed_mph[i] - smin) / srng)
+      ctx.fillStyle = comparing ? PALETTE.signal : rampColor((gg.speed_mph[i] - smin) / srng)
       ctx.globalAlpha = basAlpha
       ctx.beginPath(); ctx.arc(toX(gg.lat_g[i]), toY(gg.long_g[i]), 1.5, 0, Math.PI * 2); ctx.fill()
     }
@@ -582,7 +596,7 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     // Highlighted point
     if (hi !== null) {
       const px = toX(gg.lat_g[hi]), py = toY(gg.long_g[hi])
-      const color = rampColor((gg.speed_mph[hi] - smin) / srng)
+      const color = comparing ? PALETTE.signal : rampColor((gg.speed_mph[hi] - smin) / srng)
       // Glow ring
       ctx.globalAlpha = 0.3
       ctx.fillStyle = color
@@ -617,8 +631,18 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'
     ctx.fillText('← LATERAL G →', padL + plotW / 2, padT + plotH + 18)
     ctx.textBaseline = 'bottom'
-    ctx.fillText(`p95 ≈ ${gg.p95_g.toFixed(2)}g`, padL + plotW / 2, padT - 2)
-  }, [gg, inverted, view])
+    if (comparing) {
+      // "p95 · You 1.22g · Alex 1.25g", each name in its driver colour.
+      const parts = [{ text: 'p95 ·', color: PALETTE.textMute }, { text: `You ${gg.p95_g.toFixed(2)}g`, color: PALETTE.signal },
+        ...others!.map(o => ({ text: `· ${o.name} ${o.gg.p95_g.toFixed(2)}g`, color: o.color }))]
+      const widths = parts.map(p => ctx.measureText(p.text).width + 6)
+      let x = padL + plotW / 2 - widths.reduce((a, b) => a + b, 0) / 2
+      ctx.textAlign = 'left'
+      parts.forEach((p, i) => { ctx.fillStyle = p.color; ctx.fillText(p.text, x, padT - 2); x += widths[i] })
+    } else {
+      ctx.fillText(`p95 ≈ ${gg.p95_g.toFixed(2)}g`, padL + plotW / 2, padT - 2)
+    }
+  }, [gg, inverted, view, others])
 
   useEffect(() => {
     draw()
@@ -655,6 +679,7 @@ export function GGChart({ gg, height, onHoverDistance, speedUnit = 'mph' }: { gg
         { label: 'Long G', value: `${gg.long_g[nearI].toFixed(2)}g`,       color: PALETTE.signal   },
         { label: 'Speed',  value: `${Math.round(gg.speed_mph[nearI])} ${speedUnit}`, color: PALETTE.textMute },
       ],
+      ...(others?.length ? { header: 'Your laps' } : {}),
     })
   }
 
@@ -736,6 +761,7 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
           {hm.rows.map((row, ri) => (
             <tr key={row}>
               <td style={{ padding: '2px 8px', color: 'var(--text-dim)', fontSize: 9, letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>
+                {hm.rowDrivers?.[ri] != null && <i aria-hidden="true" style={{ display: 'inline-block', width: 7, height: 7, marginRight: 6, borderRadius: '50%', background: driverColor(hm.rowDrivers[ri]) }} />}
                 {row}
               </td>
               {hm.cols.map((col, ci) => {
@@ -743,10 +769,13 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
                 const rawText = hm.text[ri][ci]
                 const isPb = ri === hm.z.length - 1
                 const ignored = val != null && val < 0
+                // Reference row: just the time; comparison heatmaps colour it
+                // by the driver who set it.
+                const owner = isPb ? hm.bestDrivers?.[ci] : null
                 const display = val == null || rawText === '—' ? ''
-                  : isPb ? rawText.replace(' PB', '')
+                  : isPb ? rawText.split(' ')[0]
                   : ignored ? 'ignored'
-                  : val === 0 ? 'PB' : `+${val.toFixed(2)}`
+                  : val === 0 ? (hm.rowDrivers ? 'BEST' : 'PB') : `+${val.toFixed(2)}`
                 // Tooltip: show full text + column label
                 const tipText = rawText && rawText !== '—' ? `${col}: ${rawText}` : undefined
                 return (
@@ -757,7 +786,7 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
                     padding: '3px 4px',
                     background: cellColor(val, hm.zmax),
                     textAlign: 'center',
-                    color: val === 0 ? 'var(--green)' : ignored ? 'var(--text-mute)' : 'var(--text-dim)',
+                    color: owner != null ? driverColor(owner) : val === 0 ? 'var(--green)' : ignored ? 'var(--text-mute)' : 'var(--text-dim)',
                     fontStyle: ignored ? 'italic' : undefined,
                     fontWeight: val === 0 ? 700 : 400,
                     letterSpacing: '0.04em',
@@ -780,6 +809,12 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
   )
 }
 
+// Compared drivers' rows for one corner (their fastest lap only) and a name
+// lookup, shared by the corner charts.
+function comparedName(data: AnalysisData, index: number | undefined): string {
+  return data.comparison?.drivers[index ?? 0]?.name ?? 'Other driver'
+}
+
 // ─── CornerChart ─────────────────────────────────────────────────────────────
 
 const CP = { l: 92, r: 18, t: 42, b: 30 } as const
@@ -792,6 +827,7 @@ interface CornerHitInfo {
   best: AnalysisData['cornerRows'][number]
   vminLow: number
   vminHigh: number
+  others: AnalysisData['cornerRows']
 }
 
 // Per-corner speed profile: "brake point" is the speed where braking starts
@@ -819,6 +855,8 @@ export function CornerChart({ data, height, speedUnit = 'mph', onHoverCorner }: 
     ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
 
     const { cornerRows, corners } = data
+    // Compared drivers' fastest laps, drawn as rings in their colours.
+    const theirBest = (data.comparison?.cornerRows ?? []).filter(r => r.driverBest)
     const turnOrder = corners.map(c => c.turn).filter(t => cornerRows.some(r => r.turn === t))
     if (!turnOrder.length) return
 
@@ -826,7 +864,7 @@ export function CornerChart({ data, height, speedUnit = 'mph', onHoverCorner }: 
     const n = turnOrder.length
 
     let yMin = Infinity, yMax = -Infinity
-    for (const r of cornerRows)
+    for (const r of [...cornerRows, ...theirBest.filter(r => turnOrder.includes(r.turn))])
       for (const v of [r.entry_mph, r.apex_mph, r.exit_mph]) { if (v < yMin) yMin = v; if (v > yMax) yMax = v }
     const yp = (yMax - yMin) * 0.08; yMin -= yp; yMax += yp
     const ySpan = yMax - yMin || 1
@@ -891,8 +929,17 @@ export function CornerChart({ data, height, speedUnit = 'mph', onHoverCorner }: 
         }
       }
 
+      const others = theirBest.filter(r => r.turn === turn)
+      for (const other of others) {
+        ctx.strokeStyle = driverColor(other.driverIndex ?? 1); ctx.lineWidth = 1.6; ctx.globalAlpha = 0.95
+        for (const series of SERIES) {
+          ctx.beginPath(); ctx.arc(toX(other[series.key]), py + series.dy, series.key === 'apex_mph' ? 5.5 : 4.5, 0, Math.PI * 2); ctx.stroke()
+        }
+        ctx.globalAlpha = 1
+      }
+
       const vmins = rows.map(r => r.apex_mph)
-      hits.push({ py, rowHeight, turn, name: best.name, best, vminLow: Math.min(...vmins), vminHigh: Math.max(...vmins) })
+      hits.push({ py, rowHeight, turn, name: best.name, best, vminLow: Math.min(...vmins), vminHigh: Math.max(...vmins), others })
     }
     hitRowsRef.current = hits
 
@@ -904,7 +951,7 @@ export function CornerChart({ data, height, speedUnit = 'mph', onHoverCorner }: 
       ctx.fillText(label, lx + 12, 14); lx += 12 + ctx.measureText(label).width + 16
     }
     ctx.fillStyle = PALETTE.textMute; ctx.font = '8px "JetBrains Mono", monospace'
-    ctx.fillText('DOT = FASTEST LAP  ·  LINE = ALL-LAP RANGE', CP.l, 29)
+    ctx.fillText(theirBest.length ? 'DOT = YOUR FASTEST LAP  ·  RING = THEIR FASTEST  ·  LINE = YOUR RANGE' : 'DOT = FASTEST LAP  ·  LINE = ALL-LAP RANGE', CP.l, 29)
     ctx.textAlign = 'right'
     ctx.fillText(speedUnit.toUpperCase(), CP.l + plotW, 29)
 
@@ -936,6 +983,11 @@ export function CornerChart({ data, height, speedUnit = 'mph', onHoverCorner }: 
         { label: 'V-min', value: `${best.apex_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.signal },
         { label: '+100 m after V-min', value: `${best.exit_mph.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
         { label: 'V-min range', value: `${nearRow.vminLow.toFixed(1)}–${nearRow.vminHigh.toFixed(1)} ${speedUnit} (Δ${spread.toFixed(1)})`, color: PALETTE.textMute },
+        ...nearRow.others.map(o => ({
+          label: `${comparedName(data, o.driverIndex)} ★`,
+          value: `${o.entry_mph.toFixed(1)} · ${o.apex_mph.toFixed(1)} · ${o.exit_mph.toFixed(1)} ${speedUnit}`,
+          color: driverColor(o.driverIndex ?? 1),
+        })),
       ],
     })
   }
@@ -966,6 +1018,7 @@ interface BrakingHit {
   turn: string
   name: string
   rows: AnalysisData['cornerBrakingRows']
+  theirs: AnalysisData['cornerBrakingRows']
 }
 
 export function CornerBrakingChart({
@@ -990,13 +1043,16 @@ export function CornerBrakingChart({
     ctx.fillStyle = PALETTE.bg; ctx.fillRect(0, 0, w, h)
 
     const brakingRows = data.cornerBrakingRows ?? []
+    // Compared drivers' fastest laps, drawn below yours in their colours.
+    const theirRows = (data.comparison?.cornerBrakingRows ?? []).filter(row => row.driverBest)
     const groups = data.corners.flatMap(corner => {
       const rows = brakingRows.filter(row => row.turn === corner.turn)
-      return rows.length ? [{ turn: corner.turn, name: corner.name ?? '', rows }] : []
+      const theirs = theirRows.filter(row => row.turn === corner.turn)
+      return rows.length ? [{ turn: corner.turn, name: corner.name ?? '', rows, theirs }] : []
     })
     if (!groups.length) { hitsRef.current = []; return }
 
-    const offsets = groups.flatMap(group => group.rows.flatMap(row => [
+    const offsets = groups.flatMap(group => [...group.rows, ...group.theirs].flatMap(row => [
       row.onset_dist_m - row.apex_dist_m,
       row.release_dist_m - row.apex_dist_m,
     ]))
@@ -1024,7 +1080,7 @@ export function CornerBrakingChart({
       ctx.fillText('DOUBLE TRIANGLE = BRAKE–COAST–RE-BRAKE', BP.l + plotW, 30)
     }
     ctx.fillStyle = PALETTE.signal; ctx.textAlign = 'left'
-    ctx.fillText('BRIGHT = FASTEST LAP', BP.l, 30)
+    ctx.fillText(theirRows.length ? 'BRIGHT = YOUR FASTEST LAP · COLOURED = THEIR FASTEST' : 'BRIGHT = FASTEST LAP', BP.l, 30)
 
     const hits: BrakingHit[] = []
     groups.forEach((group, index) => {
@@ -1037,7 +1093,7 @@ export function CornerBrakingChart({
       ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
       ctx.fillText(`${group.turn}${group.name ? ` ${group.name}` : ''}`.slice(0, 16), 8, py)
 
-      const spacing = Math.min(3, rowHeight / Math.max(3, group.rows.length + 1))
+      const spacing = Math.min(3, rowHeight / Math.max(3, group.rows.length + group.theirs.length * 2 + 1))
       group.rows.forEach((row, lapIndex) => {
         const y = py + (lapIndex - (group.rows.length - 1) / 2) * spacing
         const onsetX = toX(row.onset_dist_m - row.apex_dist_m)
@@ -1058,6 +1114,16 @@ export function CornerBrakingChart({
         ctx.beginPath(); ctx.arc(releaseX, y, row.isBest ? 3.5 : 2, 0, Math.PI * 2); ctx.fill()
       })
       ctx.globalAlpha = 1
+      group.theirs.forEach((row, i) => {
+        const y = py + ((group.rows.length - 1) / 2 + 2 + i * 2) * spacing
+        const onsetX = toX(row.onset_dist_m - row.apex_dist_m)
+        const releaseX = toX(row.release_dist_m - row.apex_dist_m)
+        const color = driverColor(row.driverIndex ?? 1)
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 3
+        ctx.beginPath(); ctx.moveTo(onsetX, y); ctx.lineTo(releaseX, y); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(onsetX, y - 3); ctx.lineTo(onsetX + 5, y); ctx.lineTo(onsetX, y + 3); ctx.closePath(); ctx.fill()
+        ctx.beginPath(); ctx.arc(releaseX, y, 3.5, 0, Math.PI * 2); ctx.fill()
+      })
       hits.push({ py, rowHeight, ...group })
     })
     hitsRef.current = hits
@@ -1096,6 +1162,11 @@ export function CornerBrakingChart({
         ...(multiStage > 0 ? [{ label: 'Multi-stage laps', value: `${multiStage} of ${hit.rows.length}`, color: PALETTE.amber }] : []),
         { label: 'Onset range', value: `${signed(Math.min(...onsetOffsets))} to ${signed(Math.max(...onsetOffsets))}`, color: PALETTE.textMute },
         { label: 'Release range', value: `${signed(Math.min(...releaseOffsets))} to ${signed(Math.max(...releaseOffsets))}`, color: PALETTE.textMute },
+        ...hit.theirs.map(row => ({
+          label: `${comparedName(data, row.driverIndex)} ★`,
+          value: `${signed(row.onset_dist_m - row.apex_dist_m)} → ${signed(row.release_dist_m - row.apex_dist_m)} · ${row.peak_brake_g.toFixed(2)} g`,
+          color: driverColor(row.driverIndex ?? 1),
+        })),
       ],
     })
   }
@@ -1132,6 +1203,8 @@ interface ConsistencyHit {
   spreadPct: number
   locationLow: number
   locationHigh: number
+  // Compared drivers' spread at this corner over their own laps.
+  others: Array<{ index: number; name: string; spreadPct: number; laps: number }>
 }
 
 function consistencyColor(t: number): string {
@@ -1182,13 +1255,19 @@ export function CornerConsistencyChart({
         spreadPct,
         locationLow: locations.length ? Math.min(...locations) : 0,
         locationHigh: locations.length ? Math.max(...locations) : 0,
+        others: (data.comparison?.drivers ?? []).slice(1).flatMap(driver => {
+          const theirs = (data.comparison?.cornerRows ?? []).filter(r => r.turn === corner.turn && r.driverIndex === driver.index).map(r => r.apex_mph)
+          if (theirs.length < 2) return []
+          const theirAvg = theirs.reduce((a, b) => a + b, 0) / theirs.length
+          return [{ index: driver.index, name: driver.name, laps: theirs.length, spreadPct: theirAvg > 0 ? (Math.max(...theirs) - Math.min(...theirs)) / theirAvg * 100 : 0 }]
+        }),
       }]
     }).sort((a, b) => b.spreadPct - a.spreadPct)
     if (!stats.length) return
 
     const plotW = w - CCP.l - CCP.r
     const plotH = h - CCP.t - CCP.b
-    const maxSpreadPct = Math.max(...stats.map(s => s.spreadPct), 0.1)
+    const maxSpreadPct = Math.max(...stats.flatMap(s => [s.spreadPct, ...s.others.map(o => o.spreadPct)]), 0.1)
     const toX = (spreadPct: number) => CCP.l + spreadPct / maxSpreadPct * plotW
     const rowHeight = plotH / stats.length
     const hits: ConsistencyHit[] = []
@@ -1204,7 +1283,7 @@ export function CornerConsistencyChart({
       ctx.fillStyle = PALETTE.textMute; ctx.fillText(fmtTick(tick, tickStep), px, CCP.t + plotH + 5)
     }
     ctx.fillStyle = PALETTE.textMute; ctx.textAlign = 'right'
-    ctx.fillText('V-MIN RANGE / AVG · % · CURRENT ANALYSIS FILTER', CCP.l + plotW, 17)
+    ctx.fillText(`V-MIN RANGE / AVG · % · CURRENT ANALYSIS FILTER${stats.some(s => s.others.length) ? ' · THIN = OTHER DRIVERS' : ''}`, CCP.l + plotW, 17)
 
     stats.forEach((stat, i) => {
       const py = CCP.t + (i + 0.5) * rowHeight
@@ -1223,6 +1302,12 @@ export function CornerConsistencyChart({
       ctx.globalAlpha = 1
       ctx.fillStyle = PALETTE.textDim; ctx.textAlign = 'left'
       ctx.fillText(`${stat.spreadPct.toFixed(1)}%`, Math.min(toX(stat.spreadPct) + 5, w - CCP.r + 8), py)
+      // Compared drivers: thin bars in their colours under yours.
+      stat.others.forEach((other, j) => {
+        ctx.fillStyle = driverColor(other.index); ctx.globalAlpha = 0.9
+        ctx.fillRect(CCP.l, py + Math.max(2, rowHeight * 0.22) + 1 + j * 3, Math.max(2, toX(other.spreadPct) - CCP.l), 2)
+        ctx.globalAlpha = 1
+      })
       hits.push({ py, rowHeight, ...stat })
     })
     hitsRef.current = hits
@@ -1260,6 +1345,7 @@ export function CornerConsistencyChart({
         { label: 'Std dev', value: hit.laps > 1 ? `${hit.stdDev.toFixed(2)} ${speedUnit} (${stdDevPct.toFixed(1)}%)` : '— (one lap)', color: PALETTE.cyan },
         { label: 'V-min range', value: `${hit.low.toFixed(1)}–${hit.high.toFixed(1)} ${speedUnit}`, color: PALETTE.green },
         { label: 'Location range', value: `${Math.round(hit.locationLow)}–${Math.round(hit.locationHigh)} m`, color: PALETTE.textMute },
+        ...hit.others.map(o => ({ label: `${o.name} spread`, value: `${o.spreadPct.toFixed(1)}% · ${o.laps} laps`, color: driverColor(o.index) })),
       ],
     })
   }

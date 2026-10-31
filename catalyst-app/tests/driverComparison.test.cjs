@@ -12,6 +12,10 @@ const { initSchema, withDb, releaseSharedInstance } = require('../dist-main/garm
 const { DB_PATH, TRACKS_DIR } = require('../dist-main/garmin/paths.js')
 const { buildAnalysis } = require('../dist-main/garmin/analysisData.js')
 const { exportComparison } = require('../dist-main/garmin/driverComparison.js')
+const { buildCoachPacket, renderPacket } = require('../dist-main/garmin/coachPacket.js')
+const { coachUserPrompt } = require('../dist-main/garmin/promptPack.js')
+const { buildCoachingTool } = require('../dist-main/garmin/coachingTool.js')
+const { registerApiHandlers } = require('../dist-main/main/ipc.js')
 const { parseCompareParams, compareParams, isCompareParam } = require('../dist-main/shared/comparison.js')
 const { TRACK_YAML, lapRows, seed } = require('./fixtures/compareFixture.cjs')
 
@@ -95,6 +99,77 @@ test('another driver’s laps overlay your analysis on the same layout', async t
     assert.ok(t1.drivers[1].apex > t1.drivers[0].apex, 'the faster driver carries more minimum speed')
     assert.ok(t1.drivers[0].brakeOnsetM != null && t1.drivers[0].brakeOnsetM < 500)
     void mineMs
+  })
+
+  await t.test('comparison feeds the heatmap, G-G and corner charts', async () => {
+    const data = await buildAnalysis(['mine-1'], 'metric', 'top10', [bundle])
+    const hm = data.comparison.heatmap
+    assert.equal(hm.rows.length, 2 + 3 + 1, 'your laps, their laps, then the best of all drivers')
+    assert.deepEqual(hm.rowDrivers, [0, 0, 1, 1, 1])
+    assert.equal(hm.rows.at(-1), '★ Best of all drivers')
+    assert.deepEqual(hm.bestDrivers, [1, 1], 'the faster driver sets both reference splits')
+    assert.ok(hm.z.flat().every(v => v == null || v >= 0), 'a quicker driver is never marked implausibly fast')
+    assert.equal(hm.z[2].filter(v => v === 0).length, 2, 'their fastest lap is the reference in every split')
+    assert.deepEqual(data.heatmap, (await buildAnalysis(['mine-1'], 'metric', 'top10')).heatmap, 'your own heatmap is unchanged')
+    assert.equal(data.comparison.gg.length, 1)
+    assert.ok(data.comparison.gg[0].lat_g.length > 0)
+    const rows = data.comparison.cornerRows
+    assert.ok(rows.length >= 3 && rows.every(r => r.driverIndex === 1))
+    assert.equal(rows.filter(r => r.driverBest).length, 1)
+    assert.ok(data.comparison.cornerBrakingRows.every(r => r.driverIndex === 1))
+    assert.ok(data.cornerRows.every(r => r.driverIndex == null), 'your rows match a solo analysis')
+  })
+
+  await t.test('the coach packet measures compared drivers on your complexes', async () => {
+    const packet = await db(con => buildCoachPacket(con, { sessionGuids: ['mine-1'], system: 'metric', lapFilter: 'top10', comparisons: [bundle] }))
+    assert.equal(packet.comparisons.length, 1)
+    const [alex] = packet.comparisons
+    assert.deepEqual([alex.id, alex.driver, alex.laps, alex.bestMs], ['D1', 'Alex', 3, theirMs])
+    assert.match(packet.evidence['driver.D1.pace'], /^Alex \(LOTUS EXIGE; 1 session, 3 laps, same lap filter\): fastest valid lap .* quicker than your fastest/)
+    const complexIds = packet.complexes.map(c => c.id)
+    assert.ok(complexIds.length > 0)
+    for (const id of complexIds) assert.match(packet.evidence[`driver.D1.${id}`], /best pass .* vs your .*Alex .* quicker/)
+    assert.deepEqual(packet.context.comparisons, [{ driver: 'Alex', sessionGuids: ['theirs-1'] }])
+    const markdown = renderPacket(packet)
+    assert.match(markdown, /### Comparison drivers \(reference\)/)
+    assert.match(markdown, /\| Complex \| Your best pass \| Alex best pass \| Gap to Alex \|/)
+    assert.match(coachUserPrompt(packet, ''), /what can I learn from Alex\?$/)
+    const tool = JSON.stringify(buildCoachingTool(packet))
+    assert.ok(tool.includes('driver.D1.pace'), 'the model can cite comparison evidence')
+    // Focus items stay measured on your laps only.
+    assert.ok(packet.laps.every(l => !l.label.startsWith('Alex')))
+    const solo = await db(con => buildCoachPacket(con, { sessionGuids: ['mine-1'], system: 'metric', lapFilter: 'top10' }))
+    assert.deepEqual(solo.comparisons, [])
+    assert.equal(solo.context.comparisons, undefined)
+    assert.ok(!Object.keys(solo.evidence).some(id => id.startsWith('driver.')))
+    const grand = { ...bundle, sessions: bundle.sessions.map(s => ({ ...s, meanLineGuid: 'grand-line', configurationId: 99 })) }
+    await assert.rejects(db(con => buildCoachPacket(con, { sessionGuids: ['mine-1'], system: 'metric', comparisons: [grand] })), /is on/)
+  })
+
+  await t.test('desktop IPC resolves comparison requests through the local server', async () => {
+    const handlers = new Map()
+    const requests = []
+    const directory = {
+      list: self => (self == null ? [{ username: 'Alex', hasTelemetry: true }] : []),
+      sessions: async () => [{ session_guid: 'theirs-1' }],
+      resolve: async (self, lapFilter, list) => {
+        requests.push({ self, lapFilter, list })
+        return Promise.all(list.map(async r => ({ ...(await exportComparison(r.sessionGuids, lapFilter)), driver: r.driver })))
+      },
+    }
+    registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => null, undefined, undefined, () => directory)
+    assert.deepEqual(await handlers.get('drivers:list')({}), [{ username: 'Alex', hasTelemetry: true }])
+    assert.deepEqual(await handlers.get('drivers:sessions')({}, 'Alex'), [{ session_guid: 'theirs-1' }])
+    const data = await handlers.get('analysis:build')({}, ['mine-1'], 'metric', 'top5', [{ driver: 'Alex', sessionGuids: ['theirs-1'] }])
+    assert.deepEqual(data.comparison.drivers.map(d => d.name), ['You', 'Alex'])
+    assert.deepEqual(requests, [{ self: null, lapFilter: 'top5', list: [{ driver: 'Alex', sessionGuids: ['theirs-1'] }] }])
+
+    // A server worker has no directory: it lists nobody and expects resolved input.
+    const worker = new Map()
+    registerApiHandlers((channel, handler) => worker.set(channel, handler), () => null)
+    assert.deepEqual(await worker.get('drivers:list')({}), [])
+    await assert.rejects(worker.get('drivers:sessions')({}, 'Alex'), /needs the Catalyst server/)
+    await assert.rejects(worker.get('analysis:build')({}, ['mine-1'], 'metric', 'top10', [{ driver: 'Alex', sessionGuids: ['theirs-1'] }]), /needs the Catalyst server/)
   })
 
   await t.test('in-memory traces match the per-lap database queries they replace', async () => {
