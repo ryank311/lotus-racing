@@ -106,12 +106,41 @@ async function seed(con, sessions) {
   }
 }
 
-module.exports = { TOTAL_M, LAYOUT, OTHER_LINE, TRACK_YAML, lapRows, seed, speedAt, writeMeanLines }
+// Track layouts as a workspace stored them before the shared track library:
+// [{ meanLine, track?, config?, total?, corners: [{ turn, name, apex }], complexes?: [{ startM, endM, name }] }]
+async function seedLegacyLayouts(con, layouts) {
+  await con.run(`
+    CREATE TABLE IF NOT EXISTS track_layouts (mean_line_guid VARCHAR PRIMARY KEY, track_name VARCHAR, track_configuration_name VARCHAR,
+      total_dist_m DOUBLE, segments JSON, complexes_origin VARCHAR, seed_file VARCHAR,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS track_corners (mean_line_guid VARCHAR NOT NULL, turn VARCHAR NOT NULL, name VARCHAR, direction VARCHAR,
+      character VARCHAR, apex_idx DOUBLE NOT NULL, dist_idx_start DOUBLE, dist_idx_end DOUBLE, apex_lat DOUBLE, apex_lon DOUBLE,
+      apex_radius_m DOUBLE, PRIMARY KEY (mean_line_guid, turn));
+    CREATE TABLE IF NOT EXISTS track_complexes (mean_line_guid VARCHAR NOT NULL, start_m DOUBLE NOT NULL, end_m DOUBLE NOT NULL,
+      name VARCHAR, PRIMARY KEY (mean_line_guid, start_m));`)
+  for (const l of layouts) {
+    await con.run(`INSERT INTO track_layouts (mean_line_guid, track_name, track_configuration_name, total_dist_m, segments, complexes_origin)
+      VALUES (?, ?, ?, ?, ?, ?)`, [l.meanLine, l.track ?? LAYOUT.track, l.config ?? LAYOUT.config, l.total ?? TOTAL_M,
+      JSON.stringify([{ id: 1, start_dist_m: 0, end_dist_m: l.total ?? TOTAL_M }]), l.complexes?.length ? 'edited' : null])
+    for (const c of l.corners) {
+      await con.run('INSERT INTO track_corners (mean_line_guid, turn, name, direction, apex_idx, dist_idx_start, dist_idx_end) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [l.meanLine, c.turn, c.name, 'left', c.apex, c.apex - 30, c.apex + 30])
+    }
+    for (const c of l.complexes ?? []) {
+      await con.run('INSERT INTO track_complexes (mean_line_guid, start_m, end_m, name) VALUES (?, ?, ?, ?)', [l.meanLine, c.startM, c.endM, c.name])
+    }
+  }
+}
+
+module.exports = { TOTAL_M, LAYOUT, OTHER_LINE, TRACK_YAML, lapRows, seed, seedLegacyLayouts, speedAt, writeMeanLines }
 
 if (require.main === module) {
-  const [dbPath, spec] = process.argv.slice(2)
+  const [dbPath, spec, legacy] = process.argv.slice(2)
   const { initSchema, withDb } = require('../../dist-main/garmin/loadToDb.js')
   require('node:fs').mkdirSync(require('node:path').dirname(dbPath), { recursive: true })
-  withDb(async con => { await initSchema(con); await seed(con, JSON.parse(spec)) }, dbPath)
-    .then(() => process.exit(0), error => { console.error(error); process.exit(1) })
+  withDb(async con => {
+    await initSchema(con)
+    await seed(con, JSON.parse(spec))
+    if (legacy) await seedLegacyLayouts(con, JSON.parse(legacy))
+  }, dbPath).then(() => process.exit(0), error => { console.error(error); process.exit(1) })
 }

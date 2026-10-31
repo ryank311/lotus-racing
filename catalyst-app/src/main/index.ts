@@ -9,7 +9,7 @@ import {
   TRACKS_DIR, COACHING_DIR, SETTINGS_PATH,
 } from '../garmin/paths.js'
 import { openDb, initSchema } from '../garmin/loadToDb.js'
-import { seedTrackLayouts } from '../garmin/trackStore.js'
+import { prepareTrackLibrary } from '../garmin/trackStore.js'
 import fs from 'node:fs'
 import { startCatalystServer, type RunningCatalystServer } from './server.js'
 import { defaultServerDataDir } from './serverStorage.js'
@@ -195,8 +195,9 @@ app.whenReady().then(async () => {
     try {
       const db = await openDb(DB_PATH)
       await initSchema(db.con)
-      // Track YAML seeds the database once per layout; edits live in DuckDB.
-      await seedTrackLayouts(db.con).catch(e => console.error('[startup] track seed import failed:', e))
+      // The desktop workspace keeps its own track library: its older
+      // layouts and the track YAML seeds go into it once.
+      await prepareTrackLibrary(db.con)
       await db.close()
     } catch (e) {
       console.error('[startup] schema migration failed:', e)

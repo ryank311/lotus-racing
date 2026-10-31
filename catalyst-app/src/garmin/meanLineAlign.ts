@@ -27,27 +27,57 @@ export interface MeanLineTrace {
 const GUID_RE = /^[a-zA-Z0-9_-]{1,128}$/
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
-// A saved mean line, thinned to about one point every `stepM` metres (0: all).
-export function readMeanLineTrace(guid: string | null | undefined, stepM = 0): MeanLineTrace | null {
+// A saved mean line: its centreline, and the course it was recorded on.
+export interface MeanLineFile {
+  trace: MeanLineTrace
+  course: { configurationId: number | null; trackName: string | null; configName: string | null }
+}
+
+export function readMeanLineFile(guid: string | null | undefined): MeanLineFile | null {
   if (!guid || !GUID_RE.test(guid)) return null
   const file = path.join(MEAN_LINES_DIR, `${guid}.pb`)
   try {
     if (!fs.existsSync(file)) return null
-    const points = decodeMeanLine(new Uint8Array(fs.readFileSync(file))).points
-      .filter(p => finite(p.dist) && finite(p.lat) && finite(p.lon))
+    const ml = decodeMeanLine(new Uint8Array(fs.readFileSync(file)))
     const trace: MeanLineTrace = { guid, totalM: 0, dist: [], lat: [], lon: [] }
-    points.forEach((p, i) => {
+    for (const p of ml.points) {
+      if (!finite(p.dist) || !finite(p.lat) || !finite(p.lon)) continue
       const last = trace.dist.at(-1)
-      if (last != null && p.dist <= last) return
-      if (last != null && p.dist - last < stepM && i < points.length - 1) return
+      if (last != null && p.dist <= last) continue
       trace.dist.push(p.dist); trace.lat.push(p.lat); trace.lon.push(p.lon)
-    })
+    }
     trace.totalM = trace.dist.at(-1) ?? 0
-    return isMeanLineTrace(trace) ? trace : null
+    if (!isMeanLineTrace(trace)) return null
+    const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+    return {
+      trace,
+      course: {
+        configurationId: ml.track_configuration_id ? ml.track_configuration_id : null,
+        trackName: text(ml.track_name), configName: text(ml.track_configuration_name),
+      },
+    }
   } catch (error) {
-    console.warn(`[compare] could not read mean line ${guid}:`, error instanceof Error ? error.message : error)
+    console.warn(`[tracks] could not read mean line ${guid}:`, error instanceof Error ? error.message : error)
     return null
   }
+}
+
+// About one point every `stepM` metres, keeping both ends (0: unchanged).
+export function thinTrace(trace: MeanLineTrace, stepM: number): MeanLineTrace {
+  if (!(stepM > 0)) return trace
+  const out: MeanLineTrace = { guid: trace.guid, totalM: trace.totalM, dist: [], lat: [], lon: [] }
+  trace.dist.forEach((d, i) => {
+    const last = out.dist.at(-1)
+    if (last != null && d - last < stepM && i < trace.dist.length - 1) return
+    out.dist.push(d); out.lat.push(trace.lat[i]); out.lon.push(trace.lon[i])
+  })
+  return out
+}
+
+// A saved mean line, thinned to about one point every `stepM` metres (0: all).
+export function readMeanLineTrace(guid: string | null | undefined, stepM = 0): MeanLineTrace | null {
+  const file = readMeanLineFile(guid)
+  return file ? thinTrace(file.trace, stepM) : null
 }
 
 // Structural check for a mean line received from another backend.
@@ -136,6 +166,29 @@ export function distanceMap(theirs: MeanLineTrace, ours: MeanLineTrace): Distanc
   })
   map.push([theirs.totalM, ours.totalM])
   return map
+}
+
+// One position through the map (their metres → yours). Past either end it
+// carries on one to one: a corner zone that runs across the start/finish
+// line keeps its overhang.
+export function mapPosition(map: DistanceMap, x: number): number {
+  const first = map[0], last = map[map.length - 1]
+  if (x <= first[0]) return first[1] + (x - first[0])
+  if (x >= last[0]) return last[1] + (x - last[0])
+  let lo = 0, hi = map.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (map[mid][0] <= x) lo = mid
+    else hi = mid
+  }
+  const [t0, d0] = map[lo], [t1, d1] = map[hi]
+  return d0 + (d1 - d0) * (x - t0) / (t1 - t0)
+}
+
+// The same map the other way (your metres → theirs). Exact: both ways are
+// the same piecewise-linear line, so a round trip returns the start.
+export function invertMap(map: DistanceMap): DistanceMap {
+  return map.map(([t, d]) => [d, t])
 }
 
 // Their metres at one of yours. Beyond the ends the map continues at one to

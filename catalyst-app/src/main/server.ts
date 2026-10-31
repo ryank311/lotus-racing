@@ -8,6 +8,7 @@ import path from 'node:path'
 import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
 import { createDriverDirectory, type DriverDirectory } from './driverDirectory.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
+import { localTrackLibrary, serveTrackLibrary, type TrackLibrary } from '../garmin/trackLibrary.js'
 import { serveStaticAsset } from './staticAssets.js'
 
 export interface CatalystServerOptions {
@@ -30,7 +31,7 @@ export interface RunningCatalystServer {
 }
 
 interface WorkerReply {
-  type: 'ready' | 'fatal' | 'event' | 'rpc-result' | 'ai-keys'
+  type: 'ready' | 'fatal' | 'event' | 'rpc-result' | 'ai-keys' | 'tracks'
   requestId?: number
   ok?: boolean
   result?: unknown
@@ -40,7 +41,18 @@ interface WorkerReply {
   operation?: 'read' | 'write'
   keys?: AiKeys
   onlyMissing?: boolean
+  op?: string
+  args?: unknown[]
 }
+
+// What every driver's backend shares, owned by the server process.
+interface SharedServices {
+  aiKeys: AiKeyStore
+  tracks: TrackLibrary
+  // A backend changed a shared track layout.
+  tracksChanged(from: UserBackend): void
+}
+const TRACK_WRITES = new Set(['importLayout', 'saveCorners', 'saveComplexes'])
 
 interface PendingCall {
   resolve(value: unknown): void
@@ -102,7 +114,9 @@ class UserBackend {
     instanceDir: string,
     options: CatalystServerOptions,
     onClosed: () => void,
-    private aiKeys: AiKeyStore,
+    private shared: SharedServices,
+    // A one-off job instead of serving requests (see userWorker.ts).
+    task?: 'share-tracks',
   ) {
     // tsx runs the source tree in dev; packaged/compiled servers use JavaScript.
     const workerPath = path.join(__dirname, `userWorker${path.extname(__filename)}`)
@@ -117,6 +131,7 @@ class UserBackend {
         ...env,
         ELECTRON_RUN_AS_NODE: '1',
         CATALYST_INSTANCE_DIR: instanceDir,
+        ...(task ? { CATALYST_WORKER_TASK: task } : {}),
         ...(options.templateRoot ? { CATALYST_TEMPLATE_ROOT: options.templateRoot } : {}),
         ...(options.resourcesPath ? { CATALYST_BUNDLED_RESOURCES: options.resourcesPath } : {}),
       },
@@ -173,12 +188,21 @@ class UserBackend {
 
   private onMessage(message: WorkerReply): void {
     if (message.type === 'ai-keys') {
-      const operation = message.operation === 'read' ? this.aiKeys.read()
-        : message.operation === 'write' ? this.aiKeys.write(message.keys ?? {}, message.onlyMissing)
+      const { aiKeys } = this.shared
+      const operation = message.operation === 'read' ? aiKeys.read()
+        : message.operation === 'write' ? aiKeys.write(message.keys ?? {}, message.onlyMissing)
         : Promise.reject(new Error('Unknown key operation'))
       void operation.then(
         result => this.replyKeys(message.requestId, { ok: true, result }),
         () => this.replyKeys(message.requestId, { ok: false, error: 'Could not access AI key database' }),
+      )
+    } else if (message.type === 'tracks') {
+      void serveTrackLibrary(this.shared.tracks, message.op, message.args).then(
+        result => {
+          this.reply('tracks-result', message.requestId, { ok: true, result })
+          if (TRACK_WRITES.has(String(message.op)) && result !== false) this.shared.tracksChanged(this)
+        },
+        error => this.reply('tracks-result', message.requestId, { ok: false, error: error instanceof Error ? error.message : 'Track library request failed' }),
       )
     } else if (message.type === 'fatal') {
       this.fail(new Error(message.error ?? 'Backend startup failed'))
@@ -196,7 +220,16 @@ class UserBackend {
   }
 
   private replyKeys(requestId: number | undefined, reply: object): void {
-    if (this.child.connected) this.child.send({ type: 'ai-keys-result', requestId, ...reply }, () => {})
+    this.reply('ai-keys-result', requestId, reply)
+  }
+
+  private reply(type: string, requestId: number | undefined, reply: object): void {
+    if (this.child.connected) this.child.send({ type, requestId, ...reply }, () => {})
+  }
+
+  /** Tell a running worker that another driver changed a shared track layout. */
+  notifyTracksChanged(): void {
+    if (!this.failure && this.child.connected) this.child.send({ type: 'tracks-changed' }, () => {})
   }
 
   async waitUntilReady(): Promise<void> {
@@ -247,6 +280,13 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
 
   const aiKeys = databaseAiKeyStore(path.join(dataDir, 'catalyst-app.duckdb'))
   await migrateServerAiKeys(dataDir, aiKeys)
+  // Track layouts are shared by every driver: one library per server. When
+  // one driver changes a layout, the others' reviews recompute.
+  const tracks = localTrackLibrary(path.join(dataDir, 'catalyst-app.duckdb'))
+  const shared: SharedServices = {
+    aiKeys, tracks,
+    tracksChanged: from => { for (const backend of backends.values()) if (backend !== from) backend.notifyTracksChanged() },
+  }
 
   const secretPath = path.join(dataDir, '.session-secret')
   if (!fs.existsSync(secretPath)) {
@@ -287,7 +327,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       if (!fs.existsSync(accountPath)) fs.writeFileSync(accountPath, JSON.stringify({ username }, null, 2))
       backend = new UserBackend(username, instanceDir, options, () => {
         if (backends.get(key) === backend) backends.delete(key)
-      }, aiKeys)
+      }, shared)
       backends.set(key, backend)
     }
     return backend
@@ -295,6 +335,20 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
 
   // Drivers can read each other's sessions and laps for comparisons.
   const drivers = createDriverDirectory(dataDir, backendFor)
+
+  // Once per server: before the track library, each driver kept their own
+  // layouts. Every workspace shares its layouts with the library now (the
+  // one with the most corners wins a course), before anyone signs in, so a
+  // driver who has not opened the app since still contributes theirs.
+  if (!(await tracks.migrated('workspace-track-layouts'))) {
+    for (const username of drivers.list(null).filter(d => d.hasTelemetry).map(d => d.username)) {
+      const job = new UserBackend(username, userDirectory(dataDir, username), options, () => {}, shared, 'share-tracks')
+      try { await job.waitUntilReady() } catch (error) {
+        console.error(`[tracks] could not share ${username}'s track layouts; they are shared when ${username} next signs in:`, error)
+      } finally { await job.close() }
+    }
+    await tracks.markMigrated('workspace-track-layouts')
+  }
 
   const staticDir = options.staticDir ? path.resolve(options.staticDir) : null
   const server: Server = createServer(async (req, res) => {

@@ -193,7 +193,7 @@ export function registerApiHandlers(
   // Desktop only: the local server's drivers, for comparisons. Server
   // workers get comparisons already resolved by the server instead.
   drivers?: () => DriverDirectory | null,
-): { startReviews: () => Promise<void> } {
+): { startReviews: () => Promise<void>; tracksChanged: () => void } {
   // Comparison requests from the desktop renderer are resolved through the
   // local server; anything else (a server worker's input) is already the
   // compared drivers' exported laps.
@@ -739,12 +739,13 @@ export function registerApiHandlers(
     if (!fs.existsSync(DB_PATH)) return []
     const { rows, cornerCounts } = await withDb(async con => {
       const reader = await con.runAndReadAll(`
-        SELECT tc.track_name, tc.track_configuration_name, s.mean_line_guid,
-               COUNT(*) AS session_count
+        SELECT COALESCE(tc.track_name, ANY_VALUE(s.track_name)) AS track_name,
+               COALESCE(tc.track_configuration_name, ANY_VALUE(s.track_configuration_name)) AS track_configuration_name,
+               s.mean_line_guid, COUNT(*) AS session_count
         FROM sessions s
         LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
         WHERE s.mean_line_guid IS NOT NULL
-        GROUP BY 1, 2, 3
+        GROUP BY tc.track_name, tc.track_configuration_name, s.mean_line_guid
         ORDER BY session_count DESC
       `)
       return { rows: reader.getRowsJson(), cornerCounts: await trackLayoutCornerCounts(con) }
@@ -1169,5 +1170,10 @@ export function registerApiHandlers(
     })()
     return { sessionId: null }
   }
-  return { startReviews }
+  // Another driver changed a shared track layout: session reviews built on
+  // the old corners recompute.
+  const tracksChanged = () => {
+    if (reviewReady) void reviewReady.then(() => reviews.refresh()).catch(error => console.error('[review]', error))
+  }
+  return { startReviews, tracksChanged }
 }

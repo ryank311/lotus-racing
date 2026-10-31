@@ -38,7 +38,8 @@ test('the real Electron RunAsNode worker works without the Electron npm module',
     worker.send({ type: 'rpc', requestId, channel, args })
     return reply
   }
-  assert.equal((await rpc('profiles:writeCarMd', 'Car', 'Car.md', 'Packaged native DB test')).ok, true)
+  const written = await rpc('profiles:writeCarMd', 'Car', 'Car.md', 'Packaged native DB test')
+  assert.equal(written.ok, true, written.error)
   assert.equal((await rpc('profiles:readCarMd', 'Car')).result, 'Packaged native DB test')
   assert.equal((await rpc('tracks:get', '../invalid')).ok, false)
   assert.equal((await rpc('units:get')).result, 'imperial')

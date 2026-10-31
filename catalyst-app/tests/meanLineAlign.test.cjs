@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict')
 const { test } = require('node:test')
-const { distanceMap, remapLapSamples, mapToOwnLine } = require('../dist-main/garmin/meanLineAlign.js')
+const { distanceMap, remapLapSamples, mapToOwnLine, mapPosition, invertMap } = require('../dist-main/garmin/meanLineAlign.js')
 const { sameCourse, sameTrackLayout } = require('../dist-main/shared/trackLayout.js')
 
 // A course in local metres (x east, y north): 200 m north, a hairpin of
@@ -38,6 +38,14 @@ test('their metres map onto yours by position, hairpin legs included', () => {
   assert.ok(map.length > theirs.dist.length * 0.9, 'nearly every point matched')
   for (let i = 1; i < map.length; i++) assert.ok(map[i][0] > map[i - 1][0] && map[i][1] > map[i - 1][1], 'strictly increasing')
   for (const [t, d] of map) assert.ok(Math.abs(d - t / 1.03) < 0.05, `${t.toFixed(1)} m of theirs is ${(t / 1.03).toFixed(1)} m of yours, not ${d.toFixed(1)}`)
+})
+
+test('single positions map both ways exactly, overhangs past start/finish included', () => {
+  const map = [[0, 0], [505, 500], [1010, 1000]]
+  assert.equal(mapPosition(map, 252.5), 250)
+  assert.equal(mapPosition(map, 1037), 1027, 'a corner zone past the line end keeps its overhang')
+  assert.equal(mapPosition(map, -5), -5)
+  for (const x of [-5, 0, 123.4, 505, 777, 1010, 1037]) assert.ok(Math.abs(mapPosition(invertMap(map), mapPosition(map, x)) - x) < 1e-9, `round trip at ${x}`)
 })
 
 test('a line a few metres to the side still maps to the same spots', () => {

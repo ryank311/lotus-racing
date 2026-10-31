@@ -10,7 +10,6 @@ import { decodeOptimalLap, decodePerformance } from './decodePerformance.js'
 import type { CoachingSession } from '../shared/types.js'
 import type { SessionSummary } from './catalystClient.js'
 import { initReviewSchema, markReviewDirty } from './reviewSchema.js'
-import { initTrackSchema } from './trackStore.js'
 
 export function isoDurationToMs(s: string | undefined | null): number | null {
   if (!s || typeof s !== 'string' || !s.startsWith('PT')) return null
@@ -42,7 +41,16 @@ export function localSessionStart(value: string | null | undefined): string | nu
   return match ? `${match[1]} ${match[2]}` : String(value)
 }
 
-export async function initSchema(con: DuckDBConnection): Promise<void> {
+// Schema creation runs one call at a time in a process: two connections
+// creating the same table at once fail with a catalog write-write conflict.
+let schemaQueue: Promise<unknown> = Promise.resolve()
+export function initSchema(con: DuckDBConnection): Promise<void> {
+  const run = schemaQueue.then(() => createSchema(con))
+  schemaQueue = run.catch(() => {})
+  return run
+}
+
+async function createSchema(con: DuckDBConnection): Promise<void> {
   await con.run(`
     CREATE TABLE IF NOT EXISTS track_configs (
       track_cartography_id INTEGER,
@@ -215,7 +223,6 @@ export async function initSchema(con: DuckDBConnection): Promise<void> {
     );
   `)
   await initReviewSchema(con)
-  await initTrackSchema(con)
   await migrateLocalSessionStarts(con)
   await migrateOptimalLaps(con)
 }
@@ -492,22 +499,28 @@ export async function existingSessionGuids(con: DuckDBConnection): Promise<Set<s
 // already open" errors. We keep one shared instance per path so all openDb /
 // withDb calls in this process reuse the same lock and just create lightweight
 // connections from it.
-let _sharedInstance: DuckDBInstance | null = null
-let _sharedPath: string | null = null
+// One instance per database file for the life of the process. A process can
+// use more than one file (the Electron main process holds the desktop
+// workspace and the server's shared database), and replacing an instance
+// while another is still open on the same file is not safe.
+const _sharedInstances = new Map<string, Promise<DuckDBInstance>>()
 
-async function getSharedInstance(dbPath: string): Promise<DuckDBInstance> {
-  if (_sharedInstance && _sharedPath === dbPath) return _sharedInstance
-  _sharedInstance = await DuckDBInstance.create(dbPath, {})
-  _sharedPath = dbPath
-  return _sharedInstance
+function getSharedInstance(dbPath: string): Promise<DuckDBInstance> {
+  const key = path.resolve(dbPath)
+  let instance = _sharedInstances.get(key)
+  if (!instance) {
+    instance = DuckDBInstance.create(dbPath, {})
+    _sharedInstances.set(key, instance)
+    instance.catch(() => { if (_sharedInstances.get(key) === instance) _sharedInstances.delete(key) })
+  }
+  return instance
 }
 
-// Release the shared instance so the next openDb call creates a fresh one.
+// Release the shared instances so the next openDb call creates a fresh one.
 // Must be called before deleting the DB files (e.g. full rebuild), after
 // ensuring no connections are active.
 export function releaseSharedInstance(): void {
-  _sharedInstance = null
-  _sharedPath = null
+  _sharedInstances.clear()
 }
 
 // The `readOnly` parameter is accepted for call-site readability but is

@@ -185,16 +185,25 @@ exclusions are dropped), narrowed by the lap filter: Top 10, 5 or 3 overall,
 Session bests, or Top 3 per session:
 
 - **Corner complexes** run from one braking zone to the next. They are derived
-  from the layout's fastest valid lap and saved with the layout in the
-  workspace database, editable on the Tracks page. A complex stores only its
+  from the layout's fastest valid lap and saved with the layout in the shared
+  track library, editable on the Tracks page. A complex stores only its
   boundaries (and any name you type); its corner list and default name come
   from the current corners, so renaming a turn updates the coach immediately.
   Saving corners re-derives complexes the app derived, but keeps ones you edited.
-- **Track layouts** (named corners, segments, complexes) live in the workspace
-  database (`src/garmin/trackStore.ts`). `tracks/*.yaml` files are seeds only:
-  on startup, and on first use, each layout without a database record is
-  imported from its YAML once; after that the YAML is never read or written
-  for that layout.
+- **Track layouts** (named corners, segments, complexes) are shared by every
+  driver: one layout per course (Garmin's track configuration ID), in the
+  track library (`src/garmin/trackLibrary.ts`). On a server it lives in the
+  server's `catalyst-app.duckdb` and user workers reach it over private
+  process IPC; the desktop app keeps it in the workspace database. Each
+  Catalyst device records its own mean line for a course, so a layout's
+  positions are stored along the line it was drawn on and moved onto each
+  driver's own line on read and back on save (`src/garmin/trackStore.ts`,
+  `src/garmin/meanLineAlign.ts`). `tracks/*.yaml` files are seeds only: a
+  course with no layout is imported from its YAML once; after that the YAML
+  is never read or written for it. Layouts that workspaces kept before the
+  library are copied in once (on the server's first start after upgrading):
+  the one with the most corners wins a course, and edits made since are never
+  replaced.
 - **Phases per complex:** braking point, peak deceleration, brake release,
   minimum speed and where it happens, throttle pickup, coasting distance, and
   speed 100/200 m after the minimum (`src/garmin/lapPhases.ts`; braking and

@@ -11,7 +11,8 @@ import type { AiKeyStore, AiKeys } from './aiKeyStore.js'
 import { registerApiHandlers, type ApiHandler, type BackendEventTarget } from './ipc.js'
 import { DB_PATH, seedUserData } from '../garmin/paths.js'
 import { initSchema, openDb } from '../garmin/loadToDb.js'
-import { seedTrackLayouts } from '../garmin/trackStore.js'
+import { prepareTrackLibrary } from '../garmin/trackStore.js'
+import { remoteTrackLibrary, useTrackLibrary } from '../garmin/trackLibrary.js'
 
 interface RpcRequest {
   type: 'rpc'
@@ -20,26 +21,30 @@ interface RpcRequest {
   args: unknown[]
 }
 
-let keyRequestId = 0
-function keyRequest(operation: 'read' | 'write', keys?: AiKeys, onlyMissing?: boolean): Promise<any> {
+// Requests to the server process for data shared by every driver (AI keys,
+// the track library); answered as `<type>-result`.
+let serverRequestId = 0
+function serverRequest(type: 'ai-keys' | 'tracks', payload: object, label: string): Promise<any> {
   return new Promise((resolve, reject) => {
-    const requestId = ++keyRequestId
-    const timer = setTimeout(() => { cleanup(); reject(new Error('AI key database request timed out')) }, 30_000)
+    const requestId = ++serverRequestId
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`${label} request timed out`)) }, 30_000)
     const listener = (message: any) => {
-      if (message?.type !== 'ai-keys-result' || message.requestId !== requestId) return
+      if (message?.type !== `${type}-result` || message.requestId !== requestId) return
       cleanup()
       if (message.ok) resolve(message.result)
       else reject(new Error(message.error))
     }
     const cleanup = () => { clearTimeout(timer); process.off('message', listener) }
     process.on('message', listener)
-    send({ type: 'ai-keys', requestId, operation, keys, onlyMissing })
+    send({ type, requestId, ...payload })
   })
 }
 const aiKeys: AiKeyStore = {
-  read: () => keyRequest('read'),
-  write: (keys, onlyMissing) => keyRequest('write', keys, onlyMissing),
+  read: () => serverRequest('ai-keys', { operation: 'read' }, 'AI key database'),
+  write: (keys, onlyMissing) => serverRequest('ai-keys', { operation: 'write', keys, onlyMissing }, 'AI key database'),
 }
+// Track layouts are shared by every driver on the server.
+useTrackLibrary(remoteTrackLibrary((op, args) => serverRequest('tracks', { op, args }, 'Track library')))
 
 const handlers = new Map<string, ApiHandler>()
 
@@ -86,15 +91,22 @@ async function start(): Promise<void> {
     const db = await openDb(DB_PATH)
     try {
       await initSchema(db.con)
-      // Track YAML seeds the database once per layout; edits live in DuckDB.
-      try { await seedTrackLayouts(db.con) } catch (error) { console.error('[tracks] seed import failed:', error) }
+      // This workspace's older layouts and the track YAML seeds go into the
+      // server's shared track library.
+      await prepareTrackLibrary(db.con)
     } finally { await db.close() }
+  }
+  // The server's one-time pass over every driver's workspace stops here.
+  if (process.env.CATALYST_WORKER_TASK === 'share-tracks') {
+    send({ type: 'ready' })
+    return
   }
 
   const backend = registerApiHandlers((channel, handler) => handlers.set(channel, handler), () => eventTarget, undefined, aiKeys)
   void backend.startReviews().catch(error => console.error('[review startup]', error))
 
-  process.on('message', (message: RpcRequest) => {
+  process.on('message', (message: RpcRequest | { type: 'tracks-changed' }) => {
+    if (message?.type === 'tracks-changed') { backend.tracksChanged(); return }
     if (!message || message.type !== 'rpc') return
     const handler = handlers.get(message.channel)
     if (!handler) {
