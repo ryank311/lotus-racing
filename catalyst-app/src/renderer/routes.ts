@@ -2,8 +2,8 @@ import type { CoachingSession } from '../shared/types'
 import { coachingLapFilter } from '../shared/coachingScope'
 import { compareParams, isCompareParam } from '../shared/comparison'
 
-export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'account' | 'logs' | 'sign-in' | 'not-found'
-export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', account: '/account', logs: '/logs' } as const
+export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'import' | 'account' | 'logs' | 'sign-in' | 'not-found'
+export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', import: '/import', account: '/account', logs: '/logs' } as const
 export const MAX_ROUTE_LENGTH = 16000
 export const segment = (value: string) => encodeURIComponent(value)
 export function matchRoute(pathname: string): { page: Page; id?: string; fileId?: string } {

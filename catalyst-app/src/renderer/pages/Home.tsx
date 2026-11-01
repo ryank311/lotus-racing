@@ -9,6 +9,8 @@ import type { UnitSystem } from '../../shared/units'
 import { NavLink, useNavigation } from '../navigation'
 import { routeUrl, segment } from '../routes'
 import './home-dashboard.css'
+import './import.css'
+import { UploadQueue, VideoPickerButton } from '../components/VideoImport'
 
 interface Props {
   auth: AuthState | null
@@ -120,6 +122,12 @@ export function Home({ auth, stats, busy, signedIn, onSync, onRequestSignIn, onS
             )}
           </div>
         </div>
+
+        <section className="review-panel home-video-import" aria-label="Import PDR videos">
+          <p><b>Corvette PDR videos</b> · pick one or more <code>PDR_####.mp4</code> files; each is matched to the Garmin session it was recorded in and adds video, throttle, brake, gear and steering to that session. <NavLink to="/import">Manage videos →</NavLink></p>
+          <VideoPickerButton className="btn ghost" />
+          <div style={{ flexBasis: '100%' }}><UploadQueue compact /></div>
+        </section>
 
         <div className="home-workflow" aria-busy={!entryKnown}>
           {latest ? <LatestSessionCallout latest={latest} reviewAll={lastSessions()} />

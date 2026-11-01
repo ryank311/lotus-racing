@@ -96,10 +96,13 @@ async function seed(con, sessions) {
       s.meanLine ?? LAYOUT.meanLine, s.vehicle ?? 'car', s.detailsLoaded ?? true,
       Math.min(...s.laps.map(scale => lapRows(scale, line).durationMs)),
     ])
+    // Laps run back to back from 30 s into the session.
+    let lapStartMs = 30000
     for (const [index, scale] of s.laps.entries()) {
       const { rows, durationMs } = lapRows(scale, line)
-      await con.run("INSERT INTO laps (session_guid, lap_index, lap_type, duration_ms, lap_descriptor, sample_count) VALUES (?, ?, 'DRIVEN', ?, 0, ?)",
-        [s.sg, index, durationMs, rows.length])
+      await con.run("INSERT INTO laps (session_guid, lap_index, lap_type, duration_ms, start_time_session_ms, lap_descriptor, sample_count) VALUES (?, ?, 'DRIVEN', ?, ?, 0, ?)",
+        [s.sg, index, durationMs, lapStartMs, rows.length])
+      lapStartMs += durationMs
       const values = rows.map(r => `('${s.sg}', ${index}, ${r.d}, ${r.t}, ${r.lat}, ${r.lon}, ${r.v}, ${r.ax}, ${r.ay}, ${r.lateral})`).join(',')
       await con.run(`INSERT INTO samples (session_guid, lap_index, distance_m, time_ms, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2, lateral_position) VALUES ${values}`)
     }

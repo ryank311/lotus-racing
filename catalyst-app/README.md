@@ -124,6 +124,73 @@ driver's backend for a read-only export of the selected laps
 desktop app does the same through the local server it starts, so its own
 workspace can be compared against that server's drivers.
 
+## Corvette PDR videos and car data
+
+A Corvette Performance Data Recorder (PDR) writes its telemetry inside each
+`PDR_####.mp4` (on its SD card or USB drive, in `DCIM/100PDR02`): a data track
+named "Cougar PDR 2.0" (sample format `marl`) of 16-byte records, each a
+channel number, a signed value and a 100 ns timestamp on the video's own
+timeline. `pdrFile.ts` reads it straight from the MP4's sample table (no
+ffmpeg; a 3 GB video costs a few MB of reads). The channels and scales in
+`shared/pdr.ts` were identified against GPS and lap timing on a 2021 C8 at
+VIR: speed, engine RPM, throttle, brake, gear, steering angle, the four wheel
+speeds, lateral/longitudinal G, GPS position/heading/altitude, odometer and
+the PDR's own lap counter. The brake channel is linear in deceleration
+(≈1.1 g at 141) and shown as bar; that unit is inferred. Channels not
+identified yet (temperatures, pressures, PDR internals) are stored raw.
+
+**Import** (sidebar, ⌘9) or **Overview → Import PDR videos** takes one or more
+videos. Each is matched to the Garmin session it was recorded in, without
+choosing one:
+
+1. Sessions near the PDR's clock are candidates. The PDR writes local time;
+   whole-hour clock errors are tolerated. A candidate's telemetry is
+   downloaded first if it is missing.
+2. The car's speed is matched against each session's Garmin speed, second by
+   second over the whole overlap (lap times differ, so this finds the right
+   lap), then the PDR's GPS track against the Garmin positions to a few
+   hundredths of a second (`pdrAlign.ts`).
+3. The best match wins. A video that matches nothing (for example, the car
+   never moves) is kept unattached with the reason, and can be matched again
+   or attached to a session from that day by hand on the Import page.
+
+**Session Review → Attach PDR video** attaches to that session only.
+
+Uploads go up in 32 MB pieces (Cloudflare limits a request body to 100 MB),
+and the server decodes and matches in the background while the page polls
+(a proxied request may not take longer than 100 s). Videos are private to
+their driver's workspace (`garmin/data/videos/<id>.mp4`) and are served with
+range requests so the player can seek. The desktop app in development
+(Electron IPC) copies the picked file instead and plays it from
+`catalyst-video://`.
+
+What is stored, in the workspace database:
+
+- `session_videos` — one row per video: file, recording clock, length, the
+  session it is attached to, and the sync offset (session time = video time +
+  offset), as matched and as adjusted by hand.
+- `pdr_records` — every telemetry record, raw, so channels can be re-read or
+  re-scaled later without the video file.
+- `pdr_lap_samples` — the known channels on each lap's 1 m Garmin samples,
+  with the video time at each metre. Re-computed when the sync is nudged or
+  the session's laps are reloaded.
+
+Where it shows up:
+
+- **Analysis** adds throttle, brake pressure, gear/RPM, steering and
+  rear-wheel slip (rears vs fronts, against a no-slip baseline taken from
+  the session) charts for laps a video covers, and a video player above the
+  track map. Playing moves every chart's cursor and the map marker, and moves
+  on to the next lap at the line; hovering a chart while paused moves the
+  video there.
+- **Session Review** shows the video beside speed, throttle, brake, gear and
+  steering for one lap against the session's fastest, and a table of driver
+  inputs per corner: where braking starts, peak pressure, coasting time,
+  throttle pickup, lowest gear and steering.
+- **Import** lists every video with its session and laps, nudges the sync
+  (±0.1/0.5 s) if the video runs ahead of or behind the charts, re-matches
+  and deletes. Sessions with video are marked on the Sessions page.
+
 ## CLI scripts (run individually without the GUI)
 
 ```bash

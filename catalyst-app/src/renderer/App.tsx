@@ -23,6 +23,7 @@ const Progress = lazy(() => import('./pages/Progress').then(module => ({ default
 const AICoach = lazy(() => import('./pages/AICoach').then(module => ({ default: module.AICoach })))
 const Garage = lazy(() => import('./pages/Garage').then(module => ({ default: module.Garage })))
 const Tracks = lazy(() => import('./pages/Tracks').then(module => ({ default: module.Tracks })))
+const Import = lazy(() => import('./pages/Import').then(module => ({ default: module.Import })))
 const Analysis = lazy(() => import('./pages/Analysis').then(module => ({ default: module.Analysis })))
 const Account = lazy(() => import('./pages/Account').then(module => ({ default: module.Account })))
 const Logs = lazy(() => import('./pages/Logs').then(module => ({ default: module.Logs })))
@@ -366,6 +367,7 @@ export function App() {
             {page === 'progress' && (canView ? <Progress key={resourceScope} /> : <SignedOutGate feature="Progress" onSignIn={openLogin} />)}
             {page === 'garage' && (canView ? <Garage key={resourceScope} /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
             {page === 'tracks' && <Tracks />}
+            {page === 'import' && (canView ? <Import key={resourceScope} /> : <SignedOutGate feature="Import" onSignIn={openLogin} />)}
             {page === 'analysis' && (
               canView ? reportLoading || (reportId && !activeCoachSession && !reportError) ? <PageLoading title="Analysis" /> : reportError ? <div className="page-body" role="alert">{reportError} <NavLink to={routeUrl('/analysis', { session: [...selected] })}>Open telemetry</NavLink></div> : (
                 <Analysis key={resourceScope}

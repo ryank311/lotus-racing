@@ -16,6 +16,8 @@ import { selectLaps, type LapFilter } from '../shared/coachingScope.js'
 import { assertComparable, fetchSessionMeta, sessionLayout, vehicleLabelOf } from './coachPacket.js'
 import { buildComparison } from './driverComparison.js'
 import { alignComparisonBundles, comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
+import { carDataForLaps } from './videoStore.js'
+import type { CarData } from '../shared/pdr.js'
 
 // Canonical m/s → the active display unit. Threaded from buildAnalysis so a unit
 // toggle reflows the whole Analysis page on the next fetch.
@@ -273,6 +275,9 @@ export interface AnalysisData {
   // speedTraces, longgTraces, the time-delta traces and racingLines; every
   // other field describes your laps only.
   comparison: ComparisonData | null
+  // Car data and video from PDR videos attached to these sessions (your
+  // laps only); null when none are attached.
+  car: CarData | null
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +687,7 @@ export async function buildAnalysis(
       heatmap: null, cornerRows: [],
       theoreticalBestMs: null, avgLapMs: null, avgLapCount: 0, coachLine: null,
       garminOptimalMs: null, garminOptimalTimeDeltaTraces: [], excludedLapCount,
-      speedUnit, comparison: null,
+      speedUnit, comparison: null, car: null,
     }
     if (!laps.length) return empty
     for (const lap of allLaps) lap.isBest = false
@@ -794,6 +799,8 @@ export async function buildAnalysis(
       comparison.cornerBrakingRows = theirs.braking
     }
 
+    const car = await carDataForLaps(con, laps.map(lap => ({ sg: lap.sg, lapIdx: lap.lapIdx })), system)
+
     console.log(`[analysis] complete — ${ownLines.length + otherLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs / 1000).toFixed(3) + 's' : 'n/a'}`)
     return {
       ...empty,
@@ -803,7 +810,7 @@ export async function buildAnalysis(
       gg, trackMap, trackGeometry, racingLines: [...ownLines, ...otherLines], heatmap, cornerRows,
       theoreticalBestMs, avgLapMs, avgLapCount: representative.length, coachLine,
       garminOptimalMs: garminOptimal?.durationMs ?? null, garminOptimalTimeDeltaTraces: deltas.garmin,
-      comparison,
+      comparison, car,
     }
   } finally {
     await analysisDb.close()

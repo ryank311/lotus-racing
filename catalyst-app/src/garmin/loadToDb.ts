@@ -10,6 +10,7 @@ import { decodeOptimalLap, decodePerformance } from './decodePerformance.js'
 import type { CoachingSession } from '../shared/types.js'
 import type { SessionSummary } from './catalystClient.js'
 import { initReviewSchema, markReviewDirty } from './reviewSchema.js'
+import { initVideoSchema, refreshSessionVideos } from './videoStore.js'
 
 export function isoDurationToMs(s: string | undefined | null): number | null {
   if (!s || typeof s !== 'string' || !s.startsWith('PT')) return null
@@ -223,6 +224,7 @@ async function createSchema(con: DuckDBConnection): Promise<void> {
     );
   `)
   await initReviewSchema(con)
+  await initVideoSchema(con)
   await migrateLocalSessionStarts(con)
   await migrateOptimalLaps(con)
 }
@@ -345,14 +347,19 @@ export async function loadSessionSummary(con: DuckDBConnection, summary: Session
 
 export async function loadSession(con: DuckDBConnection, sessionDir: string): Promise<number> {
   await con.run('BEGIN TRANSACTION')
+  let count: number
   try {
-    const count = await loadSessionData(con, sessionDir)
+    count = await loadSessionData(con, sessionDir)
     await con.run('COMMIT')
-    return count
   } catch (error) {
     await con.run('ROLLBACK')
     throw error
   }
+  // Videos attached to this session follow its reloaded laps.
+  try { await refreshSessionVideos(con, path.basename(sessionDir)) } catch (error) {
+    console.error(`[video] could not re-sync videos for ${path.basename(sessionDir)}:`, error)
+  }
+  return count
 }
 
 async function loadSessionData(con: DuckDBConnection, sessionDir: string): Promise<number> {

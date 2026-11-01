@@ -85,6 +85,8 @@ export const DATA_DIR = INSTANCE_DIR
 
 export const SESSIONS_DIR = path.join(DATA_DIR, 'sessions')
 export const MEAN_LINES_DIR = path.join(DATA_DIR, 'mean_lines')
+// PDR videos attached to sessions (see videoStore.ts); one <video id>.mp4 each.
+export const VIDEOS_DIR = path.join(DATA_DIR, 'videos')
 
 export const CONFIG_PATH = path.join(GARMIN_DIR, 'config.json')
 export const GARTH_TOKEN_DIR = path.join(GARMIN_DIR, '.garth')

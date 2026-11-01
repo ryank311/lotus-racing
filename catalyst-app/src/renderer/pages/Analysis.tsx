@@ -3,7 +3,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
 import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart, type GGOverlay } from '../components/Charts'
-import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName, driverColor } from '../components/chartSeries'
+import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName, driverColor, carSeries } from '../components/chartSeries'
+import { LapVideo, type LapVideoOption } from '../components/LapVideo'
+import { traceKey } from '../components/carData'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
@@ -233,6 +235,18 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     return () => { cancelled = true; clearTimeout(timeout) }
   }, [selected, system, lapFilter, comparisons, loadAttempt])
 
+  // Laps with PDR video, fastest first; the player starts on the fastest.
+  const videoOptions = useMemo<LapVideoOption[]>(() => {
+    if (!data?.car) return []
+    const laps = new Map(data.laps.map(lap => [`${lap.sg}:${lap.lapIdx}`, lap]))
+    return data.car.traces
+      .filter(trace => trace.videoT.some(t => t != null) && laps.has(traceKey(trace)))
+      .map(trace => ({ trace, lap: laps.get(traceKey(trace))! }))
+      .sort((a, b) => a.lap.durationMs - b.lap.durationMs)
+      .map(({ trace, lap }) => ({ key: traceKey(trace), trace, label: `${lap.isBest ? '★ ' : ''}${lapName(lap)} · ${msToLap(lap.durationMs)}` }))
+  }, [data])
+  const [videoLap, setVideoLap] = useState<string | null>(null)
+
   const displayCoachResult = useMemo(() => {
     if (!coachResult) return null
     const sessions = [...(data?.sessions ?? [])]
@@ -402,6 +416,10 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
+          {data && !err && videoOptions.length > 0 && (
+            <LapVideo options={videoOptions} selected={videoLap} onSelect={setVideoLap}
+              hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} />
+          )}
           {data && !err
             ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={displayCoachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} focusAnnotation={focusedAnnotation} coachResult={displayCoachResult} />
             : <div className="analysis-map-placeholder" />
@@ -567,6 +585,13 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
   const timePlotSeries = useMemo(() => deltaMode === 'garmin' ? garminOptimalTimeDeltaSeries(data)
     : deltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data), [data, deltaMode])
   const longPlotSeries = useMemo(() => longGSeries(data), [data])
+  // PDR car data, when a video is attached to these sessions.
+  const [engineMode, setEngineMode] = useState<'gear' | 'rpm'>('gear')
+  const carCharts = useMemo(() => data.car?.traces.length ? {
+    throttle: carSeries(data, 'throttle'), brake: carSeries(data, 'brake'),
+    gear: carSeries(data, 'gear'), rpm: carSeries(data, 'rpm'),
+    steering: carSeries(data, 'steering'), slip: carSeries(data, 'slip'),
+  } : null, [data])
   // With other drivers, the segment heatmap can show everyone's laps against
   // the best split by anyone (default) or only yours.
   const [heatmapScope, setHeatmapScope] = useState<'all' | 'mine'>('all')
@@ -747,6 +772,36 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
             onXRangeChange={setXRange}
           />
         </ChartCard>
+
+        {carCharts && <>
+          <ChartCard channel="THROTTLE" meta={`% pedal · from the PDR · ${carCharts.throttle.length} laps with video`}>
+            <LineChart series={carCharts.throttle} height={240} yUnit="%" yRange={[0, 100]} corners={data.corners} segments={data.segments}
+              onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
+          </ChartCard>
+          <ChartCard channel="BRAKE PRESSURE" meta="bar · from the PDR">
+            <LineChart series={carCharts.brake} height={240} yUnit="bar" corners={data.corners} segments={data.segments}
+              onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
+          </ChartCard>
+          <ChartCard channel={engineMode === 'gear' ? 'GEAR' : 'ENGINE RPM'} meta="from the PDR"
+            controls={(
+              <div className="chart-mode-toggle" role="group" aria-label="Engine chart">
+                <button type="button" className={engineMode === 'gear' ? 'active' : ''} aria-pressed={engineMode === 'gear'} onClick={() => setEngineMode('gear')}>Gear</button>
+                <button type="button" className={engineMode === 'rpm' ? 'active' : ''} aria-pressed={engineMode === 'rpm'} onClick={() => setEngineMode('rpm')}>RPM</button>
+              </div>
+            )}>
+            <LineChart series={engineMode === 'gear' ? carCharts.gear : carCharts.rpm} height={220} yUnit={engineMode === 'gear' ? '' : 'rpm'}
+              corners={data.corners} segments={data.segments}
+              onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
+          </ChartCard>
+          <ChartCard channel="STEERING" meta="steering wheel angle · right positive">
+            <LineChart series={carCharts.steering} height={240} yUnit="°" zeroLine corners={data.corners} segments={data.segments}
+              onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
+          </ChartCard>
+          <ChartCard channel="REAR WHEEL SLIP" meta="% vs front wheels · positive = wheelspin · negative = rears slower (locking, engine braking)">
+            <LineChart series={carCharts.slip} height={220} yUnit="%" zeroLine corners={data.corners} segments={data.segments}
+              onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
+          </ChartCard>
+        </>}
 
         {(data.cornerBrakingRows?.length ?? 0) > 0 && (
           <ChartCard channel="BRAKING TECHNIQUE" meta="onset → release · distance relative to apex">

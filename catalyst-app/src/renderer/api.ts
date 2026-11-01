@@ -37,6 +37,70 @@ async function rpc<T>(channel: string, ...args: unknown[]): Promise<T> {
   return payload.result as T
 }
 
+// One chunk of a video upload, with byte progress (fetch has none).
+function putChunk(url: string, body: Blob, onProgress: (loaded: number) => void, signal?: AbortSignal): Promise<{ received: number }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    xhr.upload.onprogress = e => onProgress(e.loaded)
+    const abort = () => xhr.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    const done = () => signal?.removeEventListener('abort', abort)
+    xhr.onload = () => {
+      done()
+      let payload: any = {}
+      try { payload = JSON.parse(xhr.responseText) } catch { /* not JSON */ }
+      if (xhr.status === 200) resolve(payload)
+      else reject(Object.assign(new Error(payload.error ?? `Upload failed (${xhr.status})`), { status: xhr.status, received: payload.received }))
+    }
+    xhr.onerror = () => { done(); reject(new Error('The connection dropped during the upload.')) }
+    xhr.onabort = () => { done(); reject(new DOMException('Upload cancelled', 'AbortError')) }
+    xhr.send(body)
+  })
+}
+
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+// Videos go up in chunks (proxies such as Cloudflare cap request bodies),
+// resending a chunk that fails; the server then matches the video to a
+// session in the background while this polls for the result.
+async function uploadVideo(file: File, opts: import('../shared/types').VideoImportOptions = {}): Promise<import('../shared/pdr').VideoImportResult> {
+  const { onProgress, signal, sessionGuid = null } = opts
+  const started = await requestJson('/api/videos/uploads', {
+    method: 'POST', body: JSON.stringify({ fileName: file.name, size: file.size, sessionGuid }),
+  }) as { uploadId: string; chunkSize: number }
+  const base = `/api/videos/uploads/${started.uploadId}`
+  try {
+    let offset = 0, failures = 0
+    while (offset < file.size) {
+      signal?.throwIfAborted()
+      const at = offset
+      try {
+        const reply = await putChunk(`${remoteBaseUrl}${base}?offset=${at}`, file.slice(at, at + started.chunkSize), loaded => onProgress?.(at + loaded, file.size, 'uploading'), signal)
+        offset = reply.received
+        failures = 0
+      } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.status === 404 || ++failures > 5) throw error
+        if (typeof error?.received === 'number') offset = error.received
+        await pause(1000 * failures)
+      }
+    }
+    onProgress?.(file.size, file.size, 'matching')
+    await requestJson(`${base}/finish`, { method: 'POST', body: '{}' })
+  } catch (error) {
+    void requestJson(base, { method: 'DELETE' }).catch(() => {})
+    throw error
+  }
+  for (;;) {
+    await pause(1500)
+    const status = await requestJson(base)
+    if (status.state === 'done') return status.result
+    if (status.state === 'failed') throw new Error(status.error ?? 'The video could not be imported.')
+  }
+}
+
 type EventListener = (payload: any) => void
 const eventListeners = new Map<string, Set<EventListener>>()
 let eventSource: EventSource | null = null
@@ -140,6 +204,15 @@ const remoteBridge: CatalystBridge = {
   listTracks: () => rpc('tracks:listAll'),
   getTrack: meanLineGuid => rpc('tracks:get', meanLineGuid),
   saveTrackCorners: opts => rpc('tracks:saveCorners', opts),
+
+  listVideos: () => rpc('videos:listAll'),
+  listSessionVideos: guid => rpc('videos:list', guid),
+  importVideo: (file, opts) => uploadVideo(file, opts),
+  matchVideo: (id, guid) => rpc('videos:match', id, guid ?? null),
+  deleteVideo: id => rpc('videos:delete', id),
+  setVideoOffset: (id, offsetS) => rpc('videos:setOffset', id, offsetS),
+  getSessionCarData: guid => rpc('videos:carData', guid),
+  videoUrl: id => `${remoteBaseUrl}/api/videos/${encodeURIComponent(id)}.mp4`,
 }
 
 export const api: CatalystBridge = isRemote ? remoteBridge : window.catalyst

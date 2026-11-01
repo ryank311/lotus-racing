@@ -33,6 +33,7 @@ Navigate by clicking sidebar items or footer buttons:
 | AI Coach | Sidebar — "AI Coach" (⌘6) |
 | Garage | Sidebar — "Garage" (⌘7) |
 | Tracks | Sidebar — "Tracks" (⌘8) |
+| Import | Sidebar — "Import" (⌘9) — PDR videos and car documents |
 | Logs | Sidebar footer — bug icon button ("Debug logs") |
 
 To click a sidebar item: take a snapshot, find the `uid` for the button/link, then use `mcp__chrome-devtools__click`.

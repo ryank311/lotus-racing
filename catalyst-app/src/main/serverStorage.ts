@@ -27,3 +27,8 @@ export function defaultServerDataDir(): string {
 export function workspaceDbPath(instanceDir: string): string {
   return path.join(instanceDir, 'garmin', 'data', 'catalyst-app.duckdb')
 }
+
+// Mirrors paths.ts VIDEOS_DIR for an instance directory.
+export function workspaceVideoDir(instanceDir: string): string {
+  return path.join(instanceDir, 'garmin', 'data', 'videos')
+}

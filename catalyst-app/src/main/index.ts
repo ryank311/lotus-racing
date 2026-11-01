@@ -1,13 +1,15 @@
 // Electron main entry — creates the window, registers IPC.
 
-import { app, BrowserWindow, Menu } from 'electron'
+import { app, BrowserWindow, Menu, protocol } from 'electron'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { registerIpc } from './electronIpc.js'
 import { loadInitialBounds, trackWindowState } from './windowState.js'
 import {
   seedUserData, DB_PATH, REPO_ROOT, GARMIN_DIR, DATA_DIR,
-  TRACKS_DIR, COACHING_DIR, SETTINGS_PATH,
+  TRACKS_DIR, COACHING_DIR, SETTINGS_PATH, VIDEOS_DIR,
 } from '../garmin/paths.js'
+import { VIDEO_ID_RE } from '../shared/pdr.js'
 import { openDb, initSchema } from '../garmin/loadToDb.js'
 import { prepareTrackLibrary } from '../garmin/trackStore.js'
 import fs from 'node:fs'
@@ -16,6 +18,29 @@ import { defaultServerDataDir } from './serverStorage.js'
 import { migrateDesktopWorkspace } from './desktopMigration.js'
 
 const isDev = process.env.NODE_ENV === 'development'
+
+// The desktop (IPC) renderer plays workspace videos from catalyst-video://
+// with range requests, so the player can seek.
+protocol.registerSchemesAsPrivileged([{ scheme: 'catalyst-video', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true } }])
+
+function serveWorkspaceVideo(request: Request): Response {
+  const id = decodeURIComponent(new URL(request.url).pathname.replace(/^\//, '').replace(/\.mp4$/, ''))
+  const file = path.join(VIDEOS_DIR, `${id}.mp4`)
+  if (!VIDEO_ID_RE.test(id) || !fs.existsSync(file)) return new Response('Video not found', { status: 404 })
+  const { size } = fs.statSync(file)
+  const headers: Record<string, string> = { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' }
+  const m = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get('range') ?? '')
+  let start = 0, end = size - 1, status = 200
+  if (m && (m[1] || m[2])) {
+    if (m[1]) { start = Number(m[1]); end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1 } else start = Math.max(0, size - Number(m[2]))
+    if (start > end || start >= size) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size}` } })
+    status = 206
+    headers['Content-Range'] = `bytes ${start}-${end}/${size}`
+  }
+  headers['Content-Length'] = String(end - start + 1)
+  const body = Readable.toWeb(fs.createReadStream(file, { start, end })) as unknown as ReadableStream
+  return new Response(body, { status, headers })
+}
 
 const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
 const iconPath = app.isPackaged
@@ -207,6 +232,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) {
     try { app.dock.setIcon(iconPath) } catch {}
   }
+  protocol.handle('catalyst-video', serveWorkspaceVideo)
   registerIpc(() => mainWindow, () => webServer?.drivers ?? null)
   installAppMenu(() => mainWindow)
   createWindow()

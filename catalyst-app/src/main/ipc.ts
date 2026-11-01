@@ -11,7 +11,11 @@ import {
   DATA_DIR,
   CONFIG_PATH,
   INSTANCE_DIR,
+  VIDEOS_DIR,
 } from '../garmin/paths.js'
+import { deleteSessionVideo, importVideo, listAllVideos, listSessionVideos, rematchVideo, setVideoOffset } from '../garmin/videoStore.js'
+import { sessionCarData } from '../garmin/sessionCarData.js'
+import { MAX_VIDEO_BYTES, VIDEO_ID_RE, type VideoImportResult } from '../shared/pdr.js'
 import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
 import { configuredModelFor, DEFAULT_REASONING_EFFORT, maxOutputTokensFor } from '../shared/aiModels.js'
 import { loadConfig, saveConfig, setAccountEmail, setCredentials } from '../garmin/config.js'
@@ -332,6 +336,7 @@ export function registerApiHandlers(
             s.temperature_c,
             COALESCE(s.mean_line_guid, CAST(s.track_configuration_id AS VARCHAR)) AS layout_key,
             s.track_configuration_id,
+            CAST((SELECT COUNT(*) FROM session_videos v WHERE v.session_guid = s.session_guid) AS INTEGER) AS video_count,
             MIN(s.best_lap_ms) OVER (PARTITION BY COALESCE(s.mean_line_guid, CAST(s.track_configuration_id AS VARCHAR)), s.vehicle_guid, s.account) AS layout_best_ms
           FROM sessions s
           LEFT JOIN track_configs tc ON tc.track_configuration_id = s.track_configuration_id
@@ -1015,6 +1020,67 @@ export function registerApiHandlers(
   // Read-only: the server calls this on a compared driver's backend. Uses
   // only telemetry already in this workspace; never syncs or downloads.
   register('compare:export', (_e, sessionGuids: string[], lapFilter?: LapFilter) => exportComparison(sessionGuids, lapFilter))
+
+  // ---- PDR videos --------------------------------------------------------
+  // Videos live in VIDEOS_DIR as <video id>.mp4. The server streams uploads
+  // there and then calls videos:import; the desktop app copies the chosen
+  // file there (videos:importPath). Each is matched to the session it was
+  // recorded in (downloading that session's telemetry if needed).
+  const sessionId = (guid: unknown): string => {
+    if (typeof guid !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(guid)) throw new Error('Invalid session ID')
+    return guid
+  }
+  const optionalSession = (guid: unknown): string | null => (guid == null || guid === '' ? null : sessionId(guid))
+  const videoId = (id: unknown): string => {
+    if (typeof id !== 'string' || !VIDEO_ID_RE.test(id)) throw new Error('Invalid video ID')
+    return id
+  }
+  const videoName = (name: unknown): string => {
+    const base = path.basename(String(name ?? '')).slice(0, 200)
+    return base && base !== '.' && base !== '..' ? base : 'PDR video.mp4'
+  }
+  const ensureVideoDetails = (guids: string[]) => ensureSessionDetails(guids)
+  const importVideoFile = async (id: string, guid: string | null, fileName: string): Promise<VideoImportResult> => {
+    const filePath = path.join(VIDEOS_DIR, `${id}.mp4`)
+    if (!fs.existsSync(filePath)) throw new Error('The uploaded video is missing. Upload it again.')
+    try {
+      return await withDb(con => importVideo(con, {
+        videoId: id, sessionGuid: guid, filePath, fileName, sizeBytes: fs.statSync(filePath).size, ensureDetails: ensureVideoDetails,
+      }), DB_PATH)
+    } catch (error) {
+      // Not a readable PDR video: nothing is kept.
+      fs.rmSync(filePath, { force: true })
+      throw error
+    }
+  }
+  register('videos:listAll', () => fs.existsSync(DB_PATH) ? withDb(listAllVideos, DB_PATH) : [])
+  register('videos:list', (_e, guid: string) => withDb(con => listSessionVideos(con, sessionId(guid)), DB_PATH))
+  // Server only (not reachable from /api/rpc): the upload is already on disk.
+  register('videos:import', (_e, id: string, fileName: string, guid?: string | null) => importVideoFile(videoId(id), optionalSession(guid), videoName(fileName)))
+  // Desktop only: copy a file the driver picked into the workspace.
+  register('videos:importPath', async (_e, sourcePath: string, fileName?: string, guid?: string | null) => {
+    if (INSTANCE_DIR) throw new Error('Remote imports must upload the video')
+    const source = String(sourcePath ?? '')
+    if (!source || !fs.existsSync(source) || !fs.statSync(source).isFile()) throw new Error('That video file could not be read.')
+    if (fs.statSync(source).size > MAX_VIDEO_BYTES) throw new Error('That video is too large.')
+    const id = randomUUID()
+    fs.mkdirSync(VIDEOS_DIR, { recursive: true })
+    await fs.promises.copyFile(source, path.join(VIDEOS_DIR, `${id}.mp4`))
+    return importVideoFile(id, optionalSession(guid), videoName(fileName ?? source))
+  })
+  // Match again: to a chosen session, or (null) the best match.
+  register('videos:match', (_e, id: string, guid?: string | null) =>
+    withDb(con => rematchVideo(con, videoId(id), optionalSession(guid), ensureVideoDetails), DB_PATH))
+  register('videos:delete', async (_e, id: string) => {
+    const removed = await withDb(con => deleteSessionVideo(con, videoId(id)), DB_PATH)
+    fs.rmSync(path.join(VIDEOS_DIR, `${videoId(id)}.mp4`), { force: true })
+    return !!removed
+  })
+  register('videos:setOffset', (_e, id: string, offsetS: number | null) => {
+    if (offsetS !== null && (typeof offsetS !== 'number' || !Number.isFinite(offsetS) || Math.abs(offsetS) > 7 * 86_400)) throw new Error('Invalid video offset')
+    return withDb(con => setVideoOffset(con, videoId(id), offsetS), DB_PATH)
+  })
+  register('videos:carData', (_e, guid: string) => withDb(con => sessionCarData(con, sessionId(guid), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
 
   // ---- workers ---------------------------------------------------------
 

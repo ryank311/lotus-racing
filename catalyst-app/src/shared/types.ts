@@ -4,6 +4,14 @@ import type { UnitSystem } from './units.js'
 import type { LapFilter } from './coachingScope.js'
 import type { ComparisonRequest, DriverAccount } from './comparison.js'
 import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
+import type { SessionCarData, SessionVideo, VideoImportResult } from './pdr.js'
+
+export interface VideoImportOptions {
+  // Attach to this session only; otherwise the best match is found.
+  sessionGuid?: string | null
+  onProgress?: (sentBytes: number, totalBytes: number, phase: 'uploading' | 'matching') => void
+  signal?: AbortSignal
+}
 
 export interface SessionSummary {
   sessionGuid: string
@@ -50,6 +58,8 @@ export interface DbSessionRow {
   // Garmin's course ID. Unlike the mean line it is shared by every driver,
   // so it matches another driver's sessions to yours.
   track_configuration_id?: number | null
+  // PDR videos attached to the session.
+  video_count?: number
   lap_count: number
   sample_count: number
   weather_description: string | null
@@ -494,6 +504,19 @@ export interface CatalystBridge {
     meanLineGuid: string
     corners: TrackCornerPayload[]
   }): Promise<{ cornerCount: number }>
+
+  // PDR videos: uploaded, matched to the session they were recorded in.
+  listVideos(): Promise<SessionVideo[]>
+  listSessionVideos(sessionGuid: string): Promise<SessionVideo[]>
+  importVideo(file: File, opts?: VideoImportOptions): Promise<VideoImportResult>
+  // Match again: to a chosen session, or (no session) the best match.
+  matchVideo(videoId: string, sessionGuid?: string | null): Promise<VideoImportResult>
+  deleteVideo(videoId: string): Promise<boolean>
+  // Nudge the sync (session time = video time + offset); null resets it.
+  setVideoOffset(videoId: string, offsetS: number | null): Promise<SessionVideo>
+  getSessionCarData(sessionGuid: string): Promise<SessionCarData>
+  // Where the player loads the video from.
+  videoUrl(videoId: string): string
 }
 
 declare global {

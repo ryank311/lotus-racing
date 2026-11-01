@@ -1,11 +1,14 @@
 /** Passwordless multi-user HTTP server for Catalyst Coach. */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { accountKey, defaultServerDataDir, userDirectory, USER_RE } from './serverStorage.js'
+import { pipeline } from 'node:stream/promises'
+import { Transform } from 'node:stream'
+import { accountKey, defaultServerDataDir, userDirectory, USER_RE, workspaceVideoDir } from './serverStorage.js'
+import { MAX_VIDEO_BYTES, VIDEO_ID_RE, VIDEO_UPLOAD_CHUNK } from '../shared/pdr.js'
 import { createDriverDirectory, type DriverDirectory } from './driverDirectory.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
 import { localTrackLibrary, serveTrackLibrary, type TrackLibrary } from '../garmin/trackLibrary.js'
@@ -62,6 +65,56 @@ interface PendingCall {
 
 const COOKIE = 'catalyst_session'
 const MAX_BODY = 25 * 1024 * 1024
+// Backend calls the server makes itself; never from /api/rpc.
+const INTERNAL_CHANNELS = new Set(['videos:import', 'videos:importPath'])
+
+// A video arriving in chunks (each request stays under Cloudflare's body
+// limit). Chunks append to a part file in the driver's videos folder.
+interface VideoUpload {
+  id: string
+  owner: string
+  username: string
+  dir: string
+  partPath: string
+  size: number
+  received: number
+  fileName: string
+  sessionGuid: string | null
+  busy: boolean
+  touched: number
+}
+const UPLOAD_IDLE_MS = 60 * 60 * 1000
+interface VideoImport { owner: string; state: 'importing' | 'done' | 'failed'; result?: unknown; error?: string; touched: number }
+
+// Serve a file with HTTP range support (video seeking).
+function serveFileRange(req: IncomingMessage, res: ServerResponse, filePath: string, contentType: string): void {
+  const { size } = fs.statSync(filePath)
+  const headers: Record<string, string | number> = {
+    'Content-Type': contentType, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=3600',
+  }
+  const range = req.headers.range
+  let start = 0, end = size - 1
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim())
+    if (m && (m[1] || m[2])) {
+      if (m[1]) { start = Number(m[1]); end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1 }
+      else { start = Math.max(0, size - Number(m[2])) }
+    }
+    if (!m || start > end || start >= size) {
+      res.writeHead(416, { 'Content-Range': `bytes */${size}` })
+      res.end()
+      return
+    }
+    res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': end - start + 1 })
+  } else {
+    res.writeHead(200, { ...headers, 'Content-Length': size })
+  }
+  if (req.method === 'HEAD' || size === 0) { res.end(); return }
+  const stream = fs.createReadStream(filePath, { start, end })
+  stream.on('error', () => res.destroy())
+  res.on('close', () => stream.destroy())
+  stream.pipe(res)
+}
 function parseCookies(req: IncomingMessage): Record<string, string> {
   const out: Record<string, string> = {}
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -297,6 +350,19 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   // opening the same hashed database directory (for example Ryan vs ryan).
   const backends = new Map<string, UserBackend>()
   let closing = false
+  const uploads = new Map<string, VideoUpload>()
+  const imports = new Map<string, VideoImport>()
+  // Abandoned uploads (closed tab, lost connection) are removed after an hour.
+  const sweepUploads = () => {
+    for (const upload of uploads.values()) {
+      if (upload.busy || Date.now() - upload.touched < UPLOAD_IDLE_MS) continue
+      uploads.delete(upload.id)
+      fs.rmSync(upload.partPath, { force: true })
+    }
+    for (const [id, job] of imports) if (job.state !== 'importing' && Date.now() - job.touched > UPLOAD_IDLE_MS) imports.delete(id)
+  }
+  const sweepTimer = setInterval(sweepUploads, 10 * 60 * 1000)
+  sweepTimer.unref()
 
   const sign = (username: string): string => {
     const encoded = Buffer.from(username, 'utf8').toString('base64url')
@@ -358,7 +424,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         'Access-Control-Allow-Origin': origin ?? '*',
         'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
         'Vary': 'Origin',
       })
       res.end()
@@ -417,7 +483,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       if (url.pathname === '/api/rpc' && req.method === 'POST') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         const body = await readJson(req)
-        if (typeof body?.channel !== 'string' || !Array.isArray(body.args)) {
+        if (typeof body?.channel !== 'string' || !Array.isArray(body.args) || INTERNAL_CHANNELS.has(body.channel)) {
           json(res, 400, { error: 'Invalid RPC request' }, origin)
           return
         }
@@ -431,6 +497,105 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         json(res, 200, { result }, origin)
         return
       }
+      // ---- PDR videos: chunked upload, then the worker matches it ----
+      if (url.pathname === '/api/videos/uploads' && req.method === 'POST') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const body = await readJson(req)
+        const size = Number(body?.size)
+        const fileName = path.basename(String(body?.fileName ?? '')).slice(0, 200)
+        const sessionGuid = body?.sessionGuid == null || body.sessionGuid === '' ? null : String(body.sessionGuid)
+        if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_VIDEO_BYTES) { json(res, 400, { error: 'Choose a video under 16 GB.' }, origin); return }
+        if (!/\.(mp4|mov)$/i.test(fileName)) { json(res, 400, { error: 'PDR videos are .mp4 files.' }, origin); return }
+        if (sessionGuid !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionGuid)) { json(res, 400, { error: 'Invalid session ID' }, origin); return }
+        sweepUploads()
+        const dir = workspaceVideoDir(userDirectory(dataDir, username))
+        const incoming = path.join(dir, '.incoming')
+        fs.mkdirSync(incoming, { recursive: true })
+        // Part files left by a server restart mid-upload.
+        for (const name of fs.readdirSync(incoming)) {
+          const part = path.join(incoming, name)
+          if (!uploads.has(name.replace(/\.part$/, '')) && Date.now() - fs.statSync(part).mtimeMs > UPLOAD_IDLE_MS) fs.rmSync(part, { force: true })
+        }
+        const id = randomUUID()
+        const upload: VideoUpload = {
+          id, owner: accountKey(username), username, dir, partPath: path.join(incoming, `${id}.part`),
+          size, received: 0, fileName, sessionGuid, busy: false, touched: Date.now(),
+        }
+        fs.writeFileSync(upload.partPath, '')
+        uploads.set(id, upload)
+        json(res, 200, { uploadId: id, chunkSize: VIDEO_UPLOAD_CHUNK }, origin)
+        return
+      }
+      const uploadMatch = /^\/api\/videos\/uploads\/([0-9a-f-]{36})(\/finish)?$/.exec(url.pathname)
+      if (uploadMatch) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        // A finished upload being decoded and matched; the client polls this.
+        const job = imports.get(uploadMatch[1])
+        if (job && job.owner === accountKey(username) && !uploadMatch[2] && req.method === 'GET') {
+          job.touched = Date.now()
+          json(res, 200, { state: job.state, result: job.result, error: job.error }, origin)
+          return
+        }
+        const upload = uploads.get(uploadMatch[1])
+        if (!upload || upload.owner !== accountKey(username)) { json(res, 404, { error: 'This upload is no longer open. Start it again.' }, origin); return }
+        if (upload.busy) { json(res, 409, { error: 'This upload is busy', received: upload.received }, origin); return }
+        upload.touched = Date.now()
+        if (!uploadMatch[2] && req.method === 'GET') { json(res, 200, { state: 'uploading', received: upload.received }, origin); return }
+        if (!uploadMatch[2] && req.method === 'PUT') {
+          const offset = Number(url.searchParams.get('offset'))
+          if (offset !== upload.received) { json(res, 409, { error: 'Upload out of order', received: upload.received }, origin); return }
+          const limit = Math.min(VIDEO_UPLOAD_CHUNK * 2, upload.size - upload.received)
+          let bytes = 0
+          upload.busy = true
+          try {
+            await pipeline(req, new Transform({
+              transform(chunk: Buffer, _enc, done) {
+                bytes += chunk.length
+                done(bytes > limit ? new Error('Chunk too large') : null, chunk)
+              },
+            }), fs.createWriteStream(upload.partPath, { flags: 'r+', start: upload.received }))
+            upload.received += bytes
+          } catch (error) {
+            // Drop whatever part of the chunk landed; the client resends it.
+            fs.truncateSync(upload.partPath, upload.received)
+            throw error
+          } finally { upload.busy = false }
+          json(res, 200, { received: upload.received }, origin)
+          return
+        }
+        if (!uploadMatch[2] && req.method === 'DELETE') {
+          uploads.delete(upload.id)
+          fs.rmSync(upload.partPath, { force: true })
+          json(res, 200, { ok: true }, origin)
+          return
+        }
+        if (uploadMatch[2] && req.method === 'POST') {
+          if (upload.received !== upload.size) { json(res, 409, { error: 'The upload is incomplete', received: upload.received }, origin); return }
+          uploads.delete(upload.id)
+          fs.renameSync(upload.partPath, path.join(upload.dir, `${upload.id}.mp4`))
+          // Matching can download session telemetry first, which may outlast
+          // a proxy's request timeout: run it in the background.
+          const importJob: VideoImport = { owner: upload.owner, state: 'importing', touched: Date.now() }
+          imports.set(upload.id, importJob)
+          backendFor(username).call('videos:import', [upload.id, upload.fileName, upload.sessionGuid]).then(
+            result => { importJob.state = 'done'; importJob.result = result },
+            error => { importJob.state = 'failed'; importJob.error = error instanceof Error ? error.message : String(error) },
+          )
+          json(res, 202, { state: 'importing' }, origin)
+          return
+        }
+        json(res, 405, { error: 'Method not allowed' }, origin)
+        return
+      }
+      const videoMatch = /^\/api\/videos\/([0-9a-f-]{36})\.mp4$/.exec(url.pathname)
+      if (videoMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const file = path.join(workspaceVideoDir(userDirectory(dataDir, username)), `${videoMatch[1]}.mp4`)
+        if (!VIDEO_ID_RE.test(videoMatch[1]) || !fs.existsSync(file)) { json(res, 404, { error: 'Video not found' }, origin); return }
+        serveFileRange(req, res, file, 'video/mp4')
+        return
+      }
+
       if (url.pathname === '/api/drivers' && req.method === 'GET') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         json(res, 200, { drivers: drivers.list(username) }, origin)
@@ -477,6 +642,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
     host, port, url: `http://${publicHost}:${port}`, drivers,
     close: async () => {
       closing = true
+      clearInterval(sweepTimer)
       // Give open requests a moment, then drop them so a restart stays short.
       const force = setTimeout(() => server.closeAllConnections(), 5_000)
       try {

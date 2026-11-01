@@ -363,7 +363,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                         style={{ accentColor: 'var(--signal)' }}
                       />
                     </td>
-                    <td className="small">{r.session_start ?? '—'}</td>
+                    <td className="small">{r.session_start ?? '—'}{(r.video_count ?? 0) > 0 && <span className="session-video-badge" title={`${r.video_count} PDR video${r.video_count === 1 ? '' : 's'} attached`} aria-label="Has PDR video">▶ video</span>}</td>
                     <td>{r.track_name ?? '—'}
                       {!r.details_loaded && <span className="session-detail-status">
                         {downloading.has(r.session_guid) ? 'Downloading…' : 'Overview only'}

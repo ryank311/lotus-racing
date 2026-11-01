@@ -3,7 +3,7 @@ import { ServerUserSwitcher } from './ServerGate'
 import { NavLink, useOverlay } from '../navigation'
 import { paths } from '../routes'
 
-export type NavKey = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'logs' | 'account'
+export type NavKey = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'import' | 'logs' | 'account'
 
 interface NavSpec {
   key: NavKey
@@ -50,7 +50,14 @@ const TracksIcon = () => (
   </svg>
 )
 
-// ⌘1–⌘8 follow this order.
+const ImportIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
+    <path d="M12 4V15" /><path d="M7 10L12 15L17 10" />
+    <path d="M4 17V20H20V17" />
+  </svg>
+)
+
+// ⌘1–⌘9 follow this order.
 const NAV: NavSpec[] = [
   { key: 'home',     label: 'Overview',       icon: <HomeIcon /> },
   { key: 'sessions', label: 'Sessions',       icon: <SessionsIcon /> },
@@ -60,6 +67,7 @@ const NAV: NavSpec[] = [
   { key: 'coach',    label: 'AI Coach',       icon: <CoachIcon /> },
   { key: 'garage',   label: 'Garage',         icon: <GarageIcon /> },
   { key: 'tracks',   label: 'Tracks',         icon: <TracksIcon /> },
+  { key: 'import',   label: 'Import',         icon: <ImportIcon /> },
 ]
 
 const BugIcon = () => (
@@ -149,7 +157,7 @@ export function Sidebar({ active, onChange, connected, authUnknown = false, auth
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
         e.preventDefault()
         const destination = NAV[Number(e.key) - 1]
         if (destination) onChange(destination.key)

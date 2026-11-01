@@ -1,6 +1,6 @@
 // Preload script — exposes a typed window.catalyst bridge to the renderer.
 
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   CatalystBridge,
   BriefOptions,
@@ -117,6 +117,21 @@ const bridge: CatalystBridge = {
   getTrack: (meanLineGuid: string) => ipcRenderer.invoke('tracks:get', meanLineGuid),
   saveTrackCorners: (opts: { meanLineGuid: string; corners: any[] }) =>
     ipcRenderer.invoke('tracks:saveCorners', opts),
+
+  // PDR videos: the desktop app copies the picked file into the workspace.
+  listVideos: () => ipcRenderer.invoke('videos:listAll'),
+  listSessionVideos: guid => ipcRenderer.invoke('videos:list', guid),
+  importVideo: async (file, opts) => {
+    opts?.onProgress?.(0, file.size, 'uploading')
+    const sourcePath = webUtils.getPathForFile(file)
+    opts?.onProgress?.(file.size, file.size, 'matching')
+    return ipcRenderer.invoke('videos:importPath', sourcePath, file.name, opts?.sessionGuid ?? null)
+  },
+  matchVideo: (id, guid) => ipcRenderer.invoke('videos:match', id, guid ?? null),
+  deleteVideo: id => ipcRenderer.invoke('videos:delete', id),
+  setVideoOffset: (id, offsetS) => ipcRenderer.invoke('videos:setOffset', id, offsetS),
+  getSessionCarData: guid => ipcRenderer.invoke('videos:carData', guid),
+  videoUrl: id => `catalyst-video://video/${encodeURIComponent(id)}.mp4`,
 }
 
 contextBridge.exposeInMainWorld('catalyst', bridge)

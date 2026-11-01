@@ -1,0 +1,11 @@
+.import-page { display: flex; flex-direction: column; gap: 18px; max-width: 980px; }
+.import-section h2 { margin: 2px 0 12px; }
+.import-section .video-drop-zone .btn-row { margin: 4px 0 12px; }
+.import-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.import-row label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
+.import-doc-results { margin: 10px 0 0; padding-left: 18px; font-size: 13px; }
+.import-docs p { margin: 10px 0 0; }
+
+/* Overview: the video import entry. */
+.home-video-import { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.home-video-import p { margin: 0; color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 640px; }

@@ -6,6 +6,7 @@
 import { PALETTE, LAP_PALETTE, driverColor } from './chartTheme'
 import type { LineSeries } from './Charts'
 import type { AnalysisData, LapMeta, TimeDeltaTrace } from '../../garmin/analysisData'
+import { channelPoints, type CarChannel } from './carData'
 
 // One colour per lap on every chart and the map: the fastest lap is signal
 // orange, the rest use the stable palette slot the server assigned. When
@@ -128,4 +129,21 @@ export function longGSeries(data: AnalysisData): LineSeries[] {
     color: lapColor(t),
     width: isLeadLap(t) ? 2.5 : 1.2, opacity: isLeadLap(t) ? 1 : 0.5,
   }))
+}
+
+// PDR car data (throttle, brake, RPM…) per lap, coloured like the lap's
+// other traces. Laps without a video have no car data and are left out.
+export function carSeries(data: AnalysisData, channel: CarChannel): LineSeries[] {
+  const laps = new Map(data.laps.map(lap => [`${lap.sg}:${lap.lapIdx}`, lap]))
+  return (data.car?.traces ?? []).flatMap(trace => {
+    const lap = laps.get(`${trace.sg}:${trace.lapIdx}`)
+    if (!lap) return []
+    const { xs, ys } = channelPoints(trace, channel)
+    if (!xs.length) return []
+    return [{
+      id: `${trace.sg}-${trace.lapIdx}`, label: `${isLeadLap(lap) ? '★ ' : ''}${lapName(lap)}`,
+      xs, ys, color: lapColor(lap),
+      width: isLeadLap(lap) ? 2.3 : 1.3, opacity: isLeadLap(lap) ? 1 : 0.55,
+    }]
+  })
 }
