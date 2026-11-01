@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Install the NAS updater and a native DSM task; run once with sudo."""
+"""Install the NAS updater and a native DSM task; run once with sudo.
+
+Also gives videos their own volume: creates the media folder, installs the
+compose.yaml beside this script (which mounts it) and restarts the app on the
+image it already runs, so the new mount applies before the next deploy.
+"""
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -13,6 +19,75 @@ DEST = Path('/usr/local/lib/catalyst-coach')
 NAME = 'Update Catalyst Coach'
 COMMAND = '/bin/bash /usr/local/lib/catalyst-coach/auto-update-synology.sh'
 API = '/usr/syno/bin/synowebapi'
+PROJECT = Path('/volume1/docker/catalyst-coach')
+STATE = Path('/volume1/docker/catalyst-coach-updates')
+APP_UID = 1000  # the image's unprivileged node user
+
+
+def compose(*args, image=None):
+    env = dict(os.environ, **({'CATALYST_IMAGE': image} if image else {}))
+    result = subprocess.run(['docker', 'compose', '--project-name', 'catalyst-coach',
+                             '--env-file', str(PROJECT / '.env.cloudflare'),
+                             '-f', str(PROJECT / 'compose.yaml'), '-f', str(PROJECT / 'compose.cloudflare.yaml'),
+                             *args], env=env, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f'docker compose {args[0]} failed: {result.stderr.strip()[-2000:]}')
+    return result.stdout
+
+
+def wait_for_app(seconds=180):
+    import time
+    import urllib.request
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:3210/api/health', timeout=5) as reply:
+                if reply.status == 200:
+                    return
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            raise RuntimeError('Catalyst did not answer after restarting; see `docker logs` for the catalyst container.')
+        time.sleep(1)
+
+
+def separate_media():
+    """Mount /media for videos; the app moves existing videos there itself."""
+    media = PROJECT / 'media'
+    media.mkdir(exist_ok=True)
+    os.chown(media, APP_UID, APP_UID)
+    media.chmod(0o700)
+    staged, installed = STAGE / 'compose.yaml', PROJECT / 'compose.yaml'
+    if installed.read_bytes() == staged.read_bytes():
+        print('compose.yaml already mounts the media folder.', flush=True)
+        return
+    shutil.copy2(installed, PROJECT / 'compose.yaml.previous')
+    shutil.copyfile(staged, installed)
+    os.chown(installed, 0, 0)
+    installed.chmod(0o600)
+    compose('config', '--quiet')
+    cid = compose('ps', '--all', '--quiet', 'catalyst').strip()
+    if not cid:
+        print('Installed compose.yaml; the media folder mounts when Catalyst next starts.', flush=True)
+        return
+    image = subprocess.check_output(['docker', 'inspect', '--format', '{{.Config.Image}}', cid], text=True).strip()
+    print(f'Restarting Catalyst on {image} with the media folder mounted.', flush=True)
+    compose('up', '-d', '--no-deps', 'catalyst', image=image)
+    wait_for_app()
+
+
+def offer_to_remove_old_backups():
+    """Deploys no longer copy the data; earlier deploys' copies can go."""
+    backups = STATE / 'backups'
+    if not backups.is_dir() or not any(backups.iterdir()):
+        return
+    size = subprocess.run(['du', '-sh', str(backups)], text=True, capture_output=True).stdout.split('\t')[0]
+    answer = input(f'Remove the old deploy backups in {backups} ({size or "unknown size"})? [y/N] ')
+    if answer.strip().lower() in ('y', 'yes'):
+        shutil.rmtree(backups)
+        print('Removed the old deploy backups.', flush=True)
+    else:
+        print(f'Kept {backups}.', flush=True)
 
 
 class ProgressOutput:
@@ -53,6 +128,8 @@ def api(method, version=4, root=False, **params):
 def main():
     if os.geteuid() != 0:
         raise RuntimeError('Run this installer with sudo.')
+    # sudo's PATH may leave out /usr/local/bin, where DSM installs docker.
+    os.environ['PATH'] = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
     account = pwd.getpwnam('cooljoe')
     log = STAGE / 'setup.log'
     log.touch(mode=0o600)
@@ -62,6 +139,12 @@ def main():
         original = sys.stdout
         sys.stdout = ProgressOutput(original, output)
         try:
+            STATE.mkdir(mode=0o700, exist_ok=True)
+            with open(STATE / 'update.lock', 'w') as lock:
+                print('Waiting for any running update to finish.', flush=True)
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                separate_media()
+                offer_to_remove_old_backups()
             print('Preparing native DSM task.', flush=True)
             tasks = api('list', version=3).get('tasks', [])
             matches = [task for task in tasks if task.get('name') == NAME]

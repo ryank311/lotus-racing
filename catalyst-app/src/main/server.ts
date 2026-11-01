@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Transform } from 'node:stream'
-import { accountKey, defaultServerDataDir, userDirectory, USER_RE, workspaceVideoDir } from './serverStorage.js'
+import { accountKey, defaultServerDataDir, moveVideosToMedia, userDirectory, USER_RE, workspaceVideoDir, workspaceVideoFile } from './serverStorage.js'
 import { MAX_VIDEO_BYTES, VIDEO_ID_RE, VIDEO_UPLOAD_CHUNK } from '../shared/pdr.js'
 import { createDriverDirectory, type DriverDirectory } from './driverDirectory.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
@@ -18,6 +18,8 @@ export interface CatalystServerOptions {
   host?: string
   port?: number
   dataDir?: string
+  /** Videos' own volume, apart from the data directory (CATALYST_MEDIA_DIR). */
+  mediaDir?: string
   staticDir?: string
   devRendererUrl?: string
   templateRoot?: string
@@ -180,12 +182,14 @@ class UserBackend {
     delete env.CATALYST_DATA_DIR
     delete env.CATALYST_DB_PATH
     delete env.CATALYST_REPO_ROOT
+    delete env.CATALYST_MEDIA_DIR
     this.child = fork(workerPath, [], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
       env: {
         ...env,
         ELECTRON_RUN_AS_NODE: '1',
         CATALYST_INSTANCE_DIR: instanceDir,
+        ...(options.mediaDir ? { CATALYST_MEDIA_DIR: options.mediaDir } : {}),
         ...(task ? { CATALYST_WORKER_TASK: task } : {}),
         ...(options.templateRoot ? { CATALYST_TEMPLATE_ROOT: options.templateRoot } : {}),
         ...(options.resourcesPath ? { CATALYST_BUNDLED_RESOURCES: options.resourcesPath } : {}),
@@ -326,12 +330,17 @@ class UserBackend {
   }
 }
 
-export async function startCatalystServer(options: CatalystServerOptions = {}): Promise<RunningCatalystServer> {
+export async function startCatalystServer(serverOptions: CatalystServerOptions = {}): Promise<RunningCatalystServer> {
+  const media = serverOptions.mediaDir ?? process.env.CATALYST_MEDIA_DIR
+  const mediaDir = media ? path.resolve(media) : null
+  // Workers keep their videos where the server stores and serves them.
+  const options: CatalystServerOptions = { ...serverOptions, mediaDir: mediaDir ?? undefined }
   const host = options.host ?? process.env.CATALYST_SERVER_HOST ?? '0.0.0.0'
   const requestedPort = options.port ?? Number(process.env.CATALYST_SERVER_PORT ?? 3210)
   const dataDir = path.resolve(options.dataDir ?? defaultServerDataDir())
   const usersDir = path.join(dataDir, 'users')
   fs.mkdirSync(usersDir, { recursive: true })
+  if (mediaDir) fs.mkdirSync(mediaDir, { recursive: true })
 
   const aiKeys = databaseAiKeyStore(path.join(dataDir, 'catalyst-app.duckdb'))
   await migrateServerAiKeys(dataDir, aiKeys)
@@ -402,7 +411,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   }
 
   // Drivers can read each other's sessions and laps for comparisons.
-  const drivers = createDriverDirectory(dataDir, backendFor)
+  const drivers = createDriverDirectory(dataDir, backendFor, mediaDir)
 
   // Once per server: before the track library, each driver kept their own
   // layouts. Every workspace shares its layouts with the library now (the
@@ -512,7 +521,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         if (sessionGuid !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionGuid)) { json(res, 400, { error: 'Invalid session ID' }, origin); return }
         if (catalystPath !== null && catalystPath.length > 2048) { json(res, 400, { error: 'Invalid Catalyst video path' }, origin); return }
         sweepUploads()
-        const dir = workspaceVideoDir(userDirectory(dataDir, username))
+        const dir = workspaceVideoDir(userDirectory(dataDir, username), mediaDir)
         const incoming = path.join(dir, '.incoming')
         fs.mkdirSync(incoming, { recursive: true })
         // Part files left by a server restart mid-upload.
@@ -594,8 +603,8 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
       const videoMatch = /^\/api\/videos\/([0-9a-f-]{36})\.mp4$/.exec(url.pathname)
       if (videoMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
-        const file = path.join(workspaceVideoDir(userDirectory(dataDir, username)), `${videoMatch[1]}.mp4`)
-        if (!VIDEO_ID_RE.test(videoMatch[1]) || !fs.existsSync(file)) { json(res, 404, { error: 'Video not found' }, origin); return }
+        const file = VIDEO_ID_RE.test(videoMatch[1]) ? workspaceVideoFile(userDirectory(dataDir, username), mediaDir, videoMatch[1]) : null
+        if (!file) { json(res, 404, { error: 'Video not found' }, origin); return }
         serveFileRange(req, res, file, 'video/mp4')
         return
       }
@@ -652,6 +661,13 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
   })
   const address = server.address()
   const port = typeof address === 'object' && address ? address.port : requestedPort
+  // Videos uploaded before the media directory move there while the server
+  // runs; each is served from wherever it is meanwhile.
+  const movingVideos = mediaDir
+    ? moveVideosToMedia(dataDir, mediaDir, () => closing).then(
+      moved => { if (moved) console.log(`[videos] moved ${moved} video(s) to ${mediaDir}`) },
+      error => console.error('[videos] could not move videos to the media directory; retrying at the next start:', error))
+    : Promise.resolve()
   const publicHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
   return {
     host, port, url: `http://${publicHost}:${port}`, drivers,
@@ -666,6 +682,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
           new Promise<void>(resolve => server.close(() => resolve())),
         ])
       } finally { clearTimeout(force) }
+      await movingVideos
     },
   }
 }

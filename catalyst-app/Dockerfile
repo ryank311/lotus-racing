@@ -25,7 +25,7 @@ COPY --from=build /build/catalyst-app/dist-renderer ./dist-renderer
 COPY tracks/*.yaml /opt/catalyst/tracks/
 COPY Lotus/*.md /opt/catalyst/Lotus/
 COPY Vette/*.md /opt/catalyst/Vette/
-RUN mkdir /data && chown node:node /data
+RUN mkdir /data /media && chown node:node /data /media
 # Validate that production dependencies include the native Linux DuckDB binding.
 RUN node -e "require('@duckdb/node-api'); require('./dist-main/main/server.js')"
 USER node

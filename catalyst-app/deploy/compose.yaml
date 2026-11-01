@@ -10,6 +10,8 @@ services:
       - /tmp:rw,noexec,nosuid,size=128m,mode=1777
     environment:
       CATALYST_SERVER_DATA_DIR: /data
+      # Videos: large files on their own volume, apart from the database.
+      CATALYST_MEDIA_DIR: /media
       TZ: America/New_York
     ports:
       # Local access only; Cloudflare Tunnel or Tailscale provides remote HTTPS.
@@ -20,6 +22,11 @@ services:
         target: /data
         bind:
           # A typo must fail instead of silently creating an empty workspace.
+          create_host_path: false
+      - type: bind
+        source: ${CATALYST_NAS_MEDIA_DIR:-/volume1/docker/catalyst-coach/media}
+        target: /media
+        bind:
           create_host_path: false
     security_opt:
       - no-new-privileges:true

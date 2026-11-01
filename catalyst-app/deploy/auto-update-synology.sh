@@ -1,5 +1,11 @@
 #!/bin/bash
 # Installed root-owned by install-auto-update-synology.py. Run via DSM scheduler.
+#
+# A deploy swaps the container's image and nothing else. The database stays in
+# the data volume and videos in the media volume; the app migrates its database
+# when it starts. Nothing is copied, so a deploy takes as long as a restart no
+# matter how much data there is. If the new image does not answer, the previous
+# image is started again and updates pause for review.
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
@@ -7,39 +13,49 @@ export CATALYST_IMAGE=ghcr.io/ryank311/catalyst-coach:latest
 project=/volume1/docker/catalyst-coach
 state=/volume1/docker/catalyst-coach-updates
 [[ $(id -u) == 0 ]] || { echo 'Administrator access is required.' >&2; exit 1; }
-mkdir -p "$state/backups"
-chmod 700 "$state" "$state/backups"
+mkdir -p "$state"
+chmod 700 "$state"
 exec 9>"$state/update.lock"
 flock -n 9 || exit 0
 exec > >(tee "$state/latest-run.log") 2>&1
-stopped=0
-deploying=0
-cid=
+previous=
+candidate=
 write_status() {
   printf '%s %s\n' "$(date -Iseconds)" "$*" > "$state/status.txt"
   # A separate, non-secret receipt is readable over the existing SSH account.
   cp "$state/status.txt" "$project/auto-update-status.txt"
   chmod 644 "$project/auto-update-status.txt"
 }
+# The app answers as soon as it listens, well before Docker's 30 s health
+# interval would report it healthy; poll it directly.
+wait_for_app() {
+  local deadline=$((SECONDS + 180))
+  until curl --silent --fail --max-time 5 http://127.0.0.1:3210/api/health >/dev/null; do
+    (( SECONDS < deadline )) || break
+    sleep 1
+  done
+  curl --silent --show-error --fail --max-time 10 http://127.0.0.1:3210/api/health
+  printf '\n'
+}
+compose() {
+  docker compose --project-name catalyst-coach --env-file "$project/.env.cloudflare" \
+    -f "$project/compose.yaml" -f "$project/compose.cloudflare.yaml" "$@"
+}
 finish() {
   result=$?
   trap - EXIT
   if (( result != 0 )); then
-    if (( stopped == 1 && deploying == 0 )); then
-      docker start "$cid" || true
-    fi
-    if (( deploying == 1 )); then
-      printf 'New image did not pass verification; review latest-run.log and backups.\n' > "$state/PAUSED"
+    if [[ -n "$previous" ]]; then
+      echo "Starting the previous image again: $previous"
+      export CATALYST_IMAGE="$previous"
+      compose up -d --no-deps catalyst || true
+      printf 'Image %s did not answer; the previous image is running. Review latest-run.log.\n' "$candidate" > "$state/PAUSED"
     fi
     write_status "FAILED exit=$result; see $state/latest-run.log" || true
   fi
   exit "$result"
 }
 trap finish EXIT
-compose() {
-  docker compose --project-name catalyst-coach --env-file "$project/.env.cloudflare" \
-    -f "$project/compose.yaml" -f "$project/compose.cloudflare.yaml" "$@"
-}
 if [[ -f "$state/PAUSED" ]]; then
   echo 'Automatic updates are paused pending review.' >&2
   exit 1
@@ -55,72 +71,24 @@ current=$(docker inspect --format '{{.Image}}' "$cid")
 compose pull catalyst
 candidate=$(docker image inspect --format '{{.Id}}' "$CATALYST_IMAGE")
 if [[ "$current" == "$candidate" ]]; then
-  [[ $(docker inspect --format '{{.State.Health.Status}}' "$cid") == healthy ]]
+  wait_for_app
   write_status "CURRENT image=$current"
   exit 0
 fi
-data=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$cid")
-[[ "$data" == "$project/data" && -d "$data" ]] || {
-  echo 'Unexpected data mount; refusing an update without a verified backup source.' >&2
-  exit 1
-}
 digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$CATALYST_IMAGE")
 [[ "$digest" == ghcr.io/ryank311/catalyst-coach@sha256:* ]]
 stamp=$(date +%Y%m%dT%H%M%S)
-backup="$state/backups/$stamp"
-mkdir "$backup"
-printf 'previous_image=%s\nnew_image=%s\nnew_digest=%s\n' "$current" "$candidate" "$digest" > "$backup/images.txt"
 docker image tag "$current" "catalyst-coach:rollback-$stamp"
-cp "$project/compose.yaml" "$project/compose.cloudflare.yaml" "$project/.env.cloudflare" "$backup/"
-snapshot="$backup/data"
-# The app is down only while it stops, the workspace is snapshotted and the new
-# image starts. On Btrfs (DSM's default) the reflink copy is near-instant; on
-# other filesystems it falls back to a plain copy. Compression happens later.
-echo "Snapshotting the stopped workspace to $snapshot"
-stopped=1
-compose stop catalyst
-mkdir "$snapshot"
-if ! cp -a --reflink=auto "$data/." "$snapshot/" 2>/dev/null; then
-  rm -rf -- "$snapshot"
-  mkdir "$snapshot"
-  cp -a "$data/." "$snapshot/"
-fi
-# Use exactly the image just checked, even if latest changes during the backup.
+previous="catalyst-coach:rollback-$stamp"
+echo "Deploying $digest"
+# Use exactly the image just checked, even if latest changes meanwhile.
 export CATALYST_IMAGE="$digest"
-deploying=1
 compose up -d --no-deps catalyst
-# The app answers as soon as it listens, well before Docker's 30 s health
-# interval would report it healthy; poll it directly.
-deadline=$((SECONDS + 180))
-until curl --silent --fail --max-time 5 http://127.0.0.1:3210/api/health >/dev/null; do
-  (( SECONDS < deadline )) || break
-  sleep 1
-done
-curl --silent --show-error --fail --max-time 10 http://127.0.0.1:3210/api/health
-printf '\n'
-stopped=0
-deploying=0
-write_status "UPDATED image=$candidate; archiving backup $backup"
-# Archive the frozen snapshot while the new version serves. A failed archive
-# keeps the uncompressed snapshot as the backup rather than failing the update.
-archive_backup() {
-  nice -n 19 tar -czf "$backup/data.tar.gz.partial" -C "$snapshot" . &&
-    nice -n 19 gzip -t "$backup/data.tar.gz.partial" &&
-    mv "$backup/data.tar.gz.partial" "$backup/data.tar.gz" &&
-    rm -rf -- "$snapshot"
-}
-echo "Archiving the snapshot to $backup/data.tar.gz"
-if archive_backup; then
-  write_status "UPDATED image=$candidate backup=$backup"
-else
-  rm -f -- "$backup/data.tar.gz.partial"
-  write_status "UPDATED image=$candidate; archive failed, snapshot kept at $snapshot"
-fi
-# Retain five complete backups; retain old image tags for manual rollback.
-count=0
-while IFS= read -r old; do
-  [[ "$old" =~ ^[0-9]{8}T[0-9]{6}$ ]] || continue
-  [[ -f "$state/backups/$old/data.tar.gz" ]] || continue
-  count=$((count + 1))
-  if (( count > 5 )); then rm -rf -- "$state/backups/$old"; fi
-done < <(find "$state/backups" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r)
+wait_for_app
+previous=
+write_status "UPDATED image=$candidate"
+# Keep the last two images for a manual rollback; drop older ones and any
+# layers nothing uses, so images do not fill the disk either.
+docker image ls --format '{{.Repository}}:{{.Tag}}' catalyst-coach | grep ':rollback-' | sort -r | tail -n +3 |
+  xargs -r docker image rm >/dev/null 2>&1 || true
+docker image prune --force >/dev/null || true

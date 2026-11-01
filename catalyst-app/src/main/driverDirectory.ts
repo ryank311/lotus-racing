@@ -13,7 +13,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { accountKey, userDirectory, USER_RE, workspaceDbPath, workspaceVideoDir } from './serverStorage.js'
+import { accountKey, userDirectory, USER_RE, workspaceDbPath, workspaceVideoFile } from './serverStorage.js'
 import { VIDEO_ID_RE } from '../shared/pdr.js'
 import { MAX_COMPARE_DRIVERS, MAX_COMPARE_SESSIONS, type DriverAccount } from '../shared/comparison.js'
 import type { DbSessionRow } from '../shared/types.js'
@@ -40,7 +40,7 @@ export interface DriverDirectory {
   videoFile(driver: unknown, videoId: unknown): string | null
 }
 
-export function createDriverDirectory(dataDir: string, backendFor: (username: string) => DriverBackend): DriverDirectory {
+export function createDriverDirectory(dataDir: string, backendFor: (username: string) => DriverBackend, mediaDir: string | null = null): DriverDirectory {
   const usersDir = path.join(dataDir, 'users')
   const isSelf = (name: string, self: string | null) => self != null && accountKey(name) === accountKey(self)
 
@@ -60,8 +60,7 @@ export function createDriverDirectory(dataDir: string, backendFor: (username: st
     videoFile(driver, videoId) {
       const name = knownDriver(driver)
       if (!name || typeof videoId !== 'string' || !VIDEO_ID_RE.test(videoId)) return null
-      const file = path.join(workspaceVideoDir(userDirectory(dataDir, name)), `${videoId}.mp4`)
-      return fs.existsSync(file) ? file : null
+      return workspaceVideoFile(userDirectory(dataDir, name), mediaDir, videoId)
     },
 
     list(self) {

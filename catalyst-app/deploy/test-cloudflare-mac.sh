@@ -42,6 +42,7 @@ fi
 HTTP_PORT="${CATALYST_TEST_PORT:-3211}"
 DATA_DIR="${CATALYST_TEST_DATA_DIR:-$DEPLOY_DIR/data/cloudflare-mac}"
 [[ "$DATA_DIR" == /* && "$DATA_DIR" != / ]] || { echo 'Use an absolute test data directory, not /.' >&2; exit 1; }
+MEDIA_DIR="$DATA_DIR-media"
 [[ "$HTTP_PORT" =~ ^[1-9][0-9]{3,4}$ ]] && (( HTTP_PORT >= 1024 && HTTP_PORT <= 65535 )) || {
   echo 'CATALYST_TEST_PORT must be between 1024 and 65535.' >&2; exit 1;
 }
@@ -49,7 +50,7 @@ IMAGE=ghcr.io/ryank311/catalyst-coach:latest
 compose() (
   # Always read the selected file, even if a production token/hostname is exported.
   unset CLOUDFLARE_TUNNEL_TOKEN CATALYST_PUBLIC_HOSTNAME
-  CATALYST_IMAGE="$IMAGE" CATALYST_NAS_DATA_DIR="$DATA_DIR" CATALYST_HTTP_PORT="$HTTP_PORT" \
+  CATALYST_IMAGE="$IMAGE" CATALYST_NAS_DATA_DIR="$DATA_DIR" CATALYST_NAS_MEDIA_DIR="$MEDIA_DIR" CATALYST_HTTP_PORT="$HTTP_PORT" \
     docker compose --project-name catalyst-cloudflare-mac --env-file "$ENV_FILE" \
     -f "$DEPLOY_DIR/compose.yaml" -f "$DEPLOY_DIR/compose.cloudflare.yaml" "$@"
 )
@@ -94,15 +95,15 @@ if [[ -z "${CATALYST_TEST_DATA_DIR:-}" && -d "$OLD_DATA_DIR" ]]; then
   mv "$OLD_DATA_DIR" "$DATA_DIR"
   echo "Moved existing test data to: $DATA_DIR"
 fi
-mkdir -p "$DATA_DIR"
+mkdir -p "$DATA_DIR" "$MEDIA_DIR"
 # Match the NAS image's UID/GID, including files created by the old Node helper.
 docker run --rm --pull=never --platform linux/amd64 --network none --user 0 \
-  --mount "type=bind,source=$DATA_DIR,target=/data" --entrypoint sh "$IMAGE" \
-  -c 'chown -R 1000:1000 /data && chmod 700 /data'
+  --mount "type=bind,source=$DATA_DIR,target=/data" --mount "type=bind,source=$MEDIA_DIR,target=/media" \
+  --entrypoint sh "$IMAGE" -c 'chown -R 1000:1000 /data /media && chmod 700 /data /media'
 
 cleanup() {
   compose down || true
-  echo "Test stopped. Saved data remains in: $DATA_DIR"
+  echo "Test stopped. Saved data remains in: $DATA_DIR (videos: $MEDIA_DIR)"
 }
 trap cleanup EXIT
 trap 'exit 130' INT

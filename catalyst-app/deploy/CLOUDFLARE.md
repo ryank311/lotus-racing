@@ -132,7 +132,8 @@ is gitignored and is never included in the container image.
 
 Copy `compose.yaml`, `compose.cloudflare.yaml`, and `.env.cloudflare` to
 `/volume1/docker/catalyst-coach`. Set `CATALYST_NAS_DATA_DIR` in the environment
-file to `/volume1/docker/catalyst-coach/data` (or your actual NAS path).
+file to `/volume1/docker/catalyst-coach/data` and `CATALYST_NAS_MEDIA_DIR` to
+`/volume1/docker/catalyst-coach/media` (or your actual NAS paths).
 
 The NAS uses the `catalyst-coach` tunnel and **`coach.kingracing.net`**. Keep its
 production token in `.env.cloudflare`; the Mac's dev token belongs only in
@@ -142,9 +143,9 @@ with the old shared configuration before restarting it with the dev file.
 
 ```sh
 cd /volume1/docker/catalyst-coach
-sudo mkdir -p data
-sudo chown 1000:1000 data
-sudo chmod 700 data
+sudo mkdir -p data media
+sudo chown 1000:1000 data media
+sudo chmod 700 data media
 sudo chmod 600 .env.cloudflare
 sudo docker compose --env-file .env.cloudflare -f compose.yaml -f compose.cloudflare.yaml pull
 sudo docker compose --env-file .env.cloudflare -f compose.yaml -f compose.cloudflare.yaml up -d
@@ -153,11 +154,11 @@ sudo docker compose --env-file .env.cloudflare -f compose.yaml -f compose.cloudf
 Open **https://coach.kingracing.net** in a browser. The NAS runs the containers after reboot
 using the restart policy. The domain/tunnel does not transfer Mac data; import
 existing workspaces before first startup if desired, as described in the
-[persistence and migration guide](README.md#persistence-backups-upgrades-and-rollback).
+[persistence and migration guide](README.md#persistence-upgrades-and-rollback).
 All databases, tokens, telemetry, and saved settings remain in the NAS `data`
-folder across container stops, restarts, and replacement.
+folder, and uploaded videos in `media`, across container stops, restarts, and
+replacement.
 
-For upgrades, back up the data first, then repeat the two Compose commands.
-Use the same `--env-file` and both `-f` arguments for `stop`, `start`, `logs`,
-and `down` too. Stopping the containers for a consistent backup also makes the
-website unavailable until they start again.
+An upgrade replaces only the image: repeat the two Compose commands, or let the
+[automatic updater](AUTO-UPDATES.md) do it. Use the same `--env-file` and both
+`-f` arguments for `stop`, `start`, `logs`, and `down` too.

@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { test } = require('node:test')
 const childProcess = require('node:child_process')
-const { userDirectory, workspaceDbPath, workspaceVideoDir } = require('../dist-main/main/serverStorage.js')
+const { legacyVideoDir, userDirectory, workspaceDbPath, workspaceVideoDir } = require('../dist-main/main/serverStorage.js')
 const { readPdrFile } = require('../dist-main/garmin/pdrFile.js')
 const { TRACK_YAML, lapRows, writeMeanLines } = require('./fixtures/compareFixture.cjs')
 const { drivingRecords, writePdrVideo } = require('./fixtures/pdrFixture.cjs')
@@ -216,4 +216,99 @@ test('PDR videos upload in chunks, find their session, and feed Analysis', { tim
     assert.match(status.error, /not a readable MP4/)
     assert.deepEqual(fs.readdirSync(workspaceVideoDir(dir)).filter(n => n.endsWith('.mp4')), [`${videoId}.mp4`])
   })
+})
+
+test('with a media directory, videos live apart from the data a deploy keeps', { timeout: 120000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-pdr-media-'))
+  const dataDir = path.join(root, 'server')
+  const mediaDir = path.join(root, 'media')
+  fs.mkdirSync(path.join(root, 'tracks'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'tracks', 'test-raceway.yaml'), TRACK_YAML)
+  const dir = userDirectory(dataDir, 'Ryan')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'account.json'), JSON.stringify({ username: 'Ryan' }))
+  writeMeanLines(path.join(dir, 'garmin', 'data', 'mean_lines'))
+  childProcess.execFileSync(process.execPath, [path.join(__dirname, 'fixtures/compareFixture.cjs'), workspaceDbPath(dir), JSON.stringify([MORNING, AFTERNOON])], { stdio: 'pipe' })
+  // A video uploaded before the media directory, and an upload cut off by a restart.
+  const oldId = '7d0f4a52-3b8e-4c1a-9f6e-2a5b8c9d0e1f'
+  const oldBytes = Buffer.from(Array.from({ length: 4096 }, (_, i) => i % 251))
+  fs.mkdirSync(path.join(legacyVideoDir(dir), '.incoming'), { recursive: true })
+  fs.writeFileSync(path.join(legacyVideoDir(dir), `${oldId}.mp4`), oldBytes)
+  fs.writeFileSync(path.join(legacyVideoDir(dir), '.incoming', 'cut-off.part'), 'x')
+  const parked = path.join(root, 'PDR_0909.mp4')
+  writePdrVideo(parked, drivingRecords([], 0, 60, { moving: false }), { durationS: 60, recordedAt: '2026-10-30 13:26:06' })
+
+  const server = await startCatalystServer({ host: '127.0.0.1', port: 0, dataDir, mediaDir, templateRoot: root })
+  t.after(async () => { await server.close(); fs.rmSync(root, { recursive: true, force: true }) })
+  const call = (endpoint, init = {}, cookie) => fetch(server.url + endpoint, {
+    ...init, headers: { ...(init.headers ?? {}), ...(cookie ? { cookie } : {}) }, signal: AbortSignal.timeout(30000),
+  })
+  const postJson = (endpoint, body, cookie) => call(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, cookie)
+  const cookie = (await postJson('/api/login', { username: 'Ryan' })).headers.get('set-cookie').split(';')[0]
+  const rpc = async (channel, ...args) => {
+    const body = await (await postJson('/api/rpc', { channel, args }, cookie)).json()
+    assert.equal(body.error, undefined)
+    return body.result
+  }
+  const videos = workspaceVideoDir(dir, mediaDir)
+  assert.equal(videos, path.join(mediaDir, 'users', path.basename(dir), 'videos'))
+
+  // The old video moves over while the server runs, and plays throughout.
+  for (let i = 0; i < 100 && fs.existsSync(legacyVideoDir(dir)); i++) await new Promise(resolve => setTimeout(resolve, 50))
+  assert.ok(!fs.existsSync(legacyVideoDir(dir)), 'nothing left in the data directory')
+  assert.deepEqual(fs.readFileSync(path.join(videos, `${oldId}.mp4`)), oldBytes)
+  const served = await call(`/api/videos/${oldId}.mp4`, {}, cookie)
+  assert.equal(served.status, 200)
+  assert.deepEqual(Buffer.from(await served.arrayBuffer()), oldBytes)
+
+  // New uploads go straight to the media directory.
+  const bytes = fs.readFileSync(parked)
+  const start = await (await postJson('/api/videos/uploads', { fileName: 'PDR_0909.mp4', size: bytes.length }, cookie)).json()
+  assert.equal((await call(`/api/videos/uploads/${start.uploadId}?offset=0`, { method: 'PUT', body: bytes }, cookie)).status, 200)
+  assert.equal((await postJson(`/api/videos/uploads/${start.uploadId}/finish`, {}, cookie)).status, 202)
+  let status
+  for (let i = 0; i < 200; i++) {
+    status = await (await call(`/api/videos/uploads/${start.uploadId}`, {}, cookie)).json()
+    if (status.state !== 'importing') break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.equal(status.state, 'done', status.error)
+  const id = status.result.video.id
+  assert.ok(fs.existsSync(path.join(videos, `${id}.mp4`)))
+  assert.ok(!fs.existsSync(path.join(dataDir, 'users', path.basename(dir), 'garmin', 'data', 'videos')), 'the data directory holds no video')
+  assert.equal((await call(`/api/videos/${id}.mp4`, { headers: { Range: 'bytes=0-9' } }, cookie)).status, 206)
+  assert.equal(await rpc('videos:delete', id), true)
+  assert.ok(!fs.existsSync(path.join(videos, `${id}.mp4`)), 'deleted from the media directory')
+})
+
+test('videos copy across volumes when they cannot be renamed', async () => {
+  const { moveVideosToMedia } = require('../dist-main/main/serverStorage.js')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-media-move-'))
+  const rename = fs.promises.rename
+  try {
+    const dataDir = path.join(root, 'data')
+    const mediaDir = path.join(root, 'media')
+    const dir = userDirectory(dataDir, 'Ryan')
+    const kept = '11111111-2222-4333-8444-555555555555'
+    const deleted = '66666666-7777-4888-8999-aaaaaaaaaaaa'
+    fs.mkdirSync(legacyVideoDir(dir), { recursive: true })
+    fs.writeFileSync(path.join(legacyVideoDir(dir), `${kept}.mp4`), 'kept video')
+    fs.writeFileSync(path.join(legacyVideoDir(dir), `${deleted}.mp4`), 'deleted video')
+    fs.writeFileSync(path.join(legacyVideoDir(dir), 'notes.txt'), 'not a video')
+    // Separate Docker mounts: a rename out of the data directory fails.
+    fs.promises.rename = async (from, to) => {
+      if (String(from).startsWith(dataDir)) throw Object.assign(new Error('cross-device link'), { code: 'EXDEV' })
+      // The driver deletes this one while it is being copied.
+      if (String(to).endsWith(`${deleted}.mp4`)) fs.rmSync(path.join(legacyVideoDir(dir), `${deleted}.mp4`))
+      return rename(from, to)
+    }
+    assert.equal(await moveVideosToMedia(dataDir, mediaDir), 1)
+    const videos = workspaceVideoDir(dir, mediaDir)
+    assert.deepEqual(fs.readdirSync(videos), [`${kept}.mp4`], 'no partial copies, and the deleted video stays deleted')
+    assert.equal(fs.readFileSync(path.join(videos, `${kept}.mp4`), 'utf8'), 'kept video')
+    assert.deepEqual(fs.readdirSync(legacyVideoDir(dir)), ['notes.txt'], 'only videos move')
+  } finally {
+    fs.promises.rename = rename
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })

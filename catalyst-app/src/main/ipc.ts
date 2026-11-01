@@ -11,7 +11,7 @@ import {
   DATA_DIR,
   CONFIG_PATH,
   INSTANCE_DIR,
-  VIDEOS_DIR,
+  VIDEOS_DIR, LEGACY_VIDEOS_DIR,
 } from '../garmin/paths.js'
 import { deleteSessionVideo, getSessionVideo, importVideo, listAllVideos, listSessionVideos, rematchVideo, setVideoOffset } from '../garmin/videoStore.js'
 import { importCatalystVideo, planCatalystImport, rematchCatalystVideo } from '../garmin/catalystVideos.js'
@@ -1110,7 +1110,8 @@ export function registerApiHandlers(
   }, DB_PATH))
   register('videos:delete', async (_e, id: string) => {
     const removed = await withDb(con => deleteSessionVideo(con, videoId(id)), DB_PATH)
-    fs.rmSync(path.join(VIDEOS_DIR, `${videoId(id)}.mp4`), { force: true })
+    // The data-directory copy first: the server may be moving it to VIDEOS_DIR.
+    for (const dir of [LEGACY_VIDEOS_DIR, VIDEOS_DIR]) fs.rmSync(path.join(dir, `${videoId(id)}.mp4`), { force: true })
     return !!removed
   })
   register('videos:setOffset', (_e, id: string, offsetS: number | null) => {

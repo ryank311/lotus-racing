@@ -85,8 +85,14 @@ export const DATA_DIR = INSTANCE_DIR
 
 export const SESSIONS_DIR = path.join(DATA_DIR, 'sessions')
 export const MEAN_LINES_DIR = path.join(DATA_DIR, 'mean_lines')
-// PDR videos attached to sessions (see videoStore.ts); one <video id>.mp4 each.
-export const VIDEOS_DIR = path.join(DATA_DIR, 'videos')
+// Videos attached to sessions (see videoStore.ts); one <video id>.mp4 each.
+// A server worker keeps them in the server's media directory when it has one,
+// apart from the database (serverStorage.ts workspaceVideoDir); videos from
+// before that are read from LEGACY_VIDEOS_DIR until the server moves them.
+export const LEGACY_VIDEOS_DIR = path.join(DATA_DIR, 'videos')
+export const VIDEOS_DIR = INSTANCE_DIR && process.env.CATALYST_MEDIA_DIR
+  ? path.join(path.resolve(process.env.CATALYST_MEDIA_DIR), 'users', path.basename(INSTANCE_DIR), 'videos')
+  : LEGACY_VIDEOS_DIR
 
 export const CONFIG_PATH = path.join(GARMIN_DIR, 'config.json')
 export const GARTH_TOKEN_DIR = path.join(GARMIN_DIR, '.garth')

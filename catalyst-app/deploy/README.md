@@ -54,29 +54,31 @@ step using the commands below.
    `CATALYST_IMAGE` to the successful build's image reference. The default
    `ghcr.io/ryank311/catalyst-coach:latest` uses the latest successful main build.
    Set `CATALYST_NAS_DATA_DIR` to the absolute NAS data folder, initially
-   `/volume1/docker/catalyst-coach/data`. Keep that path unchanged on upgrades.
+   `/volume1/docker/catalyst-coach/data`, and `CATALYST_NAS_MEDIA_DIR` to the
+   videos folder, initially `/volume1/docker/catalyst-coach/media`. Keep both
+   paths unchanged on upgrades.
 3. Enable DSM SSH temporarily and connect as an administrator. Create the
-   container's data directory with the image's unprivileged UID/GID:
+   container's data and media directories with the image's unprivileged UID/GID:
 
    ```sh
    cd /volume1/docker/catalyst-coach
-   sudo mkdir -p data
-   sudo chown 1000:1000 data
-   sudo chmod 700 data
+   sudo mkdir -p data media
+   sudo chown 1000:1000 data media
+   sudo chmod 700 data media
    sudo docker compose config
    sudo docker compose pull
    sudo docker compose up -d
    sudo docker compose ps
    ```
 
-   In the rendered configuration, confirm the bind mount maps your absolute NAS
-   data folder to `/data`. The folder must exist; Compose deliberately refuses
-   to create it automatically. If your DSM provides `docker-compose` instead of
+   In the rendered configuration, confirm the bind mounts map your absolute NAS
+   data folder to `/data` and media folder to `/media`. Both must exist; Compose
+   deliberately refuses to create them automatically. If your DSM provides `docker-compose` instead of
    `docker compose`, substitute that command. If it rejects `create_host_path`,
    update Container Manager/Compose. Container Manager's **Project → Create** can
-   also deploy the same folder and Compose file; create the writable data
-   directory first. Adjust both the commands and `CATALYST_NAS_DATA_DIR` if your
-   Docker shared folder lives on another volume.
+   also deploy the same folder and Compose file; create the writable data and
+   media directories first. Adjust the commands, `CATALYST_NAS_DATA_DIR` and
+   `CATALYST_NAS_MEDIA_DIR` if your Docker shared folder lives on another volume.
 
 4. Give the app a persistent private HTTPS endpoint:
 
@@ -104,7 +106,7 @@ at home as well as away. You do not need a subnet router or exit node for this.
 For unattended access, review the NAS device's key-expiry setting in Tailscale's
 admin console and disable expiry for this trusted server if appropriate.
 
-## Persistence, backups, upgrades, and rollback
+## Persistence, upgrades, and rollback
 
 `CATALYST_NAS_DATA_DIR` (default `/volume1/docker/catalyst-coach/data`) is a
 **NAS folder bind-mounted at `/data`**, outside the container's writable layer.
@@ -125,20 +127,26 @@ Keep the entire `data` folder, including any DuckDB `.wal` files. `stop`, `start
 Removing/replacing the container or pulling a newer image does not delete it.
 Deleting the NAS folder, pointing `CATALYST_NAS_DATA_DIR` at a different empty
 folder, or losing the NAS disks can still lose data or make the app appear empty.
-Container persistence is not a backup; keep a separate backup of this folder.
-The container root filesystem is read-only, so app data must go to `/data`;
-`/tmp` is temporary scratch space only.
+Container persistence is not a backup. The container root filesystem is
+read-only, so app data must go to `/data`; `/tmp` is temporary scratch space only.
 
-For a consistent backup, stop the container, back up the entire project folder
-with Hyper Backup or a filesystem snapshot, and then start it again:
+Videos (PDR and Catalyst uploads) are kept apart, in `CATALYST_NAS_MEDIA_DIR`
+(default `/volume1/docker/catalyst-coach/media`) mounted at `/media`, one folder
+per driver. They are large and never change once uploaded, so they stay out of
+the data folder and anything that copies it. Videos uploaded before the media
+folder existed move there by themselves the first time the app starts with it.
+
+If you want a backup, stop the container and snapshot or copy the project folder
+(the `media` folder can be left out), then start it again:
 
 ```sh
 sudo docker compose stop
-# Take the backup/snapshot of /volume1/docker/catalyst-coach now.
+# Snapshot or copy /volume1/docker/catalyst-coach now.
 sudo docker compose start
 ```
 
-To upgrade, back up first, update `CATALYST_IMAGE` in `.env`, then run:
+An upgrade replaces only the image; the app migrates its database when it
+starts. Update `CATALYST_IMAGE` in `.env`, then run:
 
 ```sh
 sudo docker compose pull
@@ -147,9 +155,8 @@ sudo docker compose ps
 sudo docker compose logs --tail=80 catalyst
 ```
 
-Retain the previous image tag and matching backup. To roll back, stop the app,
-restore the matching data backup if a database migration requires it, set the
-previous image tag, and run `docker compose up -d`. Do not run two containers
+To roll back, set the previous image tag and run `docker compose up -d`.
+Migrations add to the database, so an older image normally runs against it. Do not run two containers
 against the same data folder. The restart policy recovers exited containers;
 an unhealthy health check is visible in Container Manager but does not itself
 restart a still-running process. Logs rotate to avoid filling the NAS.
