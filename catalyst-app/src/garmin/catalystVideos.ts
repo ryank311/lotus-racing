@@ -8,9 +8,9 @@
 
 import type { DuckDBConnection } from '@duckdb/node-api'
 import { readVideoInfo } from './pdrFile.js'
-import { attachPlainVideo, getSessionVideo, placePlainVideo, type EnsureDetails, type PlainPlacement } from './videoStore.js'
+import { attachPlainVideo, getSessionVideo, placePlainVideo, resetVideoOffsets, type EnsureDetails, type PlainPlacement } from './videoStore.js'
 import {
-  CATALYST_MATCH_AFTER_S, CATALYST_MATCH_BEFORE_S, catalystVideoName, parseCatalystPath,
+  CATALYST_MATCH_AFTER_S, CATALYST_MATCH_BEFORE_S, catalystVideoName, catalystVideoOffset, parseCatalystPath,
   type CatalystPlan, type CatalystPlanEntry, type CatalystPlanFolder, type CatalystSessionMatch, type CatalystVideoPath,
 } from '../shared/catalystVideo.js'
 import type { SessionVideo, VideoImportResult } from '../shared/pdr.js'
@@ -162,26 +162,55 @@ async function takenSessions(con: DuckDBConnection, folder: string): Promise<Set
 }
 
 /**
- * Where a Catalyst video goes in a session. video_1 starts at the session
- * start; later parts follow the earlier ones; the optimal-lap render has no
- * place on the session's timeline.
+ * Where a Catalyst video goes in a session (see shared/catalystVideo.ts):
+ * video_1 starts at Garmin's session start, while lap times count from the
+ * folder clock; later parts follow the earlier ones; the optimal-lap render
+ * has no place on the session's timeline. A session whose start does not fit
+ * the folder clock (attached by hand) gets the video at its start.
  */
 async function placement(con: DuckDBConnection, p: CatalystVideoPath, sessionGuid: string | null, note: string | null): Promise<PlainPlacement> {
   if (!sessionGuid) return { sessionGuid: null, offsetS: null, note }
   if (p.kind === 'optimal') return { sessionGuid, offsetS: null, note: null }
-  if (p.part === 1) return { sessionGuid, offsetS: 0, note: null }
+  const start = (await con.runAndReadAll('SELECT CAST(session_start AS VARCHAR) FROM sessions WHERE session_guid = ?', [sessionGuid])).getRowsJson()[0]?.[0]
+  const clock = start == null ? null : catalystVideoOffset(p.recordedAt, String(start))
+  const base = clock ?? 0
+  const unsure = clock == null ? 'This recording’s clock does not fit that session, so it is placed at the session start: adjust its sync if the video and charts disagree.' : null
+  if (p.part === 1) return { sessionGuid, offsetS: base, note: unsure }
   const before = (await con.runAndReadAll(`
     SELECT source_path, duration_s FROM session_videos WHERE source = 'catalyst' AND starts_with(source_path, ? || '/')
   `, [p.folder])).getRowsJson()
   const durations = new Map(before.map(r => [parseCatalystPath(String(r[0]))?.part ?? 0, Number(r[1])]))
   // Session time = video time + offset: part N starts where part N−1 ended.
-  let offsetS = 0
+  let offsetS = base
   for (let part = 1; part < p.part; part++) {
     const d = durations.get(part)
     if (d == null) return { sessionGuid, offsetS: null, note: `Import video_${part}.mp4 from the same folder, then match this part again to sync it.` }
     offsetS += d
   }
-  return { sessionGuid, offsetS, note: null }
+  return { sessionGuid, offsetS, note: unsure }
+}
+
+/**
+ * Re-sync Catalyst videos imported before their folder clock was used (they
+ * started at offset 0): each moves to its folder's offset, keeping any nudge
+ * made by hand. Safe to run on every startup; returns how many moved.
+ */
+export async function syncCatalystVideoOffsets(con: DuckDBConnection): Promise<number> {
+  const rows = (await con.runAndReadAll(`
+    SELECT video_id, source_path, session_guid, offset_s, auto_offset_s FROM session_videos
+    WHERE source = 'catalyst' AND session_guid IS NOT NULL AND offset_s IS NOT NULL AND auto_offset_s IS NOT NULL
+  `)).getRowsJson()
+  let moved = 0
+  for (const [id, sourcePath, guid, offset, auto] of rows) {
+    const p = parseCatalystPath(String(sourcePath))
+    if (!p) continue
+    const place = await placement(con, p, String(guid), null)
+    if (place.offsetS == null || Math.abs(place.offsetS - Number(auto)) < 0.05) continue
+    await resetVideoOffsets(con, String(id), place.offsetS, Number(offset) + place.offsetS - Number(auto))
+    moved++
+  }
+  if (moved) console.log(`[video] re-synced ${moved} Catalyst video${moved === 1 ? '' : 's'} to their recording clock`)
+  return moved
 }
 
 async function sessionExists(con: DuckDBConnection, guid: string): Promise<boolean> {

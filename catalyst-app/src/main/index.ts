@@ -11,6 +11,7 @@ import {
 } from '../garmin/paths.js'
 import { VIDEO_ID_RE } from '../shared/pdr.js'
 import { openDb, initSchema } from '../garmin/loadToDb.js'
+import { syncCatalystVideoOffsets } from '../garmin/catalystVideos.js'
 import { prepareTrackLibrary } from '../garmin/trackStore.js'
 import fs from 'node:fs'
 import { startCatalystServer, type RunningCatalystServer } from './server.js'
@@ -232,6 +233,8 @@ app.whenReady().then(async () => {
       // The desktop workspace keeps its own track library: its older
       // layouts and the track YAML seeds go into it once.
       await prepareTrackLibrary(db.con)
+      // Catalyst videos imported before their recording clock was used.
+      await syncCatalystVideoOffsets(db.con).catch(error => console.error('[video] re-sync failed:', error))
       await db.close()
     } catch (e) {
       console.error('[startup] schema migration failed:', e)

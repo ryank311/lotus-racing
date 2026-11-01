@@ -248,10 +248,20 @@ synced Garmin session (`src/garmin/catalystVideos.ts`):
   after the folder clock (in practice 8 s to 19 minutes after: the folder is
   created when the session is started on the device, the Garmin session when
   timing starts). Closest pairs win, and each session takes one folder.
-- `video_1.mp4` starts at the Garmin session start (checked to within 2 s on
-  six sessions from the file's write time and length), so it attaches with
-  offset 0; `video_N` follows the earlier parts. The sync can still be nudged
-  on the Import page.
+- **Sync.** Garmin's lap times count from the folder clock (when the session
+  was started on the device), but `video_1.mp4` starts at Garmin's session
+  start, about 0.4 s late. So the video sits at
+  `session start − folder clock + 0.4 s` on the lap clock; `video_N` follows
+  the earlier parts. Neither the MP4 (video and audio tracks only, no
+  creation time or data track) nor the synced telemetry
+  (`start_time_utc_s` is the session start) records the folder clock, so the
+  folder name is the link. Checked by matching the video's rotation (the
+  horizon's sideways shift) against Garmin's turn rate (lateral g ÷ speed) on
+  four sessions from 2025 and 2026: correlation 0.95–0.98, within 0.1–0.6 s
+  of the rule. A video attached by hand to a session whose start does not fit
+  the folder clock is placed at that session's start, with a note. The sync
+  can be nudged on the Import page. Videos imported by earlier versions (at
+  offset 0) are re-synced on startup, keeping any nudge.
 - Recordings without a synced session are listed with the reason but cannot
   be chosen; sync that day, then choose the folder again.
 

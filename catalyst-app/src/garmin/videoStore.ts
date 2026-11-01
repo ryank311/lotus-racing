@@ -451,6 +451,15 @@ export async function attachPlainVideo(con: DuckDBConnection, video: {
   return placePlainVideo(con, video.videoId, place)
 }
 
+/** Move a video's matched offset and its current one (e.g. re-synced), keeping the laps in step. */
+export async function resetVideoOffsets(con: DuckDBConnection, videoId: string, autoOffsetS: number, offsetS: number): Promise<SessionVideo | null> {
+  await con.run('UPDATE session_videos SET auto_offset_s = ? WHERE video_id = ?', [Math.round(autoOffsetS * 1000) / 1000, videoId] as any)
+  const video = await getSessionVideo(con, videoId)
+  if (!video?.sessionGuid) return video
+  await relayVideo(con, video, Math.round(offsetS * 1000) / 1000)
+  return getSessionVideo(con, videoId)
+}
+
 /** Nudge a video's sync; null returns to the matched offset. */
 export async function setVideoOffset(con: DuckDBConnection, videoId: string, offsetS: number | null): Promise<SessionVideo> {
   const video = await getSessionVideo(con, videoId)

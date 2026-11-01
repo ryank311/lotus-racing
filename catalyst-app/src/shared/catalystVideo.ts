@@ -5,11 +5,15 @@
 //       video_1.mp4             the whole session (video_2.mp4… if split)
 //       optimal_lap_video.mp4   Garmin's render of the optimal lap
 //
-// The folder clock is the device's local time (the track's), when the
-// session was started on the device; the synced Garmin session starts a few
-// minutes later. video_1.mp4 itself starts at the Garmin session start (to
-// within about a second), so a lap's time in the session is its time in the
-// video.
+// The folder clock is the device's local time (the track's) when the session
+// was started on the device, and Garmin's lap times count from that moment.
+// The recording itself starts at Garmin's session start (sessionStart, a few
+// seconds to minutes later), about 0.4 s late. Neither the MP4 (no data
+// track, no creation time) nor the synced telemetry carries anything else to
+// line them up with, so a lap's time in the video is
+//   lap time − (session start − folder clock) − 0.4 s.
+// Measured by matching the video's rotation against Garmin's turn rate on four
+// sessions from 2025–26: within 0.1–0.6 s of this (mean +0.4 s).
 
 export type CatalystVideoKind = 'session' | 'optimal'
 
@@ -104,6 +108,21 @@ export interface CatalystPlan {
 }
 
 // A session recording on the device starts this long before its Garmin
-// session at most (seen: 0 s to 10.3 min), or a little after it.
+// session at most (seen: 0 s to 19 min), or a little after it.
 export const CATALYST_MATCH_BEFORE_S = 3 * 60
 export const CATALYST_MATCH_AFTER_S = 30 * 60
+
+// The camera starts this long after Garmin's session start (measured mean).
+export const CATALYST_VIDEO_LAG_S = 0.4
+
+/**
+ * Session time = video time + this, for video_1 of a folder recorded at
+ * `folderClock` and the Garmin session starting at `sessionStart` (both
+ * "YYYY-MM-DD HH:MM:SS", local); null when the two cannot be the same session.
+ */
+export function catalystVideoOffset(folderClock: string, sessionStart: string): number | null {
+  const s = (c: string) => Date.parse(`${c.replace(' ', 'T').slice(0, 19)}Z`) / 1000
+  const gap = s(sessionStart) - s(folderClock)
+  if (!Number.isFinite(gap) || gap < -CATALYST_MATCH_BEFORE_S || gap > CATALYST_MATCH_AFTER_S) return null
+  return Math.round((gap + CATALYST_VIDEO_LAG_S) * 1000) / 1000
+}

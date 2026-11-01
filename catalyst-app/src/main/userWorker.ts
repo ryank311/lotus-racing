@@ -11,6 +11,7 @@ import type { AiKeyStore, AiKeys } from './aiKeyStore.js'
 import { registerApiHandlers, type ApiHandler, type BackendEventTarget } from './ipc.js'
 import { DB_PATH, seedUserData } from '../garmin/paths.js'
 import { initSchema, openDb } from '../garmin/loadToDb.js'
+import { syncCatalystVideoOffsets } from '../garmin/catalystVideos.js'
 import { prepareTrackLibrary } from '../garmin/trackStore.js'
 import { remoteTrackLibrary, useTrackLibrary } from '../garmin/trackLibrary.js'
 
@@ -94,6 +95,8 @@ async function start(): Promise<void> {
       // This workspace's older layouts and the track YAML seeds go into the
       // server's shared track library.
       await prepareTrackLibrary(db.con)
+      // Catalyst videos imported before their recording clock was used.
+      await syncCatalystVideoOffsets(db.con).catch(error => console.error('[video] re-sync failed:', error))
     } finally { await db.close() }
   }
   // The server's one-time pass over every driver's workspace stops here.
