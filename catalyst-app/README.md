@@ -197,7 +197,10 @@ and Catalyst videos alike:
 
 - **Two laps at once.** Pick a lap and one to compare it with (another of
   your laps, the stitched optimal lap, or a compared driver's lap) and show
-  them **side by side** or **overlaid** with an opacity slider. The second
+  them **side by side** (stacked when the player is narrow), **overlaid**
+  (the second lap see-through, with an opacity slider on the picture), or
+  as a **wipe** (the second lap over the first, cut at a handle you drag
+  across the picture, or move with the arrow keys). The second
   video is kept at the same place on track as the first: its playback rate
   follows the speed ratio between the laps, and it jumps when it drifts by
   more than 0.35 s. Each video has a HUD with the lap, speed, time into the

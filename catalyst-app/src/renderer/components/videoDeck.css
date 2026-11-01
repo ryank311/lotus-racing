@@ -5,6 +5,8 @@
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px;
 }
 .deck:fullscreen { background: #000; padding: 16px; justify-content: center; border: 0; }
+/* Nothing in the player is squeezed: a short space scrolls instead. */
+.deck > * { flex-shrink: 0; }
 .deck .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* Lap pickers and modes */
@@ -38,11 +40,33 @@
 .deck-stage { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; background: #000; border-radius: var(--radius); overflow: hidden; }
 .deck.mode-side .deck-stage { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @container (max-width: 560px) { .deck.mode-side .deck-stage { grid-template-columns: minmax(0, 1fr); } }
-.deck-screen { position: relative; aspect-ratio: 16 / 9; background: #000; box-shadow: inset 0 3px 0 var(--lap); min-width: 0; }
+.deck-screen { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; box-shadow: inset 0 3px 0 var(--lap); min-width: 0; }
 .deck-screen[hidden] { display: none; }
 .deck-screen video { display: block; width: 100%; height: 100%; object-fit: contain; cursor: pointer; }
-.deck.mode-overlay .deck-screen.b { position: absolute; inset: 0; box-shadow: none; background: transparent; pointer-events: none; }
-.deck.mode-overlay .deck-screen.b .deck-hud { left: auto; right: 8px; flex-direction: row-reverse; }
+/* Overlay and wipe: the second lap sits over the first. */
+.deck.mode-overlay .deck-screen.b, .deck.mode-wipe .deck-screen.b { position: absolute; inset: 0; box-shadow: none; background: transparent; pointer-events: none; }
+.deck.mode-overlay .deck-screen.b .deck-hud, .deck.mode-wipe .deck-screen.b .deck-hud { left: auto; right: 8px; flex-direction: row-reverse; }
+.deck.mode-wipe .deck-hud-time { display: none; }
+
+/* Wipe handle: drag across the picture (or focus it and use the arrows). */
+.deck-wipe { position: absolute; top: 0; bottom: 0; width: 28px; margin-left: -14px; cursor: ew-resize; touch-action: none; z-index: 4; outline: none; }
+.deck-wipe::before { content: ''; position: absolute; top: 0; bottom: 0; left: 13px; width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45); }
+.deck-wipe-knob {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 32px; height: 32px; border-radius: 50%;
+  display: grid; place-items: center; background: #fff; color: #000; font-size: 15px; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+}
+.deck-wipe:focus-visible .deck-wipe-knob { outline: 2px solid var(--signal); outline-offset: 2px; }
+.deck.mode-wipe .deck-bigplay { left: auto; right: 12px; bottom: 12px; top: auto; margin: 0; width: 44px; height: 44px; }
+
+/* Overlay: how much of the second lap shows, on the picture itself. */
+.deck-blend {
+  position: absolute; right: 8px; bottom: 8px; z-index: 4; display: flex; align-items: center; gap: 6px;
+  background: rgba(0, 0, 0, 0.66); color: #fff; padding: 4px 9px; border-radius: 14px; font: 11px var(--font-mono);
+}
+.deck-blend span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.deck-blend i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.deck-blend input { width: 96px; accent-color: #fff; }
+.deck label.deck-blend { flex-direction: row; }
 .deck.is-wide .deck-screen { max-height: 50vh; width: 100%; }
 .deck:fullscreen .deck-screen { max-height: none; }
 
@@ -113,9 +137,14 @@
 .review-video-key i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 3px; }
 @media (max-width: 1100px) { .review-video-layout { grid-template-columns: minmax(0, 1fr); } }
 
-/* Analysis: beside the map (right pane) or across the charts (wide). */
+/* Analysis: beside the map (right pane) or across the charts (wide). The
+   videos are capped so the player, strip and controls fit the pane; two
+   stacked videos share the height. */
 .analysis-right-pane .analysis-deck { flex: 0 1 auto; max-height: 74%; overflow-y: auto; border-radius: 0; border-width: 0 0 1px 1px; }
+.analysis-right-pane .deck-screen { max-height: max(150px, calc(74vh - 290px)); }
+@container (max-width: 560px) { .analysis-right-pane .deck.mode-side .deck-screen { max-height: max(110px, calc((74vh - 290px) / 2)); } }
 .analysis-deck.wide { position: sticky; top: -12px; z-index: 6; margin: 0 0 14px; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45); }
 .analysis-deck.wide .deck-screen { max-height: 38vh; }
 .deck label.deck-follow, .deck label.deck-opacity, .deck label.deck-pick { flex-direction: row; }
-.deck.mode-overlay .deck-screen.a .deck-hud { z-index: 3; }
+.deck.mode-overlay .deck-screen.a .deck-hud, .deck.mode-wipe .deck-screen.a .deck-hud { z-index: 3; }
+.deck.mode-overlay .deck-corner { left: 8px; transform: none; }

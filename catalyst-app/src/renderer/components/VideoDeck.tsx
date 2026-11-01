@@ -31,11 +31,21 @@ export interface DeckLap {
 }
 
 export interface DeckCorner { turn: string; name: string; apexM: number; startM: number; endM: number }
-export type DeckMode = 'single' | 'side' | 'overlay'
+// One lap; two side by side; the second over the first, see-through
+// (overlay) or cut at a handle you drag across (wipe).
+export type DeckMode = 'single' | 'side' | 'overlay' | 'wipe'
+const MODES: Array<{ mode: DeckMode; label: string; title: string }> = [
+  { mode: 'single', label: 'One', title: 'Only the first lap’s video' },
+  { mode: 'side', label: 'Side by side', title: 'The two videos next to each other' },
+  { mode: 'overlay', label: 'Overlay', title: 'The second lap over the first, see-through' },
+  { mode: 'wipe', label: 'Wipe', title: 'The second lap over the first: drag the handle to show more of either' },
+]
 
 const FOLLOW_KEY = 'catalyst.video.followCursor'
 const MODE_KEY = 'catalyst.video.mode'
 const OPACITY_KEY = 'catalyst.video.overlayOpacity'
+const WIPE_KEY = 'catalyst.video.wipe'
+const unit = (v: number, fallback: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback)
 const read = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
 const write = (key: string, value: string) => { try { localStorage.setItem(key, value) } catch { /* per-viewer convenience only */ } }
 
@@ -75,6 +85,14 @@ export function VideoDeck({ laps, primary, onPrimary, compare, onCompare, hoverD
   const [modeChoice, setModeChoice] = useState<DeckMode>(() => (read(MODE_KEY, defaultMode ?? 'side') as DeckMode))
   const mode: DeckMode = b ? modeChoice : 'single'
   const [opacity, setOpacity] = useState(() => Math.min(0.9, Math.max(0.1, Number(read(OPACITY_KEY, '0.5')) || 0.5)))
+  // Wipe: where the cut is, 0 (all second lap) to 1 (all first lap).
+  const [wipe, setWipe] = useState(() => unit(Number(read(WIPE_KEY, '0.5')), 0.5))
+  const stageRef = useRef<HTMLDivElement>(null)
+  const wiping = useRef(false)
+  const moveWipe = (clientX: number) => {
+    const rect = stageRef.current?.getBoundingClientRect()
+    if (rect && rect.width > 0) setWipe(unit((clientX - rect.left) / rect.width, 0.5))
+  }
   const [follow, setFollow] = useState(() => read(FOLLOW_KEY, '1') !== '0')
   const [playing, setPlaying] = useState(false)
   const [rate, setRate] = useState(1)
@@ -317,15 +335,15 @@ export function VideoDeck({ laps, primary, onPrimary, compare, onCompare, hoverD
         </select>
       </label>
       {b && <div className="deck-modes" role="group" aria-label="How to show the two laps">
-        {(['single', 'side', 'overlay'] as const).map(m => <button key={m} type="button" className={modeChoice === m ? 'active' : ''} aria-pressed={modeChoice === m} onClick={() => chooseMode(m)}>
-          {m === 'single' ? 'One' : m === 'side' ? 'Side by side' : 'Overlay'}
+        {MODES.map(m => <button key={m.mode} type="button" title={m.title} className={modeChoice === m.mode ? 'active' : ''} aria-pressed={modeChoice === m.mode} onClick={() => chooseMode(m.mode)}>
+          {m.label}
         </button>)}
       </div>}
       {b && <button type="button" className="deck-icon" title="Swap the two laps" aria-label="Swap the two laps" onClick={() => { const next = a.key; onPrimary(b.key); onCompare(next) }}>⇄</button>}
       {onToggleWide && <button type="button" className="deck-icon" title={wide ? 'Back beside the map' : 'Across the page'} aria-label={wide ? 'Put the video beside the map' : 'Put the video across the page'} onClick={onToggleWide}>{wide ? '⇥' : '⤢'}</button>}
     </div>
 
-    <div className="deck-stage">
+    <div className="deck-stage" ref={stageRef}>
       <div className="deck-screen a" style={{ ['--lap' as string]: a.color }}>
         <video ref={videoA} key={srcA} src={srcA} playsInline preload="metadata" muted={muted}
           onPlay={() => { setPlaying(true); if (videoB.current && bRef.current) void videoB.current.play().catch(() => {}) }}
@@ -338,13 +356,33 @@ export function VideoDeck({ laps, primary, onPrimary, compare, onCompare, hoverD
       </div>
       {b && <div className="deck-screen b" style={{ ['--lap' as string]: b.color }} hidden={mode === 'single'}>
         <video ref={videoB} key={srcB} src={srcB} playsInline preload="metadata" muted onClick={toggle}
-          style={mode === 'overlay' ? { opacity } : undefined}
+          style={mode === 'overlay' ? { opacity } : mode === 'wipe' ? { clipPath: `inset(0 0 0 ${(wipe * 100).toFixed(2)}%)` } : undefined}
           onError={() => setErrors(e => ({ ...e, b: `${b.short}’s video could not be loaded.` }))} />
         <Hud lap={b} speed={speedB} speedUnit={speedUnit} elapsed={elapsedB} gap={gap} against={a.short} />
         {errors.b && <div className="deck-error" role="alert">{errors.b}</div>}
       </div>}
       {(corner || badge) && <div className="deck-corner" aria-live="polite">{badge ?? `${corner!.turn}${corner!.name ? ` · ${corner!.name}` : ''}`}</div>}
       {!playing && <button type="button" className="deck-bigplay" aria-label="Play" onClick={toggle}>▶</button>}
+      {b && mode === 'wipe' && <div className="deck-wipe" style={{ left: `${wipe * 100}%` }}
+        role="slider" tabIndex={0} aria-label={`Wipe between ${a.short} (left) and ${b.short} (right)`}
+        aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(wipe * 100)}
+        onPointerDown={e => { e.preventDefault(); wiping.current = true; e.currentTarget.setPointerCapture(e.pointerId); moveWipe(e.clientX) }}
+        onPointerMove={e => { if (wiping.current) moveWipe(e.clientX) }}
+        onPointerUp={() => { wiping.current = false; setWipe(w => { write(WIPE_KEY, String(w)); return w }) }}
+        onKeyDown={e => {
+          const step = e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : 0
+          if (!step) return
+          e.preventDefault(); e.stopPropagation()
+          setWipe(w => { const v = unit(w + step, 0.5); write(WIPE_KEY, String(v)); return v })
+        }}>
+        <span className="deck-wipe-knob" aria-hidden="true">⟷</span>
+      </div>}
+      {b && mode === 'overlay' && <label className="deck-blend" title={`How much of ${b.short} shows over ${a.short}`}>
+        <span><i style={{ background: a.color }} />{a.short}</span>
+        <input type="range" min={10} max={90} step={5} value={Math.round(opacity * 100)}
+          onChange={e => { const v = Number(e.target.value) / 100; setOpacity(v); write(OPACITY_KEY, String(v)) }} />
+        <span>{b.short}<i style={{ background: b.color }} /></span>
+      </label>}
     </div>
 
     <TrackStrip totalM={totalM} corners={corners} pos={d} gaps={gaps} colors={[a.color, b?.color ?? a.color]} names={[a.short, b?.short ?? '']}
@@ -365,11 +403,6 @@ export function VideoDeck({ laps, primary, onPrimary, compare, onCompare, hoverD
         {gap != null && <> · <span style={{ color: b!.color }}>{b!.short}</span> {signed(gap)}</>}
       </span>
       <div className="deck-tools">
-        {mode === 'overlay' && <label className="deck-opacity" title="How see-through the second lap is">
-          <span>{b!.short}</span>
-          <input type="range" min={10} max={90} step={5} value={Math.round(opacity * 100)}
-            onChange={e => { const v = Number(e.target.value) / 100; setOpacity(v); write(OPACITY_KEY, String(v)) }} />
-        </label>}
         <select aria-label="Playback speed" value={rate} onChange={e => setRate(Number(e.target.value))}>
           {[0.25, 0.5, 1].map(r => <option key={r} value={r}>{r}×</option>)}
         </select>
