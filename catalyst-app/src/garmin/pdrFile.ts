@@ -177,33 +177,54 @@ export function decodeRecords(chunks: Buffer[]): PdrRecords {
   }
 }
 
+interface Movie { moov: Buffer; durationS: number; recordedAt: string | null; tracks: Track[]; video: Track | undefined }
+
+// The movie header (moov) of an open MP4: duration, creation time, tracks.
+async function readMovie(file: fs.FileHandle, size: number): Promise<Movie> {
+  const moovBox = (await topLevel(file, size)).find(b => b.type === 'moov')
+  if (!moovBox) throw new Error('This is not a readable MP4 file (no movie header).')
+  if (moovBox.end - moovBox.start > 256 * 1024 ** 2) throw new Error('The MP4 movie header is too large.')
+  const moov = Buffer.alloc(moovBox.end - moovBox.start)
+  await file.read(moov, 0, moov.length, moovBox.start)
+  const root: Box = { type: 'moov', start: 0, body: moovBox.body - moovBox.start, end: moov.length }
+
+  const mvhd = child(moov, root, 'mvhd')
+  let durationS = 0, recordedAt: string | null = null
+  if (mvhd) {
+    const v1 = moov.readUInt8(mvhd.body) === 1
+    const created = v1 ? Number(moov.readBigUInt64BE(mvhd.body + 4)) : moov.readUInt32BE(mvhd.body + 4)
+    const scale = moov.readUInt32BE(mvhd.body + (v1 ? 20 : 12))
+    const duration = v1 ? Number(moov.readBigUInt64BE(mvhd.body + 24)) : moov.readUInt32BE(mvhd.body + 16)
+    durationS = scale ? duration / scale : 0
+    recordedAt = mp4Time(created)
+  }
+  const all = tracks(moov, root)
+  const video = all.filter(t => t.handlerType === 'vide' && t.format === 'avc1')
+    .sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))[0]
+  return { moov, durationS, recordedAt, tracks: all, video }
+}
+
+/** Any MP4's duration, creation time and picture size (no telemetry needed). */
+export async function readVideoInfo(filePath: string): Promise<PdrVideoInfo> {
+  const file = await fs.open(filePath, 'r')
+  try {
+    const movie = await readMovie(file, (await file.stat()).size)
+    const durationS = movie.video?.durationS ?? movie.durationS
+    if (!(durationS > 0)) throw new Error('This video has no length; it may still be recording or be damaged.')
+    return { durationS, recordedAt: movie.recordedAt, device: null, width: movie.video?.width ?? null, height: movie.video?.height ?? null }
+  } finally {
+    await file.close()
+  }
+}
+
 /** The video's metadata and telemetry. Throws when the file is not a PDR video. */
 export async function readPdrFile(filePath: string): Promise<PdrFile> {
   const file = await fs.open(filePath, 'r')
   try {
     const { size } = await file.stat()
-    const moovBox = (await topLevel(file, size)).find(b => b.type === 'moov')
-    if (!moovBox) throw new Error('This is not a readable MP4 file (no movie header).')
-    if (moovBox.end - moovBox.start > 256 * 1024 ** 2) throw new Error('The MP4 movie header is too large.')
-    const moov = Buffer.alloc(moovBox.end - moovBox.start)
-    await file.read(moov, 0, moov.length, moovBox.start)
-    const root: Box = { type: 'moov', start: 0, body: moovBox.body - moovBox.start, end: moov.length }
-
-    const mvhd = child(moov, root, 'mvhd')
-    let durationS = 0, recordedAt: string | null = null
-    if (mvhd) {
-      const v1 = moov.readUInt8(mvhd.body) === 1
-      const created = v1 ? Number(moov.readBigUInt64BE(mvhd.body + 4)) : moov.readUInt32BE(mvhd.body + 4)
-      const scale = moov.readUInt32BE(mvhd.body + (v1 ? 20 : 12))
-      const duration = v1 ? Number(moov.readBigUInt64BE(mvhd.body + 24)) : moov.readUInt32BE(mvhd.body + 16)
-      durationS = scale ? duration / scale : 0
-      recordedAt = mp4Time(created)
-    }
-    const all = tracks(moov, root)
+    const { moov, durationS, recordedAt, tracks: all, video } = await readMovie(file, size)
     const data = all.find(isPdrTrack)
     if (!data) throw new Error('This video has no PDR telemetry track. Use the MP4 files from the PDR’s SD card or USB drive, as recorded.')
-    const video = all.filter(t => t.handlerType === 'vide' && t.format === 'avc1')
-      .sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))[0]
 
     const chunks: Buffer[] = []
     for (const { offset, size: bytes } of sampleTable(moov, data.box)) {

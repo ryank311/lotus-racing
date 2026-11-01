@@ -72,8 +72,8 @@ export interface SessionVideo {
   // the Garmin session start).
   offsetS: number | null
   // How offsetS was found: matching the PDR's GPS track or speed against
-  // the Garmin laps, or set by hand.
-  alignment: 'position' | 'speed' | 'manual' | null
+  // the Garmin laps, the Catalyst's own clock, or set by hand.
+  alignment: 'position' | 'speed' | 'clock' | 'manual' | null
   // Typical distance between the two GPS tracks (m) or 1 − speed correlation.
   alignmentError: number | null
   // Your laps the video covers, by lap index.
@@ -81,7 +81,14 @@ export interface SessionVideo {
   channels: string[]
   recordCount: number
   createdAt: string | null
+  // Where it came from: a Corvette PDR video, or a Garmin Catalyst session
+  // video or optimal-lap render (see shared/catalystVideo.ts).
+  source: VideoSource
+  // Catalyst videos: DRIVER/Track/Car/YYYYMMDD/HHMMSS/file on the device.
+  sourcePath: string | null
 }
+
+export type VideoSource = 'pdr' | 'catalyst' | 'catalyst-optimal'
 
 /** What happened to one imported video. */
 export interface VideoImportResult {

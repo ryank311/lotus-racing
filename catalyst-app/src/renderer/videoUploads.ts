@@ -14,6 +14,8 @@ export interface VideoUpload {
   sent: number
   phase: UploadPhase
   sessionGuid: string | null
+  // Garmin Catalyst videos: DRIVER/Track/Car/YYYYMMDD/HHMMSS/file on the device.
+  catalystPath: string | null
   result?: VideoImportResult
   error?: string
 }
@@ -49,6 +51,7 @@ async function run() {
       try {
         const result = await api.importVideo(current.file, {
           sessionGuid: current.sessionGuid,
+          catalystPath: current.catalystPath,
           // The desktop bridge copies the file locally and cannot pass a signal.
           ...(isRemote ? { signal: current.controller.signal } : {}),
           onProgress: (sent, _total, phase) => {
@@ -76,11 +79,25 @@ export function queueVideoUploads(files: Iterable<File>, sessionGuid: string | n
   const skipped: string[] = []
   for (const file of files) {
     if (!isVideo(file)) { skipped.push(file.name); continue }
-    entries.push({ key: nextKey++, fileName: file.name, size: file.size, sent: 0, phase: 'waiting', sessionGuid, file, controller: new AbortController() })
+    entries.push({ key: nextKey++, fileName: file.name, size: file.size, sent: 0, phase: 'waiting', sessionGuid, catalystPath: null, file, controller: new AbortController() })
   }
   publish()
   void run()
   return skipped
+}
+
+/** Queue Garmin Catalyst videos, each with its device path and session. */
+export function queueCatalystUploads(items: Array<{ file: File; label: string; sessionGuid: string | null; catalystPath: string }>): void {
+  for (const item of items) {
+    // Already waiting or on its way: not twice.
+    if (entries.some(e => e.catalystPath === item.catalystPath && e.size === item.file.size && (e.phase === 'waiting' || e.phase === 'uploading' || e.phase === 'matching'))) continue
+    entries.push({
+      key: nextKey++, fileName: item.label, size: item.file.size, sent: 0, phase: 'waiting',
+      sessionGuid: item.sessionGuid, catalystPath: item.catalystPath, file: item.file, controller: new AbortController(),
+    })
+  }
+  publish()
+  void run()
 }
 
 export function cancelVideoUpload(key: number) {
@@ -90,8 +107,10 @@ export function cancelVideoUpload(key: number) {
   else if (entry.phase === 'uploading') entry.controller.abort()
 }
 
-export function clearFinishedUploads() {
-  entries = entries.filter(e => e.phase === 'waiting' || e.phase === 'uploading' || e.phase === 'matching')
+/** Drop finished uploads: all, or only PDR or Catalyst ones. */
+export function clearFinishedUploads(only?: 'pdr' | 'catalyst') {
+  entries = entries.filter(e => e.phase === 'waiting' || e.phase === 'uploading' || e.phase === 'matching'
+    || (only != null && (only === 'catalyst') !== !!e.catalystPath))
   publish()
 }
 

@@ -5,10 +5,14 @@ import type { LapFilter } from './coachingScope.js'
 import type { ComparisonRequest, DriverAccount } from './comparison.js'
 import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
 import type { SessionCarData, SessionVideo, VideoImportResult } from './pdr.js'
+import type { CatalystPlan, CatalystPlanEntry } from './catalystVideo.js'
 
 export interface VideoImportOptions {
   // Attach to this session only; otherwise the best match is found.
   sessionGuid?: string | null
+  // A Garmin Catalyst video: its DRIVER/Track/Car/YYYYMMDD/HHMMSS/file path
+  // on the device. It is matched by that folder instead of PDR telemetry.
+  catalystPath?: string | null
   onProgress?: (sentBytes: number, totalBytes: number, phase: 'uploading' | 'matching') => void
   signal?: AbortSignal
 }
@@ -517,6 +521,9 @@ export interface CatalystBridge {
   getSessionCarData(sessionGuid: string): Promise<SessionCarData>
   // Where the player loads the video from.
   videoUrl(videoId: string): string
+  // Garmin Catalyst: the session each RaceData folder belongs to, and which
+  // of the listed videos are already imported.
+  planCatalystImport(entries: CatalystPlanEntry[]): Promise<CatalystPlan>
 }
 
 declare global {

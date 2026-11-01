@@ -269,6 +269,9 @@ export function lapCarSamples(signals: PdrSignals, durationS: number, offsetS: n
     steering: get('steering'), latG: get('latG'), longG: get('longG'),
     wheels: ['wheelFL', 'wheelFR', 'wheelRL', 'wheelRR'].map(get),
   }
+  // A video without the car's speed (a Garmin Catalyst recording) shows
+  // the Garmin GPS speed instead.
+  const gpsSpeed = !signals.has('speed')
   const out: CarSample[] = []
   for (let i = 0; i < lap.distM.length; i++) {
     const ms = lap.timeMs[i]
@@ -279,9 +282,10 @@ export function lapCarSamples(signals: PdrSignals, durationS: number, offsetS: n
     const [fl, fr, rl, rr] = wheels
     const front = fl != null && fr != null ? (fl + fr) / 2 : null
     const slip = front != null && rl != null && rr != null && front > 15 ? ((rl + rr) / 2 / front / baseline - 1) * 100 : null
+    const gps = lap.speed[i]
     out.push({
       distM: lap.distM[i], videoT: t,
-      speedKmh: s.speed.at(t), rpm: s.rpm.at(t), throttle: s.throttle.at(t), brake: s.brake.at(t),
+      speedKmh: gpsSpeed ? (gps == null ? null : gps * 3.6) : s.speed.at(t), rpm: s.rpm.at(t), throttle: s.throttle.at(t), brake: s.brake.at(t),
       gear: s.gear.at(t), steering: s.steering.at(t), latG: s.latG.at(t), longG: s.longG.at(t),
       wheels, slip,
     })

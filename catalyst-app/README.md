@@ -191,6 +191,52 @@ Where it shows up:
   (±0.1/0.5 s) if the video runs ahead of or behind the charts, re-matches
   and deletes. Sessions with video are marked on the Sessions page.
 
+## Garmin Catalyst session videos
+
+The Catalyst records a video of every session on its SD card:
+
+```
+…/Android/data/com.garmin.racingcoach/files/RaceData/
+  <DRIVER>/<Track name>/<CAR MAKE MODEL YEAR>/<YYYYMMDD>/<HHMMSS>/
+    video_1.mp4             the whole session (1080p30, 1–2 GB; video_2.mp4… if split)
+    optimal_lap_video.mp4   Garmin's render of the optimal lap
+```
+
+With the Catalyst connected over USB and opened in MacDroid, the card is at
+`~/Library/CloudStorage/MacDroid-Catalyst/<SD card>/Android/data/com.garmin.racingcoach/files/RaceData`.
+**Import → Garmin Catalyst → Choose RaceData folder** lists every recording on
+it (the browser only reads names and sizes) and matches each folder to a
+synced Garmin session (`src/garmin/catalystVideos.ts`):
+
+- Same track name, same car (the session's make and model appear in the folder's
+  car name), and the session starts between 3 minutes before and 30 minutes
+  after the folder clock (in practice 8 s to 19 minutes after: the folder is
+  created when the session is started on the device, the Garmin session when
+  timing starts). Closest pairs win, and each session takes one folder.
+- `video_1.mp4` starts at the Garmin session start (checked to within 2 s on
+  six sessions from the file's write time and length), so it attaches with
+  offset 0; `video_N` follows the earlier parts. The sync can still be nudged
+  on the Import page.
+- The optimal-lap video attaches to the same session without a place on its
+  timeline; Session Review plays it on its own.
+- Recordings without a synced session can still be imported. They are kept
+  unattached with the reason, and can be matched again after syncing.
+
+New videos of matched recordings are selected by default; the total size is
+shown before anything uploads. Files go up one at a time through the same
+chunked upload as PDR videos, carrying their device path
+(`DRIVER/Track/Car/date/time/file`), which is stored as `source_path` with
+`source` = `catalyst` or `catalyst-optimal`. The same path and size are never
+stored twice, and choosing the folder again shows what is already imported.
+Catalyst videos have no car channels: Session Review and Analysis show the
+player and Garmin GPS speed, and the throttle/brake/gear/steering charts appear
+only for laps with a PDR video (preferred when both cover a lap).
+
+Upload speed is limited by MacDroid (about 20 MB/s) and by the path to the
+server: through the Cloudflare domain, files travel over your internet
+upload; through the Tailscale HTTPS URL on the same network, they usually go
+directly over the LAN.
+
 ## CLI scripts (run individually without the GUI)
 
 ```bash

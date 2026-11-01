@@ -13,7 +13,9 @@ import {
   INSTANCE_DIR,
   VIDEOS_DIR,
 } from '../garmin/paths.js'
-import { deleteSessionVideo, importVideo, listAllVideos, listSessionVideos, rematchVideo, setVideoOffset } from '../garmin/videoStore.js'
+import { deleteSessionVideo, getSessionVideo, importVideo, listAllVideos, listSessionVideos, rematchVideo, setVideoOffset } from '../garmin/videoStore.js'
+import { importCatalystVideo, planCatalystImport, rematchCatalystVideo } from '../garmin/catalystVideos.js'
+import type { CatalystPlanEntry } from '../shared/catalystVideo.js'
 import { sessionCarData } from '../garmin/sessionCarData.js'
 import { MAX_VIDEO_BYTES, VIDEO_ID_RE, type VideoImportResult } from '../shared/pdr.js'
 import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
@@ -1040,9 +1042,29 @@ export function registerApiHandlers(
     return base && base !== '.' && base !== '..' ? base : 'PDR video.mp4'
   }
   const ensureVideoDetails = (guids: string[]) => ensureSessionDetails(guids)
-  const importVideoFile = async (id: string, guid: string | null, fileName: string): Promise<VideoImportResult> => {
+  // A Catalyst video's place on the device: DRIVER/Track/Car/YYYYMMDD/HHMMSS/file.
+  const catalystPath = (value: unknown): string | null => {
+    if (value == null || value === '') return null
+    if (typeof value !== 'string' || value.length > 2048) throw new Error('Invalid Catalyst video path')
+    return value
+  }
+  const importVideoFile = async (id: string, guid: string | null, fileName: string, devicePath: string | null = null): Promise<VideoImportResult> => {
     const filePath = path.join(VIDEOS_DIR, `${id}.mp4`)
     if (!fs.existsSync(filePath)) throw new Error('The uploaded video is missing. Upload it again.')
+    if (devicePath) {
+      try {
+        const result = await withDb(con => importCatalystVideo(con, {
+          videoId: id, filePath, sizeBytes: fs.statSync(filePath).size, sourcePath: devicePath, sessionGuid: guid, ensureDetails: ensureVideoDetails,
+        }), DB_PATH)
+        // The same file was imported before: keep that copy only.
+        if (result.duplicate) fs.rmSync(filePath, { force: true })
+        const { duplicate: _duplicate, ...rest } = result
+        return rest
+      } catch (error) {
+        fs.rmSync(filePath, { force: true })
+        throw error
+      }
+    }
     try {
       return await withDb(con => importVideo(con, {
         videoId: id, sessionGuid: guid, filePath, fileName, sizeBytes: fs.statSync(filePath).size, ensureDetails: ensureVideoDetails,
@@ -1056,9 +1078,20 @@ export function registerApiHandlers(
   register('videos:listAll', () => fs.existsSync(DB_PATH) ? withDb(listAllVideos, DB_PATH) : [])
   register('videos:list', (_e, guid: string) => withDb(con => listSessionVideos(con, sessionId(guid)), DB_PATH))
   // Server only (not reachable from /api/rpc): the upload is already on disk.
-  register('videos:import', (_e, id: string, fileName: string, guid?: string | null) => importVideoFile(videoId(id), optionalSession(guid), videoName(fileName)))
+  register('videos:import', (_e, id: string, fileName: string, guid?: string | null, devicePath?: string | null) =>
+    importVideoFile(videoId(id), optionalSession(guid), videoName(fileName), catalystPath(devicePath)))
+  // Garmin Catalyst: the session each RaceData folder belongs to, and which
+  // of its videos are already on the account. Reads nothing from the device.
+  register('videos:catalystPlan', (_e, entries: unknown) => {
+    if (!Array.isArray(entries) || entries.length > 20_000) throw new Error('Choose the Catalyst RaceData folder.')
+    const clean: CatalystPlanEntry[] = entries.flatMap(e => {
+      const size = Number(e?.size)
+      return typeof e?.path === 'string' && e.path.length <= 2048 && Number.isSafeInteger(size) && size >= 0 ? [{ path: e.path, size }] : []
+    })
+    return withDb(con => planCatalystImport(con, clean), DB_PATH)
+  })
   // Desktop only: copy a file the driver picked into the workspace.
-  register('videos:importPath', async (_e, sourcePath: string, fileName?: string, guid?: string | null) => {
+  register('videos:importPath', async (_e, sourcePath: string, fileName?: string, guid?: string | null, devicePath?: string | null) => {
     if (INSTANCE_DIR) throw new Error('Remote imports must upload the video')
     const source = String(sourcePath ?? '')
     if (!source || !fs.existsSync(source) || !fs.statSync(source).isFile()) throw new Error('That video file could not be read.')
@@ -1066,11 +1099,15 @@ export function registerApiHandlers(
     const id = randomUUID()
     fs.mkdirSync(VIDEOS_DIR, { recursive: true })
     await fs.promises.copyFile(source, path.join(VIDEOS_DIR, `${id}.mp4`))
-    return importVideoFile(id, optionalSession(guid), videoName(fileName ?? source))
+    return importVideoFile(id, optionalSession(guid), videoName(fileName ?? source), catalystPath(devicePath))
   })
   // Match again: to a chosen session, or (null) the best match.
-  register('videos:match', (_e, id: string, guid?: string | null) =>
-    withDb(con => rematchVideo(con, videoId(id), optionalSession(guid), ensureVideoDetails), DB_PATH))
+  register('videos:match', (_e, id: string, guid?: string | null) => withDb(async con => {
+    const video = await getSessionVideo(con, videoId(id))
+    return video && video.source !== 'pdr'
+      ? rematchCatalystVideo(con, video.id, optionalSession(guid), ensureVideoDetails)
+      : rematchVideo(con, videoId(id), optionalSession(guid), ensureVideoDetails)
+  }, DB_PATH))
   register('videos:delete', async (_e, id: string) => {
     const removed = await withDb(con => deleteSessionVideo(con, videoId(id)), DB_PATH)
     fs.rmSync(path.join(VIDEOS_DIR, `${videoId(id)}.mp4`), { force: true })

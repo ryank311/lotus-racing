@@ -107,4 +107,15 @@ function writePdrVideo(file, records, { durationS, recordedAt }) {
   fs.writeFileSync(file, Buffer.concat([ftyp, moov(offsets), box('mdat', ...samples)]))
 }
 
-module.exports = { record, drivingRecords, writePdrVideo }
+/** Write an ordinary MP4 (a Garmin Catalyst recording): one video track, no telemetry, no creation time. */
+function writePlainVideo(file, { durationS, width = 1920, height = 1080 }) {
+  const ftyp = box('ftyp', Buffer.from('isom', 'latin1'), u32(512), Buffer.from('isomiso2avc1mp41', 'latin1'))
+  const moov = box('moov',
+    full('mvhd', 0, u32(0, 0, 1000, Math.round(durationS * 1000)), Buffer.alloc(80)),
+    track({ width, height, scale: 30000, duration: Math.round(durationS * 30000), handler: 'vide', name: 'VideoHandler', format: 'avc1' }),
+  )
+  // A little picture data so the file has a body, as a real one would.
+  fs.writeFileSync(file, Buffer.concat([ftyp, moov, box('mdat', Buffer.alloc(4096, 7))]))
+}
+
+module.exports = { record, drivingRecords, writePdrVideo, writePlainVideo }

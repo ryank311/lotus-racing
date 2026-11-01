@@ -1,10 +1,12 @@
-// Import: PDR videos (matched to their Garmin sessions automatically), car
-// documents for the AI coach, and the videos already on the account.
+// Import: Garmin Catalyst and Corvette PDR videos (matched to their Garmin
+// sessions automatically), car documents for the AI coach, and the videos
+// already on the account.
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import { NavLink } from '../navigation'
 import { UploadQueue, VideoDropZone, VideoLibrary, VideoPickerButton } from '../components/VideoImport'
+import { CatalystImport } from '../components/CatalystImport'
 import type { CarProfile } from '../../shared/types'
 import './import.css'
 
@@ -68,6 +70,13 @@ export function Import() {
     <div className="page-body import-page">
       <section className="review-panel import-section">
         <div className="review-section-heading">
+          <div><span className="review-eyebrow">Garmin Catalyst</span><h2>Session videos from the device</h2></div>
+        </div>
+        <CatalystImport />
+      </section>
+
+      <section className="review-panel import-section">
+        <div className="review-section-heading">
           <div><span className="review-eyebrow">Corvette PDR</span><h2>Videos and car data</h2></div>
         </div>
         <VideoDropZone onSkipped={setSkipped}>
@@ -76,12 +85,12 @@ export function Import() {
           <p className="muted small">Large videos upload in pieces and can take a while; keep this tab open until each one says Imported. A video that matches no session yet is kept here so you can match it after syncing.</p>
         </VideoDropZone>
         {skipped.length > 0 && <p className="loss small" role="alert">Skipped (not MP4 videos): {skipped.join(', ')}</p>}
-        <UploadQueue />
+        <UploadQueue only="pdr" />
       </section>
 
       <section className="review-panel import-section">
         <div className="review-section-heading">
-          <div><span className="review-eyebrow">Your videos</span><h2>Uploaded PDR videos</h2></div>
+          <div><span className="review-eyebrow">Your videos</span><h2>Imported videos</h2></div>
         </div>
         <VideoLibrary />
       </section>

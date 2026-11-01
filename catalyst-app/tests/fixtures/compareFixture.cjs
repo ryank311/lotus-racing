@@ -84,16 +84,16 @@ function lapRows(scale, line = null) {
   return { rows, durationMs: Math.round(t) }
 }
 
-// sessions: [{ sg, start, vehicle, meanLine?, configId?, config?, detailsLoaded?, laps: [scale, ...] }]
+// sessions: [{ sg, start, vehicle, make?, model?, meanLine?, configId?, config?, detailsLoaded?, laps: [scale, ...] }]
 // A session on OTHER_LINE's mean line gets laps measured along it.
 async function seed(con, sessions) {
   for (const s of sessions) {
     const line = s.meanLine === OTHER_LINE.meanLine ? OTHER_LINE : null
     await con.run(`INSERT INTO sessions (session_guid, session_start, track_name, track_configuration_name,
       track_configuration_id, mean_line_guid, vehicle_guid, vehicle_make, vehicle_model, account, details_loaded, best_lap_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'LOTUS', 'EXIGE', 'driver', ?, ?)`, [
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'driver', ?, ?)`, [
       s.sg, s.start, LAYOUT.track, s.config ?? LAYOUT.config, s.configId ?? LAYOUT.configId,
-      s.meanLine ?? LAYOUT.meanLine, s.vehicle ?? 'car', s.detailsLoaded ?? true,
+      s.meanLine ?? LAYOUT.meanLine, s.vehicle ?? 'car', s.make ?? 'LOTUS', s.model ?? 'EXIGE', s.detailsLoaded ?? true,
       Math.min(...s.laps.map(scale => lapRows(scale, line).durationMs)),
     ])
     // Laps run back to back from 30 s into the session.

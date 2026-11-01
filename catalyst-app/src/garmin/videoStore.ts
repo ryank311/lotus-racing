@@ -71,6 +71,10 @@ export async function initVideoSchema(con: DuckDBConnection): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_pdr_lap_samples ON pdr_lap_samples(session_guid, lap_index);
   `)
+  // Added with Garmin Catalyst videos. NULL source = a PDR video; source_path
+  // is where a Catalyst video sat on the device (DRIVER/Track/Car/date/time/file).
+  await con.run('ALTER TABLE session_videos ADD COLUMN IF NOT EXISTS source VARCHAR')
+  await con.run('ALTER TABLE session_videos ADD COLUMN IF NOT EXISTS source_path VARCHAR')
 }
 
 const json = (value: unknown): any => {
@@ -101,11 +105,13 @@ function rowToVideo(r: Record<string, unknown>): SessionVideo {
     channels: Array.isArray(json(r.channels)) ? json(r.channels).map(String) : [],
     recordCount: num(r.record_count) ?? 0,
     createdAt: r.created_at == null ? null : String(r.created_at),
+    source: r.source === 'catalyst' || r.source === 'catalyst-optimal' ? r.source : 'pdr',
+    sourcePath: r.source_path == null ? null : String(r.source_path),
   }
 }
 
 const VIDEO_SELECT = `SELECT v.video_id, v.session_guid, v.match_note, v.file_name, v.size_bytes, v.duration_s, v.recorded_at, v.device,
-  v.width, v.height, v.offset_s, v.auto_offset_s, v.alignment, v.alignment_error,
+  v.width, v.height, v.offset_s, v.auto_offset_s, v.alignment, v.alignment_error, v.source, v.source_path,
   CAST(v.laps AS VARCHAR) AS laps, CAST(v.channels AS VARCHAR) AS channels, v.record_count, CAST(v.created_at AS VARCHAR) AS created_at,
   CAST(s.session_start AS VARCHAR) AS session_start,
   COALESCE(s.track_name, tc.track_name) AS track_name,
@@ -215,7 +221,8 @@ async function writeRecords(con: DuckDBConnection, videoId: string, records: Pdr
 
 async function storedSignals(con: DuckDBConnection, videoId: string): Promise<PdrSignals> {
   const reader = await con.runAndReadAll('SELECT channel, time_s, value FROM pdr_records WHERE video_id = ? ORDER BY time_s', [videoId])
-  const [channels, times, values] = reader.getColumns() as unknown as [number[], number[], number[]]
+  // No records (a Catalyst video) reads as no columns.
+  const [channels = [], times = [], values = []] = reader.getColumns() as unknown as [number[]?, number[]?, number[]?]
   const counts = new Map<number, number>()
   for (const c of channels) counts.set(Number(c), (counts.get(Number(c)) ?? 0) + 1)
   const series = new Map<number, RawSeries & { n: number }>()
@@ -371,6 +378,7 @@ export async function importVideo(con: DuckDBConnection, opts: {
 export async function rematchVideo(con: DuckDBConnection, videoId: string, sessionGuid: string | null, ensureDetails: EnsureDetails): Promise<VideoImportResult> {
   const stored = await getSessionVideo(con, videoId)
   if (!stored) throw new Error('That video is no longer on your account.')
+  if (stored.source !== 'pdr') throw new Error('Catalyst videos are matched by their device folder, not by PDR telemetry.')
   const video: Decoded = { durationS: stored.durationS, recordedAt: stored.recordedAt, signals: await storedSignals(con, videoId) }
   const found = await findSession(con, video, sessionGuid, ensureDetails)
   // A failed match against a chosen session leaves an attached video where it was.
@@ -396,6 +404,51 @@ async function relayVideo(con: DuckDBConnection, video: SessionVideo, offsetS: n
     await con.run('UPDATE session_videos SET offset_s = ?, laps = ? WHERE video_id = ?', [offsetS, JSON.stringify(covered), video.id] as any)
     await writeLapSamples(con, video.id, guid, signals, video.durationS, offsetS, laps, baseline)
   })
+}
+
+/** Where a video without PDR telemetry goes: a session and offset, or none and why. */
+export interface PlainPlacement {
+  sessionGuid: string | null
+  // Session time = video time + offsetS; null when the video has no place
+  // on the session's timeline (Garmin's optimal-lap render).
+  offsetS: number | null
+  note: string | null
+}
+
+/**
+ * Attach (or detach) a video that has no PDR telemetry, such as a Garmin
+ * Catalyst recording: its laps and the video time at each metre are
+ * recomputed, with the car channels empty and speed from Garmin GPS.
+ */
+export async function placePlainVideo(con: DuckDBConnection, videoId: string, place: PlainPlacement): Promise<SessionVideo> {
+  const offset = place.sessionGuid && place.offsetS != null ? Math.round(place.offsetS * 1000) / 1000 : null
+  await inTransaction(con, async () => {
+    await con.run('DELETE FROM pdr_lap_samples WHERE video_id = ?', [videoId])
+    await con.run(`UPDATE session_videos SET session_guid = ?, match_note = ?, offset_s = ?, auto_offset_s = ?, alignment = ?,
+      alignment_error = NULL, laps = '[]', slip_baseline = 1 WHERE video_id = ?`, [
+      place.sessionGuid, place.note, offset, offset, offset == null ? null : 'clock', videoId,
+    ] as any)
+  })
+  const video = await getSessionVideo(con, videoId)
+  if (!video) throw new Error('That video is no longer on your account.')
+  if (offset == null) return video
+  await relayVideo(con, video, offset)
+  return (await getSessionVideo(con, videoId))!
+}
+
+/** Store a video that has no PDR telemetry and place it (see placePlainVideo). */
+export async function attachPlainVideo(con: DuckDBConnection, video: {
+  videoId: string; fileName: string; sizeBytes: number; durationS: number; recordedAt: string | null; device: string | null
+  width: number | null; height: number | null; source: Exclude<SessionVideo['source'], 'pdr'>; sourcePath: string
+}, place: PlainPlacement): Promise<SessionVideo> {
+  await con.run(`
+    INSERT INTO session_videos (video_id, file_name, size_bytes, duration_s, recorded_at, device, width, height, channels, record_count, laps, source, source_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, '[]', ?, ?)
+  `, [
+    video.videoId, video.fileName, video.sizeBytes, video.durationS, video.recordedAt, video.device, video.width, video.height,
+    video.source, video.sourcePath,
+  ] as any)
+  return placePlainVideo(con, video.videoId, place)
 }
 
 /** Nudge a video's sync; null returns to the matched offset. */
@@ -456,15 +509,19 @@ export async function carDataForLaps(
   // Only laps a video mostly covers (its `laps`); a lap's first or last
   // seconds at the edge of a recording are left out.
   const covers = new Set(videos.flatMap(v => (Array.isArray(json(v[5])) ? json(v[5]) : []).map((lap: unknown) => `${v[0]}:${v[1]}:${lap}`)))
+  // A lap covered by a PDR video and a Catalyst video uses the PDR's: it has car data.
   const coverage = (await con.runAndReadAll(`
-    SELECT session_guid, lap_index, video_id, COUNT(*) FROM pdr_lap_samples
-    WHERE session_guid IN (${marks}) GROUP BY ALL
+    SELECT p.session_guid, p.lap_index, p.video_id, COUNT(*), ANY_VALUE(v.source IS NULL) FROM pdr_lap_samples p
+    JOIN session_videos v USING (video_id)
+    WHERE p.session_guid IN (${marks}) GROUP BY p.session_guid, p.lap_index, p.video_id
   `, sessions)).getRowsJson()
-  const chosen = new Map<string, { videoId: string; n: number }>()
-  for (const [sg, lap, video, n] of coverage) {
+  const chosen = new Map<string, { videoId: string; n: number; car: boolean }>()
+  for (const [sg, lap, video, n, car] of coverage) {
     const key = `${sg}:${lap}`
     if (!wanted.has(key) || !covers.has(`${video}:${key}`)) continue
-    if (!chosen.has(key) || Number(n) > chosen.get(key)!.n) chosen.set(key, { videoId: String(video), n: Number(n) })
+    const pick = { videoId: String(video), n: Number(n), car: car === true }
+    const current = chosen.get(key)
+    if (!current || (pick.car !== current.car ? pick.car : pick.n > current.n)) chosen.set(key, pick)
   }
   const toSpeed = (kmh: unknown) => { const v = num(kmh); return v == null ? null : round(speedFromMps(v / 3.6, system), 1) }
   const traces: CarTrace[] = []

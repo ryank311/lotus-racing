@@ -80,6 +80,8 @@ interface VideoUpload {
   received: number
   fileName: string
   sessionGuid: string | null
+  // A Garmin Catalyst video: its DRIVER/Track/Car/YYYYMMDD/HHMMSS/file path on the device.
+  catalystPath: string | null
   busy: boolean
   touched: number
 }
@@ -504,9 +506,11 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         const size = Number(body?.size)
         const fileName = path.basename(String(body?.fileName ?? '')).slice(0, 200)
         const sessionGuid = body?.sessionGuid == null || body.sessionGuid === '' ? null : String(body.sessionGuid)
+        const catalystPath = body?.catalystPath == null || body.catalystPath === '' ? null : String(body.catalystPath)
         if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_VIDEO_BYTES) { json(res, 400, { error: 'Choose a video under 16 GB.' }, origin); return }
-        if (!/\.(mp4|mov)$/i.test(fileName)) { json(res, 400, { error: 'PDR videos are .mp4 files.' }, origin); return }
+        if (!/\.(mp4|mov)$/i.test(fileName)) { json(res, 400, { error: 'Videos must be .mp4 files.' }, origin); return }
         if (sessionGuid !== null && !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionGuid)) { json(res, 400, { error: 'Invalid session ID' }, origin); return }
+        if (catalystPath !== null && catalystPath.length > 2048) { json(res, 400, { error: 'Invalid Catalyst video path' }, origin); return }
         sweepUploads()
         const dir = workspaceVideoDir(userDirectory(dataDir, username))
         const incoming = path.join(dir, '.incoming')
@@ -519,7 +523,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         const id = randomUUID()
         const upload: VideoUpload = {
           id, owner: accountKey(username), username, dir, partPath: path.join(incoming, `${id}.part`),
-          size, received: 0, fileName, sessionGuid, busy: false, touched: Date.now(),
+          size, received: 0, fileName, sessionGuid, catalystPath, busy: false, touched: Date.now(),
         }
         fs.writeFileSync(upload.partPath, '')
         uploads.set(id, upload)
@@ -577,7 +581,7 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
           // a proxy's request timeout: run it in the background.
           const importJob: VideoImport = { owner: upload.owner, state: 'importing', touched: Date.now() }
           imports.set(upload.id, importJob)
-          backendFor(username).call('videos:import', [upload.id, upload.fileName, upload.sessionGuid]).then(
+          backendFor(username).call('videos:import', [upload.id, upload.fileName, upload.sessionGuid, upload.catalystPath]).then(
             result => { importJob.state = 'done'; importJob.result = result },
             error => { importJob.state = 'failed'; importJob.error = error instanceof Error ? error.message : String(error) },
           )

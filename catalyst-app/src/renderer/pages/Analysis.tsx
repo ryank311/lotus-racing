@@ -585,13 +585,19 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
   const timePlotSeries = useMemo(() => deltaMode === 'garmin' ? garminOptimalTimeDeltaSeries(data)
     : deltaMode === 'optimal' ? optimalTimeDeltaSeries(data) : timeDeltaSeries(data), [data, deltaMode])
   const longPlotSeries = useMemo(() => longGSeries(data), [data])
-  // PDR car data, when a video is attached to these sessions.
+  // PDR car data, when a PDR video is attached to these sessions (Catalyst
+  // videos give the player but no car channels).
   const [engineMode, setEngineMode] = useState<'gear' | 'rpm'>('gear')
-  const carCharts = useMemo(() => data.car?.traces.length ? {
-    throttle: carSeries(data, 'throttle'), brake: carSeries(data, 'brake'),
-    gear: carSeries(data, 'gear'), rpm: carSeries(data, 'rpm'),
-    steering: carSeries(data, 'steering'), slip: carSeries(data, 'slip'),
-  } : null, [data])
+  const carCharts = useMemo(() => {
+    if (!data.car?.traces.length) return null
+    const throttle = carSeries(data, 'throttle'), brake = carSeries(data, 'brake')
+    if (!throttle.length && !brake.length) return null
+    return {
+      throttle, brake,
+      gear: carSeries(data, 'gear'), rpm: carSeries(data, 'rpm'),
+      steering: carSeries(data, 'steering'), slip: carSeries(data, 'slip'),
+    }
+  }, [data])
   // With other drivers, the segment heatmap can show everyone's laps against
   // the best split by anyone (default) or only yours.
   const [heatmapScope, setHeatmapScope] = useState<'all' | 'mine'>('all')

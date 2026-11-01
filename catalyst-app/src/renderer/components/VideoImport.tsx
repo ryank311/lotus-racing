@@ -50,9 +50,10 @@ const phaseLabel: Record<VideoUpload['phase'], string> = {
   waiting: 'Waiting', uploading: 'Uploading', matching: 'Finding its session…', done: 'Imported', failed: 'Failed', cancelled: 'Cancelled',
 }
 
-/** Uploads in this browser tab, newest last. */
-export function UploadQueue({ compact = false }: { compact?: boolean }) {
-  const uploads = useVideoUploads()
+/** Uploads in this browser tab, newest last: all, or only PDR or Catalyst ones. */
+export function UploadQueue({ compact = false, only }: { compact?: boolean; only?: 'pdr' | 'catalyst' }) {
+  const all = useVideoUploads()
+  const uploads = only ? all.filter(u => (only === 'catalyst') === !!u.catalystPath) : all
   if (!uploads.length) return null
   const finished = uploads.some(u => u.phase === 'done' || u.phase === 'failed' || u.phase === 'cancelled')
   return <div className={`upload-queue${compact ? ' compact' : ''}`} aria-live="polite">
@@ -75,7 +76,7 @@ export function UploadQueue({ compact = false }: { compact?: boolean }) {
         </p>}
       </div>
     })}
-    {finished && <button type="button" className="btn ghost small" onClick={clearFinishedUploads}>Clear finished</button>}
+    {finished && <button type="button" className="btn ghost small" onClick={() => clearFinishedUploads(only)}>Clear finished</button>}
   </div>
 }
 
@@ -88,6 +89,7 @@ export function alignmentLabel(video: SessionVideo): string {
   if (video.offsetS == null) return 'Not synced'
   const how = video.alignment === 'manual' ? 'adjusted by hand'
     : video.alignment === 'position' ? `GPS match${video.alignmentError != null ? ` ±${video.alignmentError.toFixed(1)} m` : ''}`
+    : video.alignment === 'clock' ? 'Catalyst clock'
     : 'speed match'
   return `${how}`
 }
@@ -166,7 +168,7 @@ export function VideoLibrary() {
           </div>
         </div>
         {video.sessionGuid
-          ? <p className="small">Session: <b>{[video.session?.track, video.session?.layout].filter(Boolean).join(' · ') || 'Unknown track'}</b> · {startLabel(video.session?.start)} · {video.laps.length ? `laps ${video.laps.map(i => `L${i + 1}`).join(', ')}` : 'no complete laps'}</p>
+          ? <p className="small">Session: <b>{[video.session?.track, video.session?.layout].filter(Boolean).join(' · ') || 'Unknown track'}</b> · {startLabel(video.session?.start)} · {video.source === 'catalyst-optimal' ? 'Garmin’s optimal-lap render' : video.laps.length ? `laps ${video.laps.map(i => `L${i + 1}`).join(', ')}` : 'no complete laps'}{video.matchNote ? <span className="reference"> · {video.matchNote}</span> : null}</p>
           : <p className="small reference">Not matched to a session. {video.matchNote}</p>}
         {sameDay.length > 0 && <label className="video-assign small">Attach to
           <select value="" disabled={busy === video.id} onChange={e => { if (e.target.value) void match(video, e.target.value) }}>

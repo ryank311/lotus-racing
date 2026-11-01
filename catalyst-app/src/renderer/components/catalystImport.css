@@ -1,0 +1,25 @@
+/* Import page: Garmin Catalyst videos. */
+.catalyst-import > p { margin: 0 0 12px; line-height: 1.55; font-size: 13px; }
+.catalyst-import code { font-family: var(--font-mono); font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.catalyst-import kbd { font-family: var(--font-mono); font-size: 11px; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 0 4px; }
+.catalyst-import .btn-row { margin: 0 0 10px; }
+.catalyst-help { margin: 0 0 12px; }
+.catalyst-help summary { cursor: pointer; color: var(--text-dim); }
+.catalyst-help p { margin: 8px 0 0; line-height: 1.55; color: var(--text-dim); }
+.catalyst-summary { margin: 14px 0 8px; }
+.catalyst-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.catalyst-toolbar label { display: flex; align-items: center; gap: 6px; color: var(--text-dim); margin-right: auto; }
+.catalyst-days { display: flex; flex-direction: column; gap: 14px; max-height: 560px; overflow-y: auto; padding-right: 4px; }
+.catalyst-day h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.catalyst-folder { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 11px; margin-bottom: 6px; }
+.catalyst-folder.unmatched { border-style: dashed; }
+.catalyst-folder-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.catalyst-folder-head .mono { font-family: var(--font-mono); }
+.catalyst-session { margin: 4px 0 6px; line-height: 1.5; }
+.catalyst-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.catalyst-files li { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.catalyst-files label { display: flex; align-items: center; gap: 6px; }
+.catalyst-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+
+/* Session Review: Garmin's optimal-lap video. */
+.catalyst-optimal video { display: block; width: 100%; max-width: 760px; margin-top: 10px; background: #000; border-radius: var(--radius); }

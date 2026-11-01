@@ -13,6 +13,7 @@ import { UploadQueue, VideoPickerButton, VideoSyncControls } from './VideoImport
 import { onVideoImported } from '../videoUploads'
 import type { SessionCarData, SessionVideo } from '../../shared/pdr'
 import './video.css'
+import './catalystImport.css'
 
 const CHARTS: Array<{ channel: CarChannel; label: string; unit: string; range?: [number, number]; zero?: boolean }> = [
   { channel: 'speed', label: 'SPEED', unit: '' },
@@ -49,25 +50,31 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
     ...(best && current && best.key !== current.key ? [{ id: 'best', label: `★ ${lapInfo.get(best.trace.lapIdx)?.label} (fastest)`, ...channelPoints(best.trace, channel), color: PALETTE.cyan, width: 1.4, opacity: 0.75 }] : []),
     ...(current ? [{ id: 'lap', label: lapInfo.get(current.trace.lapIdx)?.label ?? 'Lap', ...channelPoints(current.trace, channel), color: PALETTE.signal, width: 2.2, opacity: 1 }] : []),
   ]
-  const inputs = useMemo(() => current && data ? cornerInputs(current.trace, data.corners) : [], [current, data])
-  const bestInputs = useMemo(() => best && data && best.key !== current?.key ? new Map(cornerInputs(best.trace, data.corners).map(c => [c.turn, c])) : null, [best, current, data])
+  // Catalyst videos have no car channels: only the charts with data show.
+  const hasData = (channel: CarChannel) => [current, best].some(o => o && channelPoints(o.trace, channel).xs.length > 0)
+  const charts = CHARTS.filter(c => hasData(c.channel))
+  const hasInputs = hasData('throttle') || hasData('brake')
+  const inputs = useMemo(() => current && data && hasInputs ? cornerInputs(current.trace, data.corners) : [], [current, data, hasInputs])
+  const bestInputs = useMemo(() => best && data && hasInputs && best.key !== current?.key ? new Map(cornerInputs(best.trace, data.corners).map(c => [c.turn, c])) : null, [best, current, data, hasInputs])
   const replace = (video: SessionVideo) => { setData(d => d ? { ...d, attached: d.attached.map(v => (v.id === video.id ? video : v)) } : d); void load() }
+  const synced = data?.attached.filter(v => v.offsetS != null) ?? []
+  const optimal = data?.attached.filter(v => v.source === 'catalyst-optimal') ?? []
 
   return <section className="review-panel review-video">
     <div className="review-section-heading">
-      <div><span className="review-eyebrow">Corvette PDR</span><h2>Video & car data</h2></div>
+      <div><span className="review-eyebrow">Video</span><h2>Video & car data</h2></div>
       <VideoPickerButton sessionGuid={sessionGuid} className="btn ghost">Attach PDR video</VideoPickerButton>
     </div>
     {error && <p className="loss" role="alert">{error}</p>}
     {!data && !error && <p className="muted">Loading…</p>}
-    {data && !data.attached.length && <p className="muted">Attach the PDR video recorded during this session to watch any lap beside its throttle, brake, gear and steering. You can also import a whole card of videos on the <NavLink to="/import">Import</NavLink> page; each is matched to its session.</p>}
+    {data && !data.attached.length && <p className="muted">Import this session’s video from the Garmin Catalyst on the <NavLink to="/import">Import</NavLink> page to watch any lap beside its charts, or attach the Corvette PDR video recorded during it to add throttle, brake, gear and steering. Imported videos are matched to their sessions automatically.</p>}
     <UploadQueue compact />
-    {data && data.attached.length > 0 && !options.length && <p className="muted">The attached video does not cover a complete valid lap of this session.</p>}
+    {data && synced.length > 0 && !options.length && <p className="muted">The attached video does not cover a complete valid lap of this session.</p>}
     {current && <>
       <div className="review-video-grid">
         <LapVideo options={options} selected={current.key} onSelect={setLap} hoverDistanceM={hover} onHoverDistance={setHover} />
         <div className="review-video-charts">
-          {CHARTS.map(c => <div key={c.channel} className="review-video-chart">
+          {charts.map(c => <div key={c.channel} className="review-video-chart">
             <span className="channel-tag">{c.label}{c.channel === 'speed' ? ` · ${data!.speedUnit}` : c.unit ? ` · ${c.unit}` : ''}</span>
             <LineChart series={series(c.channel)} height={118} yUnit={c.channel === 'speed' ? data!.speedUnit : c.unit} yRange={c.range} zeroLine={c.zero}
               onHoverX={setHover} hoverX={hover} xRange={xRange} onXRangeChange={setXRange} />
@@ -95,6 +102,10 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
         </table></div>
       </details>}
     </>}
+    {optimal.map(v => <details key={v.id} className="review-video-files catalyst-optimal">
+      <summary><span className="review-eyebrow">Garmin optimal lap</span> <span className="muted small">Garmin’s render of your best segments, joined into one lap</span></summary>
+      <video controls preload="metadata" src={api.videoUrl(v.id)} />
+    </details>)}
     {data && data.attached.length > 0 && <details className="review-video-files">
       <summary><span className="review-eyebrow">Attached videos</span> <span className="muted small">{data.attached.length} · sync and files</span></summary>
       {data.attached.map(v => <div key={v.id} className="video-card">

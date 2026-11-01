@@ -125,13 +125,14 @@ const bridge: CatalystBridge = {
     opts?.onProgress?.(0, file.size, 'uploading')
     const sourcePath = webUtils.getPathForFile(file)
     opts?.onProgress?.(file.size, file.size, 'matching')
-    return ipcRenderer.invoke('videos:importPath', sourcePath, file.name, opts?.sessionGuid ?? null)
+    return ipcRenderer.invoke('videos:importPath', sourcePath, file.name, opts?.sessionGuid ?? null, opts?.catalystPath ?? null)
   },
   matchVideo: (id, guid) => ipcRenderer.invoke('videos:match', id, guid ?? null),
   deleteVideo: id => ipcRenderer.invoke('videos:delete', id),
   setVideoOffset: (id, offsetS) => ipcRenderer.invoke('videos:setOffset', id, offsetS),
   getSessionCarData: guid => ipcRenderer.invoke('videos:carData', guid),
   videoUrl: id => `catalyst-video://video/${encodeURIComponent(id)}.mp4`,
+  planCatalystImport: entries => ipcRenderer.invoke('videos:catalystPlan', entries),
 }
 
 contextBridge.exposeInMainWorld('catalyst', bridge)

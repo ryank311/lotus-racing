@@ -67,9 +67,9 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 // resending a chunk that fails; the server then matches the video to a
 // session in the background while this polls for the result.
 async function uploadVideo(file: File, opts: import('../shared/types').VideoImportOptions = {}): Promise<import('../shared/pdr').VideoImportResult> {
-  const { onProgress, signal, sessionGuid = null } = opts
+  const { onProgress, signal, sessionGuid = null, catalystPath = null } = opts
   const started = await requestJson('/api/videos/uploads', {
-    method: 'POST', body: JSON.stringify({ fileName: file.name, size: file.size, sessionGuid }),
+    method: 'POST', body: JSON.stringify({ fileName: file.name, size: file.size, sessionGuid, catalystPath }),
   }) as { uploadId: string; chunkSize: number }
   const base = `/api/videos/uploads/${started.uploadId}`
   try {
@@ -213,6 +213,7 @@ const remoteBridge: CatalystBridge = {
   setVideoOffset: (id, offsetS) => rpc('videos:setOffset', id, offsetS),
   getSessionCarData: guid => rpc('videos:carData', guid),
   videoUrl: id => `${remoteBaseUrl}/api/videos/${encodeURIComponent(id)}.mp4`,
+  planCatalystImport: entries => rpc('videos:catalystPlan', entries),
 }
 
 export const api: CatalystBridge = isRemote ? remoteBridge : window.catalyst
