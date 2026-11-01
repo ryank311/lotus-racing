@@ -51,7 +51,7 @@ export function fileId(name: string): string {
 }
 
 const enums: Record<string, [string[], string]> = {
-  sort: [['date', 'track', 'config', 'vehicle', 'best', 'laps', 'weather'], 'date'],
+  sort: [['date', 'track', 'config', 'vehicle', 'best', 'laps', 'weather', 'video'], 'date'],
   dir: [['asc', 'desc'], 'desc'], laps: [['top10', 'top5', 'top3', 'session-best', 'top3-session'], 'top10'],
   view: [['charts', 'map'], 'charts'], follow: [['0', '1'], '1'],
 }

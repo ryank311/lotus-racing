@@ -65,7 +65,21 @@ function LapTime({ row }: { row: DbSessionRow }) {
   </>
 }
 
-type SortKey = 'date' | 'track' | 'config' | 'vehicle' | 'best' | 'laps' | 'weather'
+// Sessions with a lap video (PDR or Catalyst) attached.
+function VideoMark({ count }: { count: number }) {
+  const label = `${count} video${count === 1 ? '' : 's'} attached`
+  return (
+    <span className="session-video" role="img" title={label} aria-label={label}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2.5" y="6.5" width="13" height="11" rx="2" />
+        <path d="M15.5 10.5L21.5 7.5V16.5L15.5 13.5" />
+      </svg>
+      {count > 1 && <span>{count}</span>}
+    </span>
+  )
+}
+
+type SortKey = 'date' | 'track' | 'config' | 'vehicle' | 'best' | 'laps' | 'weather' | 'video'
 type SortDir = 'asc' | 'desc'
 
 // Per-column field extractors. Returning a (number|string|null) lets us share
@@ -78,6 +92,7 @@ const SORT_EXTRACTORS: Record<SortKey, (r: DbSessionRow) => string | number | nu
   best:    r => r.best_lap_ms ?? null,
   laps:    r => r.lap_count ?? null,
   weather: r => (r.weather_description ?? '').toLowerCase() || null,
+  video:   r => r.video_count || null,
 }
 
 // The phone layout sorts from one dropdown; directions are part of the choice.
@@ -88,6 +103,7 @@ const SORT_CHOICES: Array<{ key: SortKey; dir: SortDir; label: string }> = [
   { key: 'laps', dir: 'desc', label: 'Most laps first' },
   { key: 'track', dir: 'asc', label: 'Track A–Z' },
   { key: 'vehicle', dir: 'asc', label: 'Car A–Z' },
+  { key: 'video', dir: 'desc', label: 'With video first' },
 ]
 
 function compareWith(key: SortKey, dir: SortDir) {
@@ -138,7 +154,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
     if (sortKey === key) {
       setSortDir(d => (d === 'asc' ? 'desc' : 'asc'))
     } else {
-      query({ sort: key, dir: key === 'date' || key === 'laps' ? 'desc' : 'asc' })
+      query({ sort: key, dir: key === 'date' || key === 'laps' || key === 'video' ? 'desc' : 'asc' })
     }
   }
 
@@ -318,6 +334,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                 {[startLabel(r.session_start, !r.session_start?.startsWith(thisYear)), r.weather_description, temperature(r)].filter(Boolean).join(' · ')}
                 {(!r.details_loaded || downloading.has(r.session_guid)) && <em>{downloading.has(r.session_guid) ? 'Downloading…' : 'Overview only'}</em>}
               </span>
+              {(r.video_count ?? 0) > 0 && <VideoMark count={r.video_count!} />}
               <NavLink className="session-card-review" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review →</NavLink>
             </span>
           </label>)}
@@ -335,13 +352,14 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                 <SortHeader k="laps"    sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick} align="right">Laps</SortHeader>
                 <th style={{ textAlign: 'right' }}>Temp</th>
                 <SortHeader k="weather" sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick}>Weather</SortHeader>
+                <SortHeader k="video"   sortKey={sortKey} sortDir={sortDir} onClick={onHeaderClick} align="center">Video</SortHeader>
                 <th><span className="loading-sr-only">Review</span></th>
               </tr>
             </thead>
             <tbody>
-              {loading && Array.from({ length: 5 }, (_, row) => <tr key={row} className="loading-table-row" aria-hidden="true">{Array.from({ length: 10 }, (_, cell) => <td key={cell}><Skeleton /></td>)}</tr>)}
+              {loading && Array.from({ length: 5 }, (_, row) => <tr key={row} className="loading-table-row" aria-hidden="true">{Array.from({ length: 11 }, (_, cell) => <td key={cell}><Skeleton /></td>)}</tr>)}
               {sessionsResource.data !== undefined && filtered.length === 0 && (
-                <tr><td colSpan={10} className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</td></tr>
+                <tr><td colSpan={11} className="muted">{rows.length ? 'No sessions match your filters.' : 'No sessions yet. Sync from Overview to get started.'}</td></tr>
               )}
               {filtered.map(r => {
                 const on = selected.has(r.session_guid)
@@ -363,7 +381,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                         style={{ accentColor: 'var(--signal)' }}
                       />
                     </td>
-                    <td className="small">{r.session_start ?? '—'}{(r.video_count ?? 0) > 0 && <span className="session-video-badge" title={`${r.video_count} PDR video${r.video_count === 1 ? '' : 's'} attached`} aria-label="Has PDR video">▶ video</span>}</td>
+                    <td className="small">{r.session_start ?? '—'}</td>
                     <td>{r.track_name ?? '—'}
                       {!r.details_loaded && <span className="session-detail-status">
                         {downloading.has(r.session_guid) ? 'Downloading…' : 'Overview only'}
@@ -375,6 +393,7 @@ export function Sessions({ refreshTick, selected, setSelected, onAnalyze, active
                     <td className="num">{r.lap_count || '—'}</td>
                     <td className="num">{temperature(r) ?? '—'}</td>
                     <td className="muted small">{r.weather_description || '—'}</td>
+                    <td className="session-video-cell">{(r.video_count ?? 0) > 0 && <VideoMark count={r.video_count!} />}</td>
                     <td className="session-review-cell"><NavLink className="session-review-link" to={`/review/${segment(r.session_guid)}`} onClick={e => e.stopPropagation()}>Review →</NavLink></td>
                   </tr>
                 )
@@ -424,7 +443,7 @@ function SortHeader({
   sortKey: SortKey
   sortDir: SortDir
   onClick: (k: SortKey) => void
-  align?: 'left' | 'right'
+  align?: 'left' | 'right' | 'center'
   children: React.ReactNode
 }) {
   const active = sortKey === k

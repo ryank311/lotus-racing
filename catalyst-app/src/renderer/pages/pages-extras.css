@@ -33,6 +33,10 @@
 .sessions-table .session-review-cell { width: 1%; white-space: nowrap; text-align: right; }
 .sessions-table .session-review-link { display: inline-block; padding: 6px 0; font: 11px var(--font-mono); }
 
+.sessions-table .session-video-cell { width: 1%; text-align: center; }
+.session-video { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; color: var(--cyan); font: 10px var(--font-mono); }
+.session-video svg { width: 16px; height: 16px; flex: none; }
+
 .session-pb { margin-left: 6px; color: var(--amber); }
 .session-pb-gap { margin-left: 6px; font: 10px var(--font-mono); color: var(--text-mute); }
 
@@ -68,6 +72,7 @@
     grid-area: foot; display: flex; align-items: center; justify-content: space-between; gap: 12px;
     min-width: 0; border-top: 1px solid var(--border);
   }
+  .session-card-foot .session-video { margin-left: auto; }
   .session-card-when { min-width: 0; padding: 10px 0; font: 11px/1.5 var(--font-mono); color: var(--text-mute); }
   .session-card-when em { display: block; font-style: normal; color: var(--amber); }
   .session-card-review {
