@@ -136,6 +136,8 @@ export interface SessionCarData extends CarData {
   attached: SessionVideo[]
   laps: Array<{ lapIdx: number; durationMs: number; label: string; isBest: boolean }>
   corners: Array<{ turn: string; name: string; apexM: number; startM: number; endM: number }>
+  // Garmin's segments end to end (S1, S2…): where the stitched optimal lap cuts.
+  splits: Array<{ id: string; startM: number; endM: number }>
 }
 
 export const VIDEO_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/

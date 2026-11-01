@@ -8,7 +8,7 @@ import { NavLink } from '../navigation'
 import { LineChart, type LineSeries } from './Charts'
 import { PALETTE } from './chartTheme'
 import { LapVideo, type LapVideoOption } from './LapVideo'
-import { channelPoints, cornerInputs, traceKey, type CarChannel } from './carData'
+import { channelPoints, cornerInputs, stitchOptimalLap, traceKey, type CarChannel } from './carData'
 import { UploadQueue, VideoPickerButton, VideoSyncControls } from './VideoImport'
 import { onVideoImported } from '../videoUploads'
 import type { SessionCarData, SessionVideo } from '../../shared/pdr'
@@ -24,6 +24,7 @@ const CHARTS: Array<{ channel: CarChannel; label: string; unit: string; range?: 
 ]
 
 const fmt = (v: number | null, unit = '', places = 0) => (v == null ? '—' : `${v.toFixed(places)}${unit}`)
+const OPTIMAL = 'optimal'
 
 export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
   const [data, setData] = useState<SessionCarData | null>(null)
@@ -41,20 +42,28 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
   }, [sessionGuid, load])
 
   const lapInfo = useMemo(() => new Map((data?.laps ?? []).map(l => [l.lapIdx, l])), [data])
-  const options = useMemo<LapVideoOption[]>(() => (data?.traces ?? [])
+  const laps = useMemo<LapVideoOption[]>(() => (data?.traces ?? [])
     .filter(t => lapInfo.has(t.lapIdx) && t.videoT.some(v => v != null))
     .map(t => { const info = lapInfo.get(t.lapIdx)!; return { key: traceKey(t), trace: t, label: `${info.isBest ? '★ ' : ''}${info.label} · ${msToLap(info.durationMs)}` } }), [data, lapInfo])
+  // The optimal lap: each of Garmin's segments from the lap that was fastest
+  // through it, cut together from this session's video.
+  const stitched = useMemo(() => stitchOptimalLap(laps.map(o => o.trace), data?.splits ?? []), [laps, data])
+  const options = useMemo<LapVideoOption[]>(() => stitched
+    ? [{ key: OPTIMAL, trace: stitched.trace, pieces: stitched.pieces, label: `◆ Optimal · ${msToLap(Math.round(stitched.timeS * 1000))} · from ${stitched.laps.map(i => lapInfo.get(i)?.label ?? `L${i + 1}`).join(', ')}` }, ...laps]
+    : laps, [stitched, laps, lapInfo])
   const current = options.find(o => o.key === lap) ?? options.find(o => lapInfo.get(o.trace.lapIdx)?.isBest) ?? options[0]
   const best = options.find(o => lapInfo.get(o.trace.lapIdx)?.isBest)
+  const label = (o: LapVideoOption) => (o.pieces ? 'Optimal' : lapInfo.get(o.trace.lapIdx)?.label ?? 'Lap')
   const series = (channel: CarChannel): LineSeries[] => [
     ...(best && current && best.key !== current.key ? [{ id: 'best', label: `★ ${lapInfo.get(best.trace.lapIdx)?.label} (fastest)`, ...channelPoints(best.trace, channel), color: PALETTE.cyan, width: 1.4, opacity: 0.75 }] : []),
-    ...(current ? [{ id: 'lap', label: lapInfo.get(current.trace.lapIdx)?.label ?? 'Lap', ...channelPoints(current.trace, channel), color: PALETTE.signal, width: 2.2, opacity: 1 }] : []),
+    ...(current ? [{ id: 'lap', label: label(current), ...channelPoints(current.trace, channel), color: PALETTE.signal, width: 2.2, opacity: 1 }] : []),
   ]
   // Catalyst videos have no car channels: only the charts with data show.
   const hasData = (channel: CarChannel) => [current, best].some(o => o && channelPoints(o.trace, channel).xs.length > 0)
   const charts = CHARTS.filter(c => hasData(c.channel))
   const hasInputs = hasData('throttle') || hasData('brake')
-  const inputs = useMemo(() => current && data && hasInputs ? cornerInputs(current.trace, data.corners) : [], [current, data, hasInputs])
+  // Corner inputs time the coast between pedals: not across the optimal lap's cuts.
+  const inputs = useMemo(() => current && !current.pieces && data && hasInputs ? cornerInputs(current.trace, data.corners) : [], [current, data, hasInputs])
   const bestInputs = useMemo(() => best && data && hasInputs && best.key !== current?.key ? new Map(cornerInputs(best.trace, data.corners).map(c => [c.turn, c])) : null, [best, current, data, hasInputs])
   const replace = (video: SessionVideo) => { setData(d => d ? { ...d, attached: d.attached.map(v => (v.id === video.id ? video : v)) } : d); void load() }
   const synced = data?.attached.filter(v => v.offsetS != null) ?? []
@@ -79,7 +88,7 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
             <LineChart series={series(c.channel)} height={118} yUnit={c.channel === 'speed' ? data!.speedUnit : c.unit} yRange={c.range} zeroLine={c.zero}
               onHoverX={setHover} hoverX={hover} xRange={xRange} onXRangeChange={setXRange} />
           </div>)}
-          {best && best.key !== current.key && <p className="muted small">Orange: the lap in the video · cyan: this session’s fastest lap.</p>}
+          {best && best.key !== current.key && <p className="muted small">Orange: {current.pieces ? 'the optimal lap, cut from your fastest pass through each segment' : 'the lap in the video'} · cyan: this session’s fastest lap.</p>}
         </div>
       </div>
       {inputs.length > 0 && <details className="review-video-inputs" open>

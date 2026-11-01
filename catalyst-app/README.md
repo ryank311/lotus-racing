@@ -217,20 +217,34 @@ synced Garmin session (`src/garmin/catalystVideos.ts`):
   six sessions from the file's write time and length), so it attaches with
   offset 0; `video_N` follows the earlier parts. The sync can still be nudged
   on the Import page.
-- The optimal-lap video attaches to the same session without a place on its
-  timeline; Session Review plays it on its own.
-- Recordings without a synced session can still be imported. They are kept
-  unattached with the reason, and can be matched again after syncing.
+- Recordings without a synced session are listed with the reason but cannot
+  be chosen; sync that day, then choose the folder again.
 
-New videos of matched recordings are selected by default; the total size is
-shown before anything uploads. Files go up one at a time through the same
-chunked upload as PDR videos, carrying their device path
+The picker lists one row per day (date, layouts, number of sessions, size,
+and what is new or already imported) with a checkbox for the whole day; open
+a day to choose its sessions one by one. Every new matched session starts
+selected, and the button shows the total before anything uploads. Garmin's
+`optimal_lap_video.mp4` files are not offered: Session Review builds the
+optimal lap from the session's own video instead (below).
+
+Files go up one at a time through the same chunked upload as PDR videos,
+carrying their device path
 (`DRIVER/Track/Car/date/time/file`), which is stored as `source_path` with
 `source` = `catalyst` or `catalyst-optimal`. The same path and size are never
 stored twice, and choosing the folder again shows what is already imported.
 Catalyst videos have no car channels: Session Review and Analysis show the
 player and Garmin GPS speed, and the throttle/brake/gear/steering charts appear
 only for laps with a PDR video (preferred when both cover a lap).
+
+**The optimal lap** (Session Review's lap list, "◆ Optimal") is cut from the
+session's video the way Garmin builds its own: each of Garmin's segments
+(tiled end to end, as for the splits) from the valid lap that went through it
+fastest, with the lap time being their sum. The player seeks from one lap to
+the next at each cut, and the charts and elapsed time run on across the
+joins (`stitchOptimalLap` in `src/renderer/components/carData.ts`). It needs
+two valid laps in one video. On a wet 2026-09-22 session it came to 2:12.9
+from laps of 2:21.6 and 2:22.9; Garmin's own optimal-lap render for that
+session runs 2:11.3.
 
 Upload speed is limited by MacDroid (about 20 MB/s) and by the path to the
 server: through the Cloudflare domain, files travel over your internet

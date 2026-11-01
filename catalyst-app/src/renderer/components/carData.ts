@@ -36,6 +36,91 @@ export function videoSpan(trace: CarTrace): [number, number] | null {
 
 export const traceKey = (t: { sg: string; lapIdx: number }) => `${t.sg}:${t.lapIdx}`
 
+/** One stretch of a stitched lap: this split, played from this lap. */
+export interface StitchPiece { id: string; startM: number; endM: number; trace: CarTrace; timeS: number }
+
+export interface StitchedLap {
+  pieces: StitchPiece[]
+  // The pieces end to end, for the charts (its videoT jumps at each cut, so
+  // never look distances up from it: use the pieces).
+  trace: CarTrace
+  timeS: number
+  // The laps it is made of, by index.
+  laps: number[]
+}
+
+const lastDist = (t: CarTrace) => t.dist[t.dist.length - 1] ?? 0
+
+/**
+ * The optimal lap on one video, as Garmin builds it: every split from
+ * whichever lap went through it fastest. Laps in the same video only, so the
+ * player can cut between them by seeking. Null without at least two laps or
+ * when a split is on none of them.
+ */
+export function stitchOptimalLap(traces: CarTrace[], splits: Array<{ id: string; startM: number; endM: number }>): StitchedLap | null {
+  if (!splits.length) return null
+  const byVideo = new Map<string, CarTrace[]>()
+  for (const t of traces) if (t.videoT.some(v => v != null)) byVideo.set(t.videoId, [...(byVideo.get(t.videoId) ?? []), t])
+  const group = [...byVideo.values()].sort((a, b) => b.length - a.length)[0] ?? []
+  if (group.length < 2) return null
+  const pieces: StitchPiece[] = []
+  const ordered = [...splits].sort((a, b) => a.startM - b.startM)
+  for (const [i, split] of ordered.entries()) {
+    let best: StitchPiece | null = null
+    for (const trace of group) {
+      // The lap's own first and last metres stand in for the lap's ends.
+      const startM = i === 0 ? Math.max(split.startM, trace.dist[0] ?? 0) : split.startM
+      const endM = i === ordered.length - 1 ? Math.min(split.endM, lastDist(trace)) : split.endM
+      const a = videoTimeAt(trace, startM), b = videoTimeAt(trace, endM)
+      if (a == null || b == null || b <= a) continue
+      if (!best || b - a < best.timeS) best = { id: split.id, startM: split.startM, endM: split.endM, trace, timeS: b - a }
+    }
+    if (!best) return null
+    pieces.push(best)
+  }
+  const first = group[0]
+  const trace: CarTrace = { sg: first.sg, lapIdx: -1, videoId: first.videoId, dist: [], videoT: [], throttle: [], brake: [], rpm: [], gear: [], steering: [], slip: [], speed: [] }
+  const channels = ['videoT', 'throttle', 'brake', 'rpm', 'gear', 'steering', 'slip', 'speed'] as const
+  for (const [k, piece] of pieces.entries()) {
+    const last = k === pieces.length - 1
+    piece.trace.dist.forEach((d, i) => {
+      if (d < piece.startM || (last ? d > piece.endM : d >= piece.endM)) return
+      trace.dist.push(d)
+      for (const c of channels) trace[c].push(piece.trace[c][i])
+    })
+  }
+  return {
+    pieces, trace,
+    timeS: pieces.reduce((n, p) => n + p.timeS, 0),
+    laps: [...new Set(pieces.map(p => p.trace.lapIdx))].sort((a, b) => a - b),
+  }
+}
+
+/** Index of the piece that holds a distance. */
+export function pieceAt(pieces: StitchPiece[], distM: number): number {
+  const i = pieces.findIndex(p => distM < p.endM)
+  return i < 0 ? pieces.length - 1 : i
+}
+
+/** Video time at a distance on a stitched lap. */
+export function stitchedTimeAt(pieces: StitchPiece[], distM: number): number | null {
+  const p = pieces[pieceAt(pieces, distM)]
+  return p ? videoTimeAt(p.trace, Math.min(Math.max(distM, p.startM), Math.min(p.endM, lastDist(p.trace)))) : null
+}
+
+/** Where a piece starts and ends in the video. */
+export function pieceSpan(p: StitchPiece): [number, number] | null {
+  const a = videoTimeAt(p.trace, Math.max(p.startM, p.trace.dist[0] ?? 0)), b = videoTimeAt(p.trace, Math.min(p.endM, lastDist(p.trace)))
+  return a == null || b == null ? null : [a, b]
+}
+
+/** Seconds into the stitched lap at this video time in piece `index`. */
+export function stitchedElapsed(pieces: StitchPiece[], index: number, videoT: number): number | null {
+  const span = pieceSpan(pieces[index])
+  if (!span) return null
+  return pieces.slice(0, index).reduce((n, p) => n + p.timeS, 0) + Math.max(0, videoT - span[0])
+}
+
 export type CarChannel = 'throttle' | 'brake' | 'rpm' | 'gear' | 'steering' | 'slip' | 'speed'
 
 /** One channel as chart points, skipping gaps. */

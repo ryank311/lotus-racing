@@ -6,20 +6,69 @@
 .catalyst-help { margin: 0 0 12px; }
 .catalyst-help summary { cursor: pointer; color: var(--text-dim); }
 .catalyst-help p { margin: 8px 0 0; line-height: 1.55; color: var(--text-dim); }
-.catalyst-summary { margin: 14px 0 8px; }
-.catalyst-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.catalyst-toolbar label { display: flex; align-items: center; gap: 6px; color: var(--text-dim); margin-right: auto; }
-.catalyst-days { display: flex; flex-direction: column; gap: 14px; max-height: 560px; overflow-y: auto; padding-right: 4px; }
-.catalyst-day h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
-.catalyst-folder { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 11px; margin-bottom: 6px; }
-.catalyst-folder.unmatched { border-style: dashed; }
-.catalyst-folder-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.catalyst-folder-head .mono { font-family: var(--font-mono); }
-.catalyst-session { margin: 4px 0 6px; line-height: 1.5; }
-.catalyst-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-.catalyst-files li { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.catalyst-files label { display: flex; align-items: center; gap: 6px; }
-.catalyst-footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+
+/* The day/session picker. */
+.cat-picker { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-elev); margin-top: 4px; }
+.cat-picker-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.cat-picker-actions { display: flex; gap: 6px; }
+.cat-days { list-style: none; margin: 0; padding: 0; max-height: 520px; overflow-y: auto; }
+.cat-day + .cat-day { border-top: 1px solid var(--border); }
+.cat-day-row { display: flex; align-items: center; gap: 10px; padding: 0 12px; }
+.cat-day-row input, .cat-session input { flex: none; width: 16px; height: 16px; accent-color: var(--signal); cursor: pointer; }
+.cat-day-row input:disabled, .cat-session input:disabled { cursor: default; opacity: 0.35; }
+.cat-day-toggle {
+  flex: 1; min-width: 0; display: grid; align-items: center; gap: 12px; padding: 11px 0;
+  grid-template-columns: 9.5em minmax(0, 1fr) 6.5em 5.5em 11em 1em;
+  background: none; border: 0; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.cat-day-toggle:hover .cat-day-date { color: var(--signal-hot); }
+.cat-day-toggle:focus-visible { outline: 1px solid var(--signal); outline-offset: 2px; }
+.cat-day-date { font-weight: 600; white-space: nowrap; }
+.cat-day-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.cat-day-count, .cat-day-size { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+.cat-day-status { white-space: nowrap; font-size: 12px; text-align: right; }
+.cat-chevron { color: var(--text-mute); font-size: 16px; line-height: 1; transition: transform 120ms ease; text-align: center; }
+.cat-day.open .cat-chevron { transform: rotate(90deg); }
+.cat-day-status.new, .cat-chip.new { color: var(--cyan); }
+.cat-day-status.done, .cat-chip.done { color: var(--green); }
+.cat-day-status.busy, .cat-chip.busy { color: var(--signal-hot); }
+.cat-day-status.bad, .cat-chip.bad { color: var(--red); }
+.cat-day-status.muted, .cat-chip.muted { color: var(--text-mute); }
+
+.cat-sessions { list-style: none; margin: 0 0 8px; padding: 0 12px 0 38px; }
+.cat-session {
+  display: grid; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px;
+  grid-template-columns: 16px 3.2em minmax(0, 1fr) 5.5em 5.5em;
+}
+.cat-session + .cat-session { border-top: 1px dashed var(--border); }
+.cat-session-time { font-family: var(--font-mono); font-size: 12px; }
+.cat-session-match { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-session-size { text-align: right; font-variant-numeric: tabular-nums; }
+.cat-session.state-imported .cat-session-time, .cat-session.state-no-session .cat-session-time { color: var(--text-mute); }
+.cat-chip { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; text-align: right; color: var(--text-dim); }
+.cat-session .cat-bar { grid-column: 2 / -1; }
+
+.cat-bar { display: block; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.cat-bar i { display: block; height: 100%; background: var(--signal); transition: width 300ms linear; }
+.cat-bar.wide { width: 100%; margin-top: 5px; }
+
+.cat-footer {
+  position: sticky; bottom: 0; display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; border-top: 1px solid var(--border); background: var(--panel-soft); border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.cat-footer > .muted { margin-right: auto; }
+.cat-footer-progress { flex: 1; min-width: 200px; margin-right: auto; }
+
+@media (max-width: 720px) {
+  .cat-day-toggle { grid-template-columns: minmax(0, 1fr) auto 1em; gap: 4px 10px; }
+  .cat-day-where { grid-column: 1 / 2; grid-row: 2; }
+  .cat-day-count, .cat-day-size { display: none; }
+  .cat-day-status { grid-column: 2; grid-row: 1 / 3; }
+  .cat-chevron { grid-column: 3; grid-row: 1 / 3; }
+  .cat-sessions { padding-left: 12px; }
+  .cat-session { grid-template-columns: 16px 3.2em minmax(0, 1fr) auto; }
+  .cat-session-size { display: none; }
+}
 
 /* Session Review: Garmin's optimal-lap video. */
 .catalyst-optimal video { display: block; width: 100%; max-width: 760px; margin-top: 10px; background: #000; border-radius: var(--radius); }

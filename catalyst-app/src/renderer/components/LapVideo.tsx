@@ -5,10 +5,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import type { CarTrace } from '../../shared/pdr'
-import { distanceAt, videoSpan, videoTimeAt } from './carData'
+import { distanceAt, pieceAt, pieceSpan, stitchedElapsed, stitchedTimeAt, videoSpan, videoTimeAt, type StitchPiece } from './carData'
 import './video.css'
 
-export interface LapVideoOption { key: string; label: string; trace: CarTrace }
+// A stitched lap (the optimal lap) also has `pieces`: the player cuts from
+// one lap to the next at each split, seeking within the same video.
+export interface LapVideoOption { key: string; label: string; trace: CarTrace; pieces?: StitchPiece[] }
+
+// A plain lap's option that holds this video time, never a stitched one.
+const lapAt = (options: LapVideoOption[], videoId: string, t: number) =>
+  options.find(o => !o.pieces && o.trace.videoId === videoId && distanceAt(o.trace, t) != null)
 
 const FOLLOW_KEY = 'catalyst.video.followCursor'
 function readFollow(): boolean {
@@ -32,6 +38,8 @@ export function LapVideo({ options, selected, onSelect, hoverDistanceM, onHoverD
   // The distance this player last reported, so its own cursor updates do
   // not seek it again.
   const emitted = useRef<number | null>(null)
+  // On a stitched lap: the piece being played.
+  const piece = useRef(0)
   const [playing, setPlaying] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [follow, setFollow] = useState(readFollow)
@@ -42,9 +50,15 @@ export function LapVideo({ options, selected, onSelect, hoverDistanceM, onHoverD
 
   // A newly chosen lap starts at its beginning unless the video is already on it.
   useEffect(() => {
-    const video = videoRef.current, span = option && videoSpan(option.trace)
-    if (!video || !span) return
-    const place = () => { if (video.currentTime < span[0] || video.currentTime > span[1]) video.currentTime = span[0] }
+    const video = videoRef.current
+    if (!video || !option) return
+    // A stitched lap always starts at its first piece.
+    const span = option.pieces ? pieceSpan(option.pieces[0]) : videoSpan(option.trace)
+    if (!span) return
+    const place = () => {
+      if (option.pieces) { piece.current = 0; video.currentTime = span[0]; setInto(0) }
+      else if (video.currentTime < span[0] || video.currentTime > span[1]) video.currentTime = span[0]
+    }
     if (video.readyState >= 1) place()
     else { video.addEventListener('loadedmetadata', place, { once: true }); return () => video.removeEventListener('loadedmetadata', place) }
   }, [option?.key, src])  // eslint-disable-line react-hooks/exhaustive-deps
@@ -56,7 +70,32 @@ export function LapVideo({ options, selected, onSelect, hoverDistanceM, onHoverD
     let frame = 0
     const tick = () => {
       const video = videoRef.current, current = optionRef.current
-      if (video && current) {
+      if (video && current?.pieces) {
+        // Stitched: follow the piece; at its end, cut to the next one.
+        const pieces = current.pieces, t = video.currentTime
+        const p = pieces[piece.current] ?? pieces[0]
+        const span = pieceSpan(p)
+        const d = distanceAt(p.trace, t)
+        if (span && t >= span[1] - 0.02 && t <= span[1] + 1) {
+          const next = pieces[piece.current + 1]
+          if (!next) video.pause()
+          else {
+            piece.current += 1
+            const nextSpan = pieceSpan(next)
+            if (nextSpan && next.trace !== p.trace) video.currentTime = nextSpan[0]
+          }
+        } else if (d != null && d >= p.startM - 1 && d < p.endM) {
+          emitted.current = d
+          onHoverDistance(d)
+          setInto(stitchedElapsed(pieces, piece.current, t))
+        } else {
+          // Moved by hand: to another piece of the stitched lap, or off it
+          // onto one of the laps.
+          const at = pieces.findIndex(q => { const s = pieceSpan(q); return !!s && t >= s[0] && t < s[1] })
+          if (at >= 0) piece.current = at
+          else { const lap = lapAt(optionsRef.current, current.trace.videoId, t); if (lap) onSelect(lap.key) }
+        }
+      } else if (video && current) {
         const t = video.currentTime
         const d = distanceAt(current.trace, t)
         if (d != null) {
@@ -65,7 +104,7 @@ export function LapVideo({ options, selected, onSelect, hoverDistanceM, onHoverD
           const span = videoSpan(current.trace)
           setInto(span ? t - span[0] : null)
         } else {
-          const next = optionsRef.current.find(o => o.trace.videoId === current.trace.videoId && distanceAt(o.trace, t) != null)
+          const next = lapAt(optionsRef.current, current.trace.videoId, t)
           if (next && next.key !== current.key) onSelect(next.key)
         }
       }
@@ -79,12 +118,18 @@ export function LapVideo({ options, selected, onSelect, hoverDistanceM, onHoverD
   useEffect(() => {
     const video = videoRef.current
     if (!video || playing || !follow || !option || hoverDistanceM == null || hoverDistanceM === emitted.current) return
-    const t = videoTimeAt(option.trace, hoverDistanceM)
+    const pieces = option.pieces
+    const t = pieces ? stitchedTimeAt(pieces, hoverDistanceM) : videoTimeAt(option.trace, hoverDistanceM)
     if (t == null) return
     const frame = requestAnimationFrame(() => {
       if (Math.abs(video.currentTime - t) > 0.02) video.currentTime = t
-      const span = videoSpan(option.trace)
-      setInto(span ? t - span[0] : null)
+      if (pieces) {
+        piece.current = pieceAt(pieces, hoverDistanceM)
+        setInto(stitchedElapsed(pieces, piece.current, t))
+      } else {
+        const span = videoSpan(option.trace)
+        setInto(span ? t - span[0] : null)
+      }
     })
     return () => cancelAnimationFrame(frame)
   }, [hoverDistanceM, playing, follow, option])
