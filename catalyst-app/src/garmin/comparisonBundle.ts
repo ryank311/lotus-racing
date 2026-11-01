@@ -7,6 +7,7 @@ import { isLapSamples, lapLabel, shortSessionLabel, type LapSamples } from './la
 import type { LapMeta } from './analysisData.js'
 import { sameCourse, type TrackLayoutIdentity } from '../shared/trackLayout.js'
 import { MAX_COMPARE_DRIVERS } from '../shared/comparison.js'
+import { VIDEO_ID_RE } from '../shared/pdr.js'
 import { isMeanLineTrace, mapToOwnLine, ownLine, remapLapSamples, type MeanLineTrace } from './meanLineAlign.js'
 
 export interface ComparisonSession {
@@ -29,6 +30,9 @@ export interface ComparisonLap {
   sessionStart: string | null
   representative: boolean
   samples: LapSamples
+  // The driver's video of this lap, if they have one: its ID and the video
+  // time at the lap's start (video time = startS + samples.timeMs / 1000).
+  video?: { id: string; startS: number } | null
 }
 
 // What a compared driver's backend returns.
@@ -57,7 +61,8 @@ function isBundle(value: unknown): value is ComparisonBundle {
     && Array.isArray(b.sessions) && Array.isArray(b.laps)
     && b.sessions.every(s => s && typeof s.sg === 'string' && !!s.sg)
     && b.laps.every(l => l && typeof l.sg === 'string' && Number.isInteger(l.lapIndex)
-      && typeof l.durationMs === 'number' && l.durationMs > 0 && isLapSamples(l.samples))
+      && typeof l.durationMs === 'number' && l.durationMs > 0 && isLapSamples(l.samples)
+      && (l.video == null || (typeof l.video.id === 'string' && VIDEO_ID_RE.test(l.video.id) && Number.isFinite(l.video.startS))))
     && (b.line == null || isMeanLineTrace(b.line))
 }
 

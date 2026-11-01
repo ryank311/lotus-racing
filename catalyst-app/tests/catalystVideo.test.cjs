@@ -32,6 +32,8 @@ const LOTUS = 'LOTUS EXIGE 2008'
 const MORNING = { sg: 'lotus-am', start: '2026-10-30 08:32:37', laps: [1.0, 1.05] }
 const MIDDAY = { sg: 'lotus-mid', start: '2026-10-30 10:00:45', laps: [1.0] }
 const VETTE = { sg: 'vette-pm', start: '2026-10-30 13:30:49', make: 'CHEVROLET', model: 'CORVETTE', laps: [1.0] }
+// Another driver on the same course, in their own workspace.
+const ALEX = { sg: 'alex-am', start: '2026-10-30 08:42:00', laps: [0.95, 1.0] }
 const lapMs = MORNING.laps.map(scale => lapRows(scale).durationMs)
 // The recording starts at the session start and runs 20 s past its last lap.
 const VIDEO_S = 30 + (lapMs[0] + lapMs[1]) / 1000 + 20
@@ -64,6 +66,11 @@ test('Catalyst videos match their sessions, upload, and play beside the laps', {
   fs.writeFileSync(path.join(dir, 'account.json'), JSON.stringify({ username: 'Ryan' }))
   writeMeanLines(path.join(dir, 'garmin', 'data', 'mean_lines'))
   childProcess.execFileSync(process.execPath, [path.join(__dirname, 'fixtures/compareFixture.cjs'), workspaceDbPath(dir), JSON.stringify([MORNING, MIDDAY, VETTE])], { stdio: 'pipe' })
+  const alexDir = userDirectory(dataDir, 'Alex')
+  fs.mkdirSync(alexDir, { recursive: true })
+  fs.writeFileSync(path.join(alexDir, 'account.json'), JSON.stringify({ username: 'Alex' }))
+  writeMeanLines(path.join(alexDir, 'garmin', 'data', 'mean_lines'))
+  childProcess.execFileSync(process.execPath, [path.join(__dirname, 'fixtures/compareFixture.cjs'), workspaceDbPath(alexDir), JSON.stringify([ALEX])], { stdio: 'pipe' })
 
   const video = path.join(root, 'video_1.mp4')
   writePlainVideo(video, { durationS: VIDEO_S })
@@ -85,17 +92,17 @@ test('Catalyst videos match their sessions, upload, and play beside the laps', {
     return body.result
   }
   // The browser's upload, as the Import page sends it.
-  const upload = async (file, catalystPath, sessionGuid = null) => {
+  const upload = async (file, catalystPath, sessionGuid = null, as = cookie) => {
     const bytes = fs.readFileSync(file)
-    const start = await (await postJson('/api/videos/uploads', { fileName: path.basename(file), size: bytes.length, sessionGuid, catalystPath }, cookie)).json()
+    const start = await (await postJson('/api/videos/uploads', { fileName: path.basename(file), size: bytes.length, sessionGuid, catalystPath }, as)).json()
     assert.ok(start.uploadId, start.error)
     for (let offset = 0; offset < bytes.length; offset += 4096) {
-      const reply = await call(`/api/videos/uploads/${start.uploadId}?offset=${offset}`, { method: 'PUT', body: bytes.subarray(offset, offset + 4096) }, cookie)
+      const reply = await call(`/api/videos/uploads/${start.uploadId}?offset=${offset}`, { method: 'PUT', body: bytes.subarray(offset, offset + 4096) }, as)
       assert.equal(reply.status, 200)
     }
-    assert.equal((await postJson(`/api/videos/uploads/${start.uploadId}/finish`, {}, cookie)).status, 202)
+    assert.equal((await postJson(`/api/videos/uploads/${start.uploadId}/finish`, {}, as)).status, 202)
     for (let i = 0; i < 200; i++) {
-      const status = await (await call(`/api/videos/uploads/${start.uploadId}`, {}, cookie)).json()
+      const status = await (await call(`/api/videos/uploads/${start.uploadId}`, {}, as)).json()
       if (status.state !== 'importing') return status
       await new Promise(resolve => setTimeout(resolve, 100))
     }
@@ -218,6 +225,38 @@ test('Catalyst videos match their sessions, upload, and play beside the laps', {
     assert.equal(status.result.video.sessionGuid, null)
     assert.match(status.result.video.matchNote, /No synced session starts near 2026-10-29 09:00/)
     assert.equal(await rpc('videos:delete', status.result.video.id), true)
+  })
+
+  await t.test('a compared driver’s video plays beside yours, synced on your distances', async () => {
+    const alex = (await postJson('/api/login', { username: 'Alex' })).headers.get('set-cookie').split(';')[0]
+    const status = await upload(video, `${CARD}/ALEX/${LAYOUT.track}/${LOTUS}/20261030/083700/video_1.mp4`, null, alex)
+    assert.equal(status.state, 'done', status.error)
+    assert.equal(status.result.video.sessionGuid, 'alex-am')
+    const alexVideo = status.result.video.id
+
+    const data = await rpc('analysis:build', ['lotus-am'], 'metric', 'top10', [{ driver: 'Alex', sessionGuids: ['alex-am'] }])
+    const theirs = data.car.traces.filter(tr => tr.driver === 'Alex').sort((x, y) => x.lapIdx - y.lapIdx)
+    assert.deepEqual(theirs.map(tr => [tr.lapIdx, tr.videoId, tr.driverIndex]), [[0, alexVideo, 1], [1, alexVideo, 1]])
+    // Their first lap starts 30 s into their session, so 30 s into their video.
+    assert.ok(Math.abs(theirs[0].videoT[0] - 30) < 0.05, `starts at ${theirs[0].videoT[0]}`)
+    assert.ok(theirs[0].speed.every(v => v != null && v > 0), 'with their speed for the HUD')
+    assert.deepEqual(data.car.traces.filter(tr => !tr.driver).map(tr => tr.lapIdx), [0, 1], 'your own video is still there')
+    // Heatmap cells know their lap and split, to play on video.
+    for (const hm of [data.heatmap, data.comparison.heatmap]) {
+      assert.equal(hm.rowKeys.length, hm.rows.length)
+      assert.equal(hm.colRanges.length, hm.cols.length)
+      assert.equal(hm.rowKeys.at(-1), null, 'the reference row has no lap')
+    }
+    assert.ok(data.comparison.heatmap.rowKeys.includes('alex-am:0'))
+
+    // Their video streams from their workspace to any signed-in driver.
+    const part = await call(`/api/drivers/Alex/videos/${alexVideo}.mp4`, { headers: { Range: 'bytes=0-99' } }, cookie)
+    assert.equal(part.status, 206)
+    assert.equal((await part.arrayBuffer()).byteLength, 100)
+    assert.equal((await call(`/api/drivers/Alex/videos/${alexVideo}.mp4`)).status, 401)
+    assert.equal((await call(`/api/drivers/Nobody/videos/${alexVideo}.mp4`, {}, cookie)).status, 404)
+    assert.equal((await call(`/api/drivers/Alex/videos/00000000-0000-4000-8000-000000000000.mp4`, {}, cookie)).status, 404)
+    assert.equal((await call(`/api/drivers/Ryan/videos/${alexVideo}.mp4`, {}, cookie)).status, 404, 'a video is only found in its own driver’s workspace')
   })
 
   await t.test('files that are not Catalyst session videos are refused and not kept', async () => {

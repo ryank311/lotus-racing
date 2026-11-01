@@ -13,7 +13,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { accountKey, userDirectory, USER_RE, workspaceDbPath } from './serverStorage.js'
+import { accountKey, userDirectory, USER_RE, workspaceDbPath, workspaceVideoDir } from './serverStorage.js'
+import { VIDEO_ID_RE } from '../shared/pdr.js'
 import { MAX_COMPARE_DRIVERS, MAX_COMPARE_SESSIONS, type DriverAccount } from '../shared/comparison.js'
 import type { DbSessionRow } from '../shared/types.js'
 
@@ -31,6 +32,12 @@ export interface DriverDirectory {
    * backend only ever receives telemetry fetched from the owner's backend.
    */
   resolve(self: string | null, lapFilter: unknown, requests: unknown): Promise<unknown[]>
+  /**
+   * A driver's video file, for playing their laps beside yours in a
+   * comparison; null for an unknown driver or video. Video IDs are random,
+   * and reach you only in that driver's comparison export.
+   */
+  videoFile(driver: unknown, videoId: unknown): string | null
 }
 
 export function createDriverDirectory(dataDir: string, backendFor: (username: string) => DriverBackend): DriverDirectory {
@@ -50,6 +57,13 @@ export function createDriverDirectory(dataDir: string, backendFor: (username: st
   const hasTelemetry = (name: string) => fs.existsSync(workspaceDbPath(userDirectory(dataDir, name)))
 
   return {
+    videoFile(driver, videoId) {
+      const name = knownDriver(driver)
+      if (!name || typeof videoId !== 'string' || !VIDEO_ID_RE.test(videoId)) return null
+      const file = path.join(workspaceVideoDir(userDirectory(dataDir, name)), `${videoId}.mp4`)
+      return fs.existsSync(file) ? file : null
+    },
+
     list(self) {
       let dirs: string[] = []
       try { dirs = fs.readdirSync(usersDir) } catch { return [] }

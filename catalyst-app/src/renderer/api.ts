@@ -212,7 +212,9 @@ const remoteBridge: CatalystBridge = {
   deleteVideo: id => rpc('videos:delete', id),
   setVideoOffset: (id, offsetS) => rpc('videos:setOffset', id, offsetS),
   getSessionCarData: guid => rpc('videos:carData', guid),
-  videoUrl: id => `${remoteBaseUrl}/api/videos/${encodeURIComponent(id)}.mp4`,
+  videoUrl: (id, driver) => driver
+    ? `${remoteBaseUrl}/api/drivers/${encodeURIComponent(driver)}/videos/${encodeURIComponent(id)}.mp4`
+    : `${remoteBaseUrl}/api/videos/${encodeURIComponent(id)}.mp4`,
   planCatalystImport: entries => rpc('videos:catalystPlan', entries),
 }
 

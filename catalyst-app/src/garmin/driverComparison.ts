@@ -10,6 +10,7 @@ import fs from 'node:fs'
 import { openDb } from './loadToDb.js'
 import { DB_PATH } from './paths.js'
 import { fetchLapSamples, fetchValidLaps, representativeKeys } from './lapData.js'
+import { lapVideoStarts } from './videoStore.js'
 import { assertComparable, fetchSessionMeta, vehicleLabelOf } from './coachPacket.js'
 import { cornerPhases, plausibleMin, spanTimeMs, valueAt, type LapSeries, type SplitBound } from './lapPhases.js'
 import type { TrackCorner } from './trackStore.js'
@@ -54,6 +55,9 @@ export async function exportComparison(sessionGuids: unknown, lapFilter?: LapFil
     )).getRowsJson()[0]?.[0] ?? 0)
     const valid = await fetchValidLaps(con, guids)
     const repKeys = representativeKeys(valid)
+    // Their videos travel by reference: the requesting driver's player
+    // streams them from this driver's workspace.
+    const videos = await lapVideoStarts(con, guids).catch(() => new Map<string, { id: string; startS: number }>())
     const laps: ComparisonLap[] = []
     // Sequential: overlapping statements on one connection crash DuckDB.
     for (const lap of selectLaps(valid, lapFilter)) {
@@ -61,6 +65,7 @@ export async function exportComparison(sessionGuids: unknown, lapFilter?: LapFil
         sg: lap.sg, lapIndex: lap.lapIndex, durationMs: lap.durationMs, sessionStart: lap.sessionStart,
         representative: repKeys.has(`${lap.sg}:${lap.lapIndex}`),
         samples: await fetchLapSamples(con, lap.sg, lap.lapIndex),
+        video: videos.get(`${lap.sg}:${lap.lapIndex}`) ?? null,
       })
     }
     return {
@@ -176,6 +181,7 @@ function comparisonHeatmap(stats: DriverStats[], bounds: SplitBound[]): HeatmapD
     return best as { value: number; driver: number } | null
   })
   const z: Array<Array<number | null>> = [], text: string[][] = [], rows: string[] = [], rowDrivers: number[] = []
+  const rowKeys: Array<string | null> = []
   stats.forEach((d, driver) => {
     for (const lap of d.laps) {
       const splits = d.splits.get(key(lap)) ?? bounds.map(() => null)
@@ -193,14 +199,16 @@ function comparisonHeatmap(stats: DriverStats[], bounds: SplitBound[]): HeatmapD
       }))
       rows.push(`${lap.label}  ${lapTime(lap.durationMs)}`)
       rowDrivers.push(driver)
+      rowKeys.push(key(lap))
     }
   })
   z.push(reference.map(r => (r == null ? null : 0)))
   text.push(reference.map(r => (r == null ? '—' : `${r.value.toFixed(2)} best · ${stats[r.driver].summary.name}`)))
   rows.push('★ Best of all drivers')
+  rowKeys.push(null)
   const flat = z.flat().filter((v): v is number => v != null && v >= 0)
   return {
-    z, text, cols: bounds.map(b => b.id), rows, rowDrivers,
+    z, text, cols: bounds.map(b => b.id), rows, rowDrivers, rowKeys, colRanges: bounds.map(b => [b.startM, b.endM]),
     bestDrivers: reference.map(r => r?.driver ?? null),
     zmax: flat.length ? Math.max(...flat, 0.1) : 5,
   }

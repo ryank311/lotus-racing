@@ -24,9 +24,18 @@ const isDev = process.env.NODE_ENV === 'development'
 protocol.registerSchemesAsPrivileged([{ scheme: 'catalyst-video', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, bypassCSP: true } }])
 
 function serveWorkspaceVideo(request: Request): Response {
-  const id = decodeURIComponent(new URL(request.url).pathname.replace(/^\//, '').replace(/\.mp4$/, ''))
-  const file = path.join(VIDEOS_DIR, `${id}.mp4`)
-  if (!VIDEO_ID_RE.test(id) || !fs.existsSync(file)) return new Response('Video not found', { status: 404 })
+  const url = new URL(request.url)
+  let file: string | null
+  // catalyst-video://driver/<name>/<id>.mp4: a compared driver's video,
+  // from the local server's workspaces; catalyst-video://video/<id>.mp4: yours.
+  if (url.hostname === 'driver') {
+    const [name, id] = url.pathname.replace(/^\//, '').replace(/\.mp4$/, '').split('/').map(part => { try { return decodeURIComponent(part) } catch { return '' } })
+    file = webServer?.drivers.videoFile(name, id) ?? null
+  } else {
+    const id = decodeURIComponent(url.pathname.replace(/^\//, '').replace(/\.mp4$/, ''))
+    file = VIDEO_ID_RE.test(id) ? path.join(VIDEOS_DIR, `${id}.mp4`) : null
+  }
+  if (!file || !fs.existsSync(file)) return new Response('Video not found', { status: 404 })
   const { size } = fs.statSync(file)
   const headers: Record<string, string> = { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' }
   const m = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get('range') ?? '')

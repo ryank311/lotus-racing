@@ -519,8 +519,9 @@ export interface CatalystBridge {
   // Nudge the sync (session time = video time + offset); null resets it.
   setVideoOffset(videoId: string, offsetS: number | null): Promise<SessionVideo>
   getSessionCarData(sessionGuid: string): Promise<SessionCarData>
-  // Where the player loads the video from.
-  videoUrl(videoId: string): string
+  // Where the player loads the video from; a compared driver's video
+  // streams from their workspace.
+  videoUrl(videoId: string, driver?: string | null): string
   // Garmin Catalyst: the session each RaceData folder belongs to, and which
   // of the listed videos are already imported.
   planCatalystImport(entries: CatalystPlanEntry[]): Promise<CatalystPlan>

@@ -740,7 +740,12 @@ function cellColor(val: number | null, zmax: number): string {
   return `rgba(${r},${g},${b},${0.12 + t * 0.32})`
 }
 
-export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSegment?: (ref: string | null) => void }) {
+export function HeatmapGrid({ hm, onHoverSegment, onPickCell }: {
+  hm: HeatmapData
+  onHoverSegment?: (ref: string | null) => void
+  // A cell was chosen (row = lap, col = split): e.g. play it on video.
+  onPickCell?: (row: number, col: number) => void
+}) {
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => { setSelected(null); onHoverSegment?.(null) }, [hm])
   return (
@@ -795,7 +800,7 @@ export function HeatmapGrid({ hm, onHoverSegment }: { hm: HeatmapData; onHoverSe
                   }}>
                     <button className="heatmap-cell" aria-label={`${row} · ${col}: ${rawText || 'No data'}`}
                       onFocus={() => onHoverSegment?.(col)} onBlur={() => onHoverSegment?.(null)}
-                      onClick={() => { setSelected(`${row} · ${col}: ${rawText || 'No data'}`); onHoverSegment?.(col) }}>
+                      onClick={() => { setSelected(`${row} · ${col}: ${rawText || 'No data'}`); onHoverSegment?.(col); onPickCell?.(ri, ci) }}>
                       {display || '—'}
                     </button>
                   </td>

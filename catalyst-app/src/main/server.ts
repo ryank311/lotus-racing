@@ -600,6 +600,17 @@ export async function startCatalystServer(options: CatalystServerOptions = {}): 
         return
       }
 
+      // A compared driver's video, played beside or over yours in Analysis.
+      const driverVideo = /^\/api\/drivers\/([^/]{1,200})\/videos\/([0-9a-f-]{36})\.mp4$/.exec(url.pathname)
+      if (driverVideo && (req.method === 'GET' || req.method === 'HEAD')) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        let name: string
+        try { name = decodeURIComponent(driverVideo[1]) } catch { json(res, 404, { error: 'Video not found' }, origin); return }
+        const file = drivers.videoFile(name, driverVideo[2])
+        if (!file) { json(res, 404, { error: 'Video not found' }, origin); return }
+        serveFileRange(req, res, file, 'video/mp4')
+        return
+      }
       if (url.pathname === '/api/drivers' && req.method === 'GET') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         json(res, 200, { drivers: drivers.list(username) }, origin)

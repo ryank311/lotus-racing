@@ -131,7 +131,9 @@ const bridge: CatalystBridge = {
   deleteVideo: id => ipcRenderer.invoke('videos:delete', id),
   setVideoOffset: (id, offsetS) => ipcRenderer.invoke('videos:setOffset', id, offsetS),
   getSessionCarData: guid => ipcRenderer.invoke('videos:carData', guid),
-  videoUrl: id => `catalyst-video://video/${encodeURIComponent(id)}.mp4`,
+  videoUrl: (id, driver) => driver
+    ? `catalyst-video://driver/${encodeURIComponent(driver)}/${encodeURIComponent(id)}.mp4`
+    : `catalyst-video://video/${encodeURIComponent(id)}.mp4`,
   planCatalystImport: entries => ipcRenderer.invoke('videos:catalystPlan', entries),
 }
 

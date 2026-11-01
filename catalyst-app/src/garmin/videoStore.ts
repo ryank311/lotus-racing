@@ -550,6 +550,34 @@ export async function carDataForLaps(
   }
 }
 
+/**
+ * The video covering each lap of these sessions ("sg:lapIdx"), with the
+ * video time at the lap's start: video time = startS + lap time (s). For
+ * sending laps to another driver's comparison.
+ */
+export async function lapVideoStarts(con: DuckDBConnection, sessionGuids: string[]): Promise<Map<string, { id: string; startS: number }>> {
+  const out = new Map<string, { id: string; startS: number }>()
+  if (!sessionGuids.length) return out
+  const marks = sessionGuids.map(() => '?').join(',')
+  const videos = (await con.runAndReadAll(`
+    SELECT video_id, session_guid, offset_s, CAST(laps AS VARCHAR) FROM session_videos
+    WHERE session_guid IN (${marks}) AND offset_s IS NOT NULL ORDER BY recorded_at, created_at
+  `, sessionGuids)).getRowsJson()
+  if (!videos.length) return out
+  const starts = new Map((await con.runAndReadAll(`
+    SELECT session_guid, lap_index, start_time_session_ms FROM laps
+    WHERE session_guid IN (${marks}) AND start_time_session_ms IS NOT NULL
+  `, sessionGuids)).getRowsJson().map(r => [`${r[0]}:${r[1]}`, Number(r[2])]))
+  for (const [id, sg, offset, laps] of videos) {
+    for (const lap of Array.isArray(json(laps)) ? json(laps) : []) {
+      const key = `${sg}:${lap}`, startMs = starts.get(key)
+      if (startMs == null || out.has(key)) continue
+      out.set(key, { id: String(id), startS: Math.round((startMs / 1000 - Number(offset)) * 1000) / 1000 })
+    }
+  }
+  return out
+}
+
 /** Every lap of a session, labelled, with car data where a video covers it. */
 export async function sessionLapList(con: DuckDBConnection, sessionGuid: string): Promise<Array<{ lapIdx: number; durationMs: number; label: string; isBest: boolean }>> {
   const rows = (await con.runAndReadAll(`

@@ -179,17 +179,52 @@ Where it shows up:
 
 - **Analysis** adds throttle, brake pressure, gear/RPM, steering and
   rear-wheel slip (rears vs fronts, against a no-slip baseline taken from
-  the session) charts for laps a video covers, and a video player above the
-  track map. Playing moves every chart's cursor and the map marker, and moves
-  on to the next lap at the line; hovering a chart while paused moves the
-  video there.
-- **Session Review** shows the video beside speed, throttle, brake, gear and
-  steering for one lap against the session's fastest, and a table of driver
-  inputs per corner: where braking starts, peak pressure, coasting time,
-  throttle pickup, lowest gear and steering.
+  the session) charts for laps a video covers, and the lap video player
+  (below).
+- **Session Review** shows the lap video player beside speed, the time gap
+  and (with a PDR video) throttle, brake, gear and steering for the lap
+  against a reference, and a table of driver inputs per corner: where braking
+  starts, peak pressure, coasting time, throttle pickup, lowest gear and
+  steering.
 - **Import** lists every video with its session and laps, nudges the sync
   (±0.1/0.5 s) if the video runs ahead of or behind the charts, re-matches
   and deletes. Sessions with video are marked on the Sessions page.
+
+## The lap video player
+
+Session Review and Analysis share one player (`VideoDeck.tsx`), for PDR
+and Catalyst videos alike:
+
+- **Two laps at once.** Pick a lap and one to compare it with (another of
+  your laps, the stitched optimal lap, or a compared driver's lap) and show
+  them **side by side** or **overlaid** with an opacity slider. The second
+  video is kept at the same place on track as the first: its playback rate
+  follows the speed ratio between the laps, and it jumps when it drifts by
+  more than 0.35 s. Each video has a HUD with the lap, speed, time into the
+  lap and, on the second, the gap at that point.
+- **Linked to the charts.** Playing moves every distance chart's cursor and
+  the map marker; hovering a chart while paused moves both videos there.
+  Session Review's charts draw the two laps you picked, with corner labels,
+  plus a gap chart (above zero: losing time). Without a comparison they use
+  the fastest lap, or on the fastest lap the optimal one.
+- **The lap strip** under the video shows the corners (click a number to play
+  that corner, from 40 m before to 30 m after), the time gap between the two
+  laps (shaded by who is ahead) and where you are; click or drag to move.
+  ⏮ ⏭ (or [ ]) jump between corners; space plays, arrows step a frame
+  (Shift: a second).
+- **Play from the data.** Session Review's corner explorer (▶ Watch) and its
+  corner inputs table, and in Analysis a heatmap cell (that lap's split) or a
+  corner or segment named by the coach or the comparison panel, play or cue
+  that stretch of track.
+- In Analysis the player sits above the map, or across the page above the
+  charts (⤢), where it stays in view while the charts scroll.
+
+**Comparing drivers' videos.** A compared driver's export includes, for each
+lap a video of theirs covers, the video's ID and where the lap starts in it;
+Analysis places it on your distances from their lap timing. Their video
+streams from their workspace (`GET /api/drivers/<name>/videos/<id>.mp4`, for
+signed-in drivers; `catalyst-video://driver/<name>/<id>.mp4` in the desktop
+app). Nothing is copied between workspaces.
 
 ## Garmin Catalyst session videos
 

@@ -69,6 +69,3 @@
   .cat-session { grid-template-columns: 16px 3.2em minmax(0, 1fr) auto; }
   .cat-session-size { display: none; }
 }
-
-/* Session Review: Garmin's optimal-lap video. */
-.catalyst-optimal video { display: block; width: 100%; max-width: 760px; margin-top: 10px; background: #000; border-radius: var(--radius); }

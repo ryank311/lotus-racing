@@ -102,6 +102,13 @@ export interface CarTrace {
   sg: string
   lapIdx: number
   videoId: string
+  // A compared driver's lap: their name (the video streams from their
+  // workspace) and their position in the comparison (1+).
+  driver?: string
+  driverIndex?: number
+  // Their lap's label ("Sep 22 08:30 · L1") and time, for the player.
+  label?: string
+  durationMs?: number
   dist: number[]
   // Video time at each distance, for syncing the player to the charts.
   videoT: Array<number | null>

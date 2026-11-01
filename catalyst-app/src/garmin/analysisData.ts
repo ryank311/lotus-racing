@@ -17,7 +17,7 @@ import { assertComparable, fetchSessionMeta, sessionLayout, vehicleLabelOf } fro
 import { buildComparison } from './driverComparison.js'
 import { alignComparisonBundles, comparisonLaps, validateComparisonBundles, type ComparisonBundle } from './comparisonBundle.js'
 import { carDataForLaps } from './videoStore.js'
-import type { CarData } from '../shared/pdr.js'
+import type { CarData, CarTrace } from '../shared/pdr.js'
 
 // Canonical m/s → the active display unit. Threaded from buildAnalysis so a unit
 // toggle reflows the whole Analysis page on the next fetch.
@@ -141,6 +141,10 @@ export interface HeatmapData {
   // the driver who set the reference time in the last row.
   rowDrivers?: number[]
   bestDrivers?: Array<number | null>
+  // Each row's lap ("sg:lapIdx"; null for the reference row) and each
+  // column's split (start and end metres), so a cell can play on video.
+  rowKeys?: Array<string | null>
+  colRanges?: Array<[number, number]>
 }
 
 // Per lap and corner. "entry" is the speed where braking starts (or at the
@@ -594,7 +598,10 @@ function buildHeatmap(laps: LapMeta[], splits: Map<string, Array<number | null>>
   yLabels.push('★ Theoretical best')
   const flat = z.flat().filter((v): v is number => v != null && v >= 0)
   const zmax = flat.length ? Math.max(...flat, 0.1) : 5
-  return { z, text, cols: bounds.map(b => b.id), rows: yLabels, zmax }
+  return {
+    z, text, cols: bounds.map(b => b.id), rows: yLabels, zmax,
+    rowKeys: [...laps.map(lap => `${lap.sg}:${lap.lapIdx}`), null], colRanges: bounds.map(b => [b.startM, b.endM]),
+  }
 }
 
 // Corner rows and braking episodes from the shared phase detector, so the
@@ -628,6 +635,31 @@ function cornerTables(laps: LapMeta[], series: Map<string, LapSeries>, corners: 
     }
   }
   return { rows: rowsOut, braking }
+}
+
+// Compared laps with video, on your distances (5 m), like your own car
+// traces but with only the video time and speed: video time = the lap's
+// start in their video + their time at each of your metres.
+function comparisonVideoTraces(bundles: ComparisonBundle[], toSpeed: SpeedConv, strideM = 5): CarTrace[] {
+  return bundles.flatMap((bundle, i) => bundle.laps.flatMap(lap => {
+    if (!lap.video) return []
+    const { samples } = lap
+    const trace: CarTrace = {
+      sg: lap.sg, lapIdx: lap.lapIndex, videoId: lap.video.id, driver: bundle.driver, driverIndex: i + 1,
+      label: lapLabel(lap.sessionStart, lap.lapIndex), durationMs: lap.durationMs,
+      dist: [], videoT: [], throttle: [], brake: [], rpm: [], gear: [], steering: [], slip: [], speed: [],
+    }
+    samples.dist.forEach((d, k) => {
+      const t = samples.timeMs[k]
+      if (Math.round(d) % strideM !== 0 || t == null) return
+      const v = toSpeed(samples.speed[k])
+      trace.dist.push(Math.round(d))
+      trace.videoT.push(Math.round((lap.video!.startS + t / 1000) * 1000) / 1000)
+      trace.speed.push(v == null ? null : Math.round(v * 10) / 10)
+      for (const c of ['throttle', 'brake', 'rpm', 'gear', 'steering', 'slip'] as const) trace[c].push(null)
+    })
+    return trace.dist.length ? [trace] : []
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -706,7 +738,8 @@ export async function buildAnalysis(
     // Compared drivers' laps join the same maps (session GUIDs are unique
     // across the analysis) and are overlaid on the distance charts and map,
     // after moving them onto your mean line.
-    const compared = comparisonLaps(alignComparisonBundles(comparisons, meanLineGuid, totalDistM))
+    const aligned = alignComparisonBundles(comparisons, meanLineGuid, totalDistM)
+    const compared = comparisonLaps(aligned)
     for (const lap of compared) {
       samples.set(lapKey(lap.meta), lap.samples)
       series.set(lapKey(lap.meta), seriesFromSamples(lap.samples))
@@ -799,7 +832,12 @@ export async function buildAnalysis(
       comparison.cornerBrakingRows = theirs.braking
     }
 
-    const car = await carDataForLaps(con, laps.map(lap => ({ sg: lap.sg, lapIdx: lap.lapIdx })), system)
+    const ownCar = await carDataForLaps(con, laps.map(lap => ({ sg: lap.sg, lapIdx: lap.lapIdx })), system)
+    // Compared drivers' videos join the player (side by side or overlaid).
+    const theirVideo = comparisonVideoTraces(aligned, toSpeed)
+    const car = theirVideo.length
+      ? { videos: ownCar?.videos ?? [], traces: [...(ownCar?.traces ?? []), ...theirVideo], speedUnit }
+      : ownCar
 
     console.log(`[analysis] complete — ${ownLines.length + otherLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs / 1000).toFixed(3) + 's' : 'n/a'}`)
     return {

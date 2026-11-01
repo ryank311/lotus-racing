@@ -11,6 +11,7 @@ import type { DbSessionRow, FocusStatus, SessionNotes } from '../../shared/types
 import { FocusCheckRow, ReviewCoachContent, ReviewDeltaBars, ReviewDeltaLegend, ReviewLapScatter, ReviewMap, ReviewMarkers, ReviewTrend, VerdictChip } from '../components/ReviewCharts'
 import { startLabel } from '../components/reviewTimeline'
 import { SessionVideoPanel } from '../components/SessionVideoPanel'
+import { requestVideoRange, useVideoPlayerPresent } from '../videoBus'
 import './review-extras.css'
 
 export const metricLabels: Record<ReviewMetric, string> = { timeMs: 'Traversal time', vminMps: 'V-min', vminDistanceM: 'V-min location', entryMps: 'Entry speed', exitMps: 'Exit speed', topSpeedMps: 'Top speed', consistencyMs: 'Consistency' }
@@ -97,6 +98,7 @@ function Regions({ snapshot, pick, onPick, panel }: { snapshot: ReviewSnapshot; 
   const rows = snapshot.regions.filter(r => r.region.kind === kind).sort(byMetricChange(metric))
   const current = rows.find(r => r.region.id === chosen) ?? rows[0], selected = current?.region.id ?? ''
   const regionHistory = current ? snapshot.history.filter(s => current.baselineSessions.includes(s.sessionGuid)) : []
+  const hasVideo = useVideoPlayerPresent()
   return <details ref={panel} className="review-panel review-regions" open><summary><span className="review-eyebrow">Corners & segments</span><span>Explore where the time changed</span></summary>
     <div className="review-filter-row"><div className="review-tabs" role="group" aria-label="Region type">{(['corner', 'segment'] as const).map(k => <button key={k} type="button" aria-pressed={kind === k} className={kind === k ? 'active' : ''} onClick={() => onPick({ kind: k, id: '' })}>{k === 'corner' ? 'Corners' : 'Segments'}</button>)}</div>
       <label>Metric<select value={metric} onChange={e => setMetric(e.target.value as ReviewMetric)}>{Object.entries(metricLabels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}</select></label></div>
@@ -104,7 +106,8 @@ function Regions({ snapshot, pick, onPick, panel }: { snapshot: ReviewSnapshot; 
       <div className="review-region-visuals"><ReviewMap data={snapshot.current} regions={rows} selected={selected} onSelect={setChosen} /><ReviewDeltaBars rows={rows} metric={metric} selected={selected} onSelect={setChosen} format={v => f.format(metric, v)} /></div>
       <ReviewDeltaLegend metric={metric} />
       <p className="muted">{metric === 'vminDistanceM' ? `Regions are ranked by the size of the ${metricLabels[metric].toLowerCase()} shift.` : `Regions are ranked by ${metricLabels[metric].toLowerCase()} change, most improved first.`}</p>
-      {current && <div className="review-region-detail"><div className="review-section-heading"><h3>{current.region.name}</h3><NavLink className="btn ghost" to={analysisUrl(guid, current.region.id)}>Open in Analysis →</NavLink></div><p className="muted">{current.region.startM.toFixed(0)}–{current.region.endM.toFixed(0)} m · {current.region.count} fast laps · {current.baselineSessions.length} matching regional sessions</p>
+      {current && <div className="review-region-detail"><div className="review-section-heading"><h3>{current.region.name}</h3><div className="btn-row">{hasVideo && <button type="button" className="btn ghost" title="Play this stretch of track in the lap video above"
+        onClick={() => requestVideoRange({ startM: current.region.startM, endM: current.region.endM, label: current.region.name, play: true })}>▶ Watch</button>}<NavLink className="btn ghost" to={analysisUrl(guid, current.region.id)}>Open in Analysis →</NavLink></div></div><p className="muted">{current.region.startM.toFixed(0)}–{current.region.endM.toFixed(0)} m · {current.region.count} fast laps · {current.baselineSessions.length} matching regional sessions</p>
         <div className="review-region-stats">{(Object.keys(metricLabels) as ReviewMetric[]).map(key => {
           const c = current.metrics[key]
           return <div key={key}><span>{metricLabels[key]}</span><strong>{c.current == null ? '—' : f.format(key, c.current)}</strong><ReviewMarkers current={c.current} baseline={c.baseline} format={v => f.format(key, v)} /><small>Baseline {c.baseline == null ? '—' : f.format(key, c.baseline)}</small><small>Previous {c.previous == null ? '—' : f.format(key, c.previous)}</small>{c.personalBest != null && <small>Prior PB {f.format(key, c.personalBest)}</small>}</div>

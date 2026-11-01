@@ -163,6 +163,15 @@ test('PDR videos upload in chunks, find their session, and feed Analysis', { tim
     assert.ok(Math.abs(lap.speed[lap.dist.indexOf(200)] - lapRows(AFTERNOON.laps[1]).rows[200].v * 3.6) < 1)
     // The morning session has no video.
     assert.equal((await rpc('analysis:build', [MORNING.sg], 'metric', 'all')).car, null)
+    // Another driver comparing against this session gets the PDR video of
+    // each lap it covers, placed the same way: video time = startS + lap time.
+    const exported = await rpc('compare:export', [AFTERNOON.sg], 'all')
+    const withVideo = exported.laps.filter(l => l.video).map(l => l.lapIndex).sort()
+    assert.deepEqual(withVideo, [1, 2])
+    const second = exported.laps.find(l => l.lapIndex === 1)
+    const k = second.samples.dist.indexOf(500)
+    assert.ok(Math.abs(second.video.startS + second.samples.timeMs[k] / 1000 - expectedVideoT(1, 500)) < 0.06)
+    assert.equal(second.video.id, videoId)
   })
 
   await t.test('nudging the sync moves the car data with it', async () => {

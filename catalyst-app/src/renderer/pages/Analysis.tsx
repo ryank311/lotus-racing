@@ -3,9 +3,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { ChartCard } from '../components/ChartCard'
 import { LineChart, GGChart, HeatmapGrid, CornerChart, CornerBrakingChart, CornerConsistencyChart, type GGOverlay } from '../components/Charts'
-import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName, driverColor, carSeries } from '../components/chartSeries'
-import { LapVideo, type LapVideoOption } from '../components/LapVideo'
-import { traceKey } from '../components/carData'
+import { speedSeries, speedDeltaSeries, timeDeltaSeries, optimalTimeDeltaSeries, garminOptimalTimeDeltaSeries, longGSeries, lapName, lapColor, driverColor, carSeries } from '../components/chartSeries'
+import { VideoDeck, type DeckCorner, type DeckLap } from '../components/VideoDeck'
+import { refRange, stitchOptimalLap, traceKey } from '../components/carData'
+import { PALETTE } from '../components/chartTheme'
+import { requestVideoRange } from '../videoBus'
 import { TrackMap } from '../components/TrackMap'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
@@ -235,17 +237,60 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
     return () => { cancelled = true; clearTimeout(timeout) }
   }, [selected, system, lapFilter, comparisons, loadAttempt])
 
-  // Laps with PDR video, fastest first; the player starts on the fastest.
-  const videoOptions = useMemo<LapVideoOption[]>(() => {
+  // Laps with video for the player, fastest first: the optimal lap cut from
+  // your video, your laps (in their chart colours), then compared drivers'.
+  const deckLaps = useMemo<DeckLap[]>(() => {
     if (!data?.car) return []
-    const laps = new Map(data.laps.map(lap => [`${lap.sg}:${lap.lapIdx}`, lap]))
-    return data.car.traces
-      .filter(trace => trace.videoT.some(t => t != null) && laps.has(traceKey(trace)))
-      .map(trace => ({ trace, lap: laps.get(traceKey(trace))! }))
-      .sort((a, b) => a.lap.durationMs - b.lap.durationMs)
-      .map(({ trace, lap }) => ({ key: traceKey(trace), trace, label: `${lap.isBest ? '★ ' : ''}${lapName(lap)} · ${msToLap(lap.durationMs)}` }))
+    const meta = new Map(data.laps.map(lap => [`${lap.sg}:${lap.lapIdx}`, lap]))
+    // On the video: "L3", or "09:28 L3" when several sessions are open.
+    const several = data.sessions.length > 1
+    const own: Array<DeckLap & { ms: number }> = [], theirs: Array<DeckLap & { ms: number }> = []
+    for (const trace of data.car.traces) {
+      if (!trace.videoT.some(t => t != null)) continue
+      const lap = meta.get(traceKey(trace))
+      if (trace.driver) {
+        theirs.push({ key: traceKey(trace), trace, ms: trace.durationMs ?? Infinity, color: driverColor(trace.driverIndex ?? 1),
+          short: `${trace.driver} L${trace.lapIdx + 1}`,
+          label: `${trace.driver} · ${trace.label ?? `L${trace.lapIdx + 1}`}${trace.durationMs ? ` · ${msToLap(trace.durationMs)}` : ''}` })
+      } else if (lap) {
+        own.push({ key: traceKey(trace), trace, ms: lap.durationMs, color: lapColor(lap),
+          short: `${several ? `${lap.sessionStart.slice(11, 16)} ` : ''}L${lap.lapIdx + 1}`, label: `${lap.isBest ? '★ ' : ''}${lapName(lap)} · ${msToLap(lap.durationMs)}` })
+      }
+    }
+    own.sort((a, b) => a.ms - b.ms); theirs.sort((a, b) => a.ms - b.ms)
+    const hm = data.heatmap
+    const splits = hm?.colRanges?.map((r, i) => ({ id: hm.cols[i], startM: r[0], endM: r[1] })) ?? []
+    const stitched = stitchOptimalLap(own.map(l => l.trace), splits)
+    const optimal: DeckLap[] = stitched ? [{
+      key: 'optimal', trace: stitched.trace, pieces: stitched.pieces, color: PALETTE.purple, short: 'Optimal',
+      label: `◆ Optimal · ${msToLap(Math.round(stitched.timeS * 1000))} · from ${stitched.laps.map(i => `L${i + 1}`).join(', ')}`,
+    }] : []
+    return [...optimal, ...own, ...theirs]
   }, [data])
+  const deckCorners = useMemo<DeckCorner[]>(() => (data?.corners ?? []).map(c => ({ turn: c.turn, name: c.name ?? '', apexM: c.apex_idx, startM: c.dist_idx_start, endM: c.dist_idx_end })), [data])
   const [videoLap, setVideoLap] = useState<string | null>(null)
+  // undefined: the default (a compared driver's fastest lap with video).
+  const [videoCompare, setVideoCompare] = useState<string | null | undefined>(undefined)
+  useEffect(() => { setVideoCompare(undefined) }, [comparisons])
+  const ownFastest = deckLaps.find(l => !l.trace.driver && !l.pieces)
+  const videoPrimary = videoLap && deckLaps.some(l => l.key === videoLap) ? videoLap : ownFastest?.key ?? deckLaps[0]?.key ?? null
+  const theirFastest = deckLaps.find(l => l.trace.driver && l.key !== videoPrimary)
+  const videoVs = videoCompare === undefined ? theirFastest?.key ?? null : videoCompare
+  const [videoWide, setVideoWide] = useState(() => { try { return localStorage.getItem('catalyst.video.wide') === '1' } catch { return false } })
+  const toggleVideoWide = () => setVideoWide(v => { try { localStorage.setItem('catalyst.video.wide', v ? '0' : '1') } catch { /* per-viewer convenience only */ } return !v })
+  // A coach note or comparison row naming a corner or split cues the video there.
+  const cueRef = (ref: string) => {
+    if (!data || !deckLaps.length) return
+    const hm = data.heatmap
+    const splits = hm?.colRanges?.map((r, i) => ({ id: hm.cols[i], startM: r[0], endM: r[1] })) ?? []
+    const range = refRange(ref, deckCorners, splits)
+    if (range) requestVideoRange({ ...range, label: ref })
+  }
+  const deck = data && !err && deckLaps.length > 0
+    ? <VideoDeck laps={deckLaps} primary={videoPrimary} onPrimary={setVideoLap} compare={videoVs} onCompare={setVideoCompare}
+      hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} corners={deckCorners} totalM={data.totalDistM} speedUnit={data.speedUnit}
+      defaultMode="side" wide={videoWide} onToggleWide={toggleVideoWide} className={videoWide ? 'analysis-deck wide' : 'analysis-deck'} />
+    : null
 
   const displayCoachResult = useMemo(() => {
     if (!coachResult) return null
@@ -406,7 +451,10 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
             )}
 
             {data && !err && (
-              <AnalysisBody data={data} setSelected={setSelected} selected={selected} onEditComparison={() => setCompareOpen(true)} onRemoveDriver={removeComparedDriver} hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} coachNotice={staleNotice} onFocusRef={ref => { setFocusedRef(ref); if (ref) setMobileView('map') }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
+              <>
+                {videoWide && deck}
+                <AnalysisBody data={data} setSelected={setSelected} selected={selected} onEditComparison={() => setCompareOpen(true)} onRemoveDriver={removeComparedDriver} hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} coachResult={displayCoachResult} coachNotice={staleNotice} onFocusRef={ref => { setFocusedRef(ref); if (ref) { setMobileView('map'); cueRef(ref) } }} onHoverRef={setHoveredRef} onFocusAnnotation={setFocusedAnnotation} />
+              </>
             )}
           </div>
         </div>
@@ -416,10 +464,7 @@ export function Analysis({ selected, setSelected, onBack, activeCoachSession, on
 
         {/* RIGHT PANE — track map only, full height, no scroll */}
         <div className="analysis-right-pane">
-          {data && !err && videoOptions.length > 0 && (
-            <LapVideo options={videoOptions} selected={videoLap} onSelect={setVideoLap}
-              hoverDistanceM={hoverDistanceM} onHoverDistance={setHoverDistanceM} />
-          )}
+          {!videoWide && deck}
           {data && !err
             ? <TrackMapPanel data={data} hoverDistanceM={hoverDistanceM} coachAnnotations={displayCoachResult?.annotations} focusCorner={focusedRef} hoverRef={hoveredRef} focusAnnotation={focusedAnnotation} coachResult={displayCoachResult} />
             : <div className="analysis-map-placeholder" />
@@ -724,7 +769,11 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
                 <button type="button" className={heatmapScope === 'mine' ? 'active' : ''} aria-pressed={heatmapScope === 'mine'} onClick={() => setHeatmapScope('mine')}>Your laps</button>
               </div>
             ) : undefined}>
-            <HeatmapGrid hm={heatmap} onHoverSegment={onHoverRef} />
+            <HeatmapGrid hm={heatmap} onHoverSegment={onHoverRef} onPickCell={(row, col) => {
+              // Play that lap's split on video (or the shown lap's, if it has none).
+              const range = heatmap.colRanges?.[col]
+              if (range) requestVideoRange({ lapKey: heatmap.rowKeys?.[row] ?? null, startM: range[0], endM: range[1], label: `${heatmap.cols[col]} · ${heatmap.rows[row].split('  ')[0]}`, play: true })
+            }} />
           </ChartCard>
         )}
 

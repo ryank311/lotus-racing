@@ -191,3 +191,81 @@ export function cornerInputs(trace: CarTrace, corners: Array<{ turn: string; nam
     return out
   })
 }
+
+// ---------------------------------------------------------------------------
+// One lap in the video player: a plain lap, or a stitched one (`pieces`).
+
+export interface PlayableLap { trace: CarTrace; pieces?: StitchPiece[] }
+
+/** Video time at a distance on a lap (plain or stitched). */
+export function lapTimeAt(lap: PlayableLap, distM: number): number | null {
+  return lap.pieces ? stitchedTimeAt(lap.pieces, distM) : videoTimeAt(lap.trace, distM)
+}
+
+/** Video time at the lap's first metre. */
+export function lapStartTime(lap: PlayableLap): number | null {
+  return lap.pieces ? pieceSpan(lap.pieces[0])?.[0] ?? null : videoSpan(lap.trace)?.[0] ?? null
+}
+
+/** Seconds into the lap at a distance (plain or stitched). */
+export function lapElapsedAt(lap: PlayableLap, distM: number): number | null {
+  if (lap.pieces) {
+    const t = stitchedTimeAt(lap.pieces, distM)
+    return t == null ? null : stitchedElapsed(lap.pieces, pieceAt(lap.pieces, distM), t)
+  }
+  const span = videoSpan(lap.trace), t = videoTimeAt(lap.trace, distM)
+  return span && t != null ? t - span[0] : null
+}
+
+/** A channel at a distance, interpolated (dist is increasing on every trace). */
+export function valueAtDistance(trace: CarTrace, channel: CarChannel, distM: number): number | null {
+  return lookup(trace.dist, trace[channel], distM)
+}
+
+/** Time gap of lap `b` behind lap `a` at each of `a`'s metres (s; positive = b slower). */
+export function gapSeries(a: PlayableLap, b: PlayableLap): { xs: number[]; ys: number[] } {
+  const xs: number[] = [], ys: number[] = []
+  const ea = elapsedTable(a), eb = elapsedTable(b)
+  for (const [d, ta] of ea) {
+    const tb = eb.get(d) ?? lapElapsedAt(b, d)
+    if (tb == null) continue
+    xs.push(d); ys.push(Math.round((tb - ta) * 1000) / 1000)
+  }
+  return { xs, ys }
+}
+
+// Elapsed time at each metre of a lap's own grid, in one pass.
+function elapsedTable(lap: PlayableLap): Map<number, number> {
+  const out = new Map<number, number>()
+  if (lap.pieces) {
+    let before = 0
+    for (const p of lap.pieces) {
+      const span = pieceSpan(p)
+      if (span) {
+        p.trace.dist.forEach((d, i) => {
+          const t = p.trace.videoT[i]
+          if (t != null && d >= p.startM && d < p.endM) out.set(d, before + t - span[0])
+        })
+        const end = Math.min(p.endM, p.trace.dist[p.trace.dist.length - 1] ?? p.endM)
+        const tEnd = videoTimeAt(p.trace, end)
+        if (p === lap.pieces[lap.pieces.length - 1] && tEnd != null) out.set(end, before + tEnd - span[0])
+      }
+      before += p.timeS
+    }
+    return out
+  }
+  const start = lap.trace.videoT.find(t => t != null)
+  if (start == null) return out
+  lap.trace.dist.forEach((d, i) => { const t = lap.trace.videoT[i]; if (t != null) out.set(d, t - start) })
+  return out
+}
+
+/** "T7", "T7-T9" or "S6" as a stretch of track, from corners or splits. */
+export function refRange(ref: string, corners: Array<{ turn: string; startM: number; endM: number }>, splits: Array<{ id: string; startM: number; endM: number }>): { startM: number; endM: number } | null {
+  const split = splits.find(s => s.id.toLowerCase() === ref.toLowerCase())
+  if (split) return { startM: split.startM, endM: split.endM }
+  const [from, to] = ref.split(/[-–]/).map(s => s.trim())
+  const a = corners.find(c => c.turn === from), b = corners.find(c => c.turn === (to ?? from))
+  if (!a || !b) return null
+  return { startM: Math.min(a.startM, b.startM), endM: Math.max(a.endM, b.endM) }
+}
