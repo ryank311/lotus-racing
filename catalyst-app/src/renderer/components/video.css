@@ -1,50 +1,5 @@
-/* PDR video player, upload queue and video library. */
-
-.lap-video {
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.lap-video-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-.lap-video-bar select {
-  background: var(--bg-elev);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  font: inherit;
-  padding: 4px 6px;
-  max-width: 100%;
-}
-.lap-video-into { color: var(--text-dim); }
-.lap-video-follow { margin-left: auto; display: inline-flex; flex-direction: row; align-items: center; gap: 6px; color: var(--text-dim); cursor: pointer; white-space: nowrap; font-size: 11px; }
-.lap-video-follow input { margin: 0; }
-/* Session Review stacks form labels; the player's toggle stays on one line. */
-.review-page .lap-video-follow { display: inline-flex; flex-direction: row; gap: 6px; font-size: 11px; }
-.lap-video-frame { position: relative; background: #000; aspect-ratio: 16 / 9; width: 100%; }
-.lap-video-frame video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
-.lap-video-error {
-  position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center;
-  color: var(--red); font-family: var(--font-mono); font-size: 12px; z-index: 1; background: rgba(0, 0, 0, 0.75);
-}
-.lap-video-steps { display: flex; gap: 6px; padding: 6px 12px 8px; flex-wrap: wrap; }
-.lap-video-steps button {
-  background: var(--bg-elev); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius);
-  font-family: var(--font-mono); font-size: 10.5px; padding: 6px 9px; min-height: 30px; cursor: pointer;
-}
-.lap-video-steps button:hover { color: var(--text); border-color: var(--border-strong); }
-/* Analysis: video above the map, which takes the remaining height. */
-.analysis-right-pane .lap-video { flex: none; border-left: 1px solid var(--border); }
-.analysis-right-pane .lap-video-frame { max-height: 46vh; }
+/* Video import: drop zone, upload queue, the library, and Session Review's
+   car-data panel. The lap video player itself is VideoDeck (videoDeck.css). */
 
 .video-drop-zone {
   border: 1px dashed var(--border-strong);
@@ -70,17 +25,47 @@
 .upload-queue.compact .upload-row { padding: 7px 9px; }
 
 .video-library { display: flex; flex-direction: column; gap: 10px; }
+/* One row per video; a row opens to its details and actions. Cards are still
+   used by Session Review's attached-video list. */
+.video-list { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
+.video-row + .video-row { border-top: 1px solid var(--border); }
+.video-row > summary {
+  display: grid; grid-template-columns: 70px 150px minmax(0, 1fr) minmax(0, auto) 44px 14px; gap: 12px; align-items: center;
+  padding: 10px 12px; cursor: pointer; list-style: none; font-size: 13px;
+}
+.video-row > summary::-webkit-details-marker { display: none; }
+.video-row > summary::after { content: '▸'; font-size: 14px; line-height: 1; color: var(--text-dim); transition: transform 120ms; justify-self: end; }
+.video-row[open] > summary::after { transform: rotate(90deg); }
+.video-row > summary:hover { background: var(--panel-soft); }
+.video-row[open] > summary { background: var(--panel-soft); }
+.video-row > summary:focus-visible { outline: 1px solid var(--cyan); outline-offset: -1px; }
+.video-source {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; text-align: center;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 2px 0; color: var(--text-dim);
+}
+.video-source.source-pdr { color: var(--signal); border-color: var(--signal-soft); }
+.video-source.source-catalyst { color: var(--cyan); border-color: var(--cyan-soft); }
+.video-when { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+.video-where { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-row.unmatched .video-where { color: var(--amber); }
+.video-laps { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.video-length { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); text-align: right; }
+.video-row-body { padding: 4px 12px 12px 94px; display: flex; flex-direction: column; gap: 8px; }
+.video-row-body p { margin: 0; line-height: 1.5; }
+.video-facts { margin: 0; display: grid; gap: 4px; font-size: 12.5px; }
+.video-facts > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
+.video-facts dt { color: var(--text-mute); font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding-top: 2px; }
+.video-facts dd { margin: 0; overflow-wrap: anywhere; }
+.video-row-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.video-row-body .video-sync { margin-top: 0; }
 .video-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 13px; }
-.video-card.unmatched { border-color: var(--amber); }
 .video-card p { margin: 7px 0 0; line-height: 1.5; }
 .video-card-head { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; }
 .video-card-head > div:first-child { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .video-card-head strong { overflow-wrap: anywhere; }
-.video-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.video-assign { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.video-assign select, .import-row select {
+.video-assign, .import-row select {
   background: var(--panel); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius);
-  padding: 6px 8px; font: inherit; max-width: 100%;
+  padding: 6px 8px; font: inherit; font-size: 12px; max-width: 100%; min-height: 30px;
 }
 .video-sync { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
 .video-sync-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -89,18 +74,21 @@
 .small { font-size: 12px; }
 
 @media (max-width: 800px) {
-  .lap-video-follow { margin-left: 0; }
+  .video-row > summary { grid-template-columns: 62px minmax(0, 1fr) auto 14px; row-gap: 3px; }
+  .video-row > summary .video-when { grid-column: 2; }
+  .video-row > summary .video-length { grid-column: 3; grid-row: 1; }
+  .video-row > summary::after { grid-column: 4; grid-row: 1; }
+  .video-row > summary .video-where { grid-column: 2 / 4; grid-row: 2; }
+  .video-row > summary .video-laps { grid-column: 2 / 4; grid-row: 3; }
+  .video-row-body { padding-left: 12px; }
   .upload-row-head strong { max-width: 100%; }
   .btn.small { min-height: 36px; }
 }
 
 /* Session Review: video beside the lap's car data. */
 .review-video .review-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.review-video-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; margin-top: 12px; align-items: start; }
-.review-video-grid .lap-video { border: 1px solid var(--border); border-radius: var(--radius); }
 .review-video-charts { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .review-video-chart .channel-tag { display: inline-block; margin: 2px 0 0; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; color: var(--text-dim); }
 .review-video-inputs, .review-video-files { margin-top: 14px; }
 .review-video-inputs > summary, .review-video-files > summary { cursor: pointer; }
 .review-video-files .video-card { margin-top: 8px; }
-@media (max-width: 1100px) { .review-video-grid { grid-template-columns: minmax(0, 1fr); } }

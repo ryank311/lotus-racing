@@ -115,7 +115,28 @@ export function VideoSyncControls({ video, onChange }: { video: SessionVideo; on
   </div>
 }
 
-/** Every video on the account: its session, laps and sync, and actions. */
+// "Virginia International Raceway" → "VIR"; short names stay as they are.
+function shortTrack(name: string | null | undefined): string {
+  const words = (name ?? '').split(/\s+/).filter(Boolean)
+  return words.length >= 3 ? words.map(w => w[0]).join('').toUpperCase() : words.join(' ')
+}
+
+// [1, 2, 3, 6] → "L2–L4, L7"
+function lapRanges(laps: number[]): string {
+  const sorted = [...laps].sort((a, b) => a - b)
+  const runs: string[] = []
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++
+    runs.push(j > i ? `L${sorted[i] + 1}–L${sorted[j] + 1}` : `L${sorted[i] + 1}`)
+    i = j
+  }
+  return runs.join(', ')
+}
+
+const SOURCE_TAG: Record<SessionVideo['source'], string> = { pdr: 'PDR', catalyst: 'Catalyst', 'catalyst-optimal': 'Optimal' }
+
+/** Every video on the account, one row each; a row opens to its details and actions. */
 export function VideoLibrary() {
   const [videos, setVideos] = useState<SessionVideo[] | null>(null)
   const [sessions, setSessions] = useState<DbSessionRow[]>([])
@@ -148,37 +169,49 @@ export function VideoLibrary() {
   if (!videos) return <p className="muted">Loading your videos…</p>
   if (!videos.length) return <p className="muted">No videos yet. Imported videos appear here with the session each one was matched to.</p>
   const totalBytes = videos.reduce((n, v) => n + v.sizeBytes, 0)
+  const unmatched = videos.filter(v => !v.sessionGuid).length
   return <div className="video-library">
-    <p className="muted small">{videos.length} video{videos.length === 1 ? '' : 's'} · {humaniseBytes(totalBytes)} · {videos.filter(v => !v.sessionGuid).length} not matched</p>
-    {videos.map(video => {
-      // Sessions on the same day as the recording, for assigning by hand.
-      const day = video.recordedAt?.slice(0, 10)
-      const sameDay = sessions.filter(s => day && s.session_start?.startsWith(day))
-      return <article key={video.id} className={`video-card${video.sessionGuid ? '' : ' unmatched'}`}>
-        <div className="video-card-head">
-          <div>
-            <strong>{video.fileName}</strong>
-            <span className="muted small">{video.recordedAt ? `Recorded ${startLabel(video.recordedAt)}` : 'Recording time unknown'} · {minutes(video.durationS)} · {humaniseBytes(video.sizeBytes)}{video.width ? ` · ${video.height}p` : ''}</span>
+    <p className="muted small">{videos.length} video{videos.length === 1 ? '' : 's'} · {humaniseBytes(totalBytes)}{unmatched ? ` · ${unmatched} not matched` : ''}</p>
+    <div className="video-list" role="list">
+      {videos.map(video => {
+        const s = video.session
+        const when = startLabel(s?.start ?? video.recordedAt)
+        const where = video.sessionGuid ? [shortTrack(s?.track), s?.layout].filter(Boolean).join(' · ') || 'Unknown track' : 'Not matched'
+        const covers = video.source === 'catalyst-optimal' ? 'Optimal lap' : video.laps.length ? lapRanges(video.laps) : video.sessionGuid ? 'No full laps' : ''
+        // Sessions on the same day as the recording, for attaching by hand.
+        const day = (s?.start ?? video.recordedAt)?.slice(0, 10)
+        const sameDay = sessions.filter(row => day && row.session_start?.startsWith(day))
+        return <details key={video.id} className={`video-row${video.sessionGuid ? '' : ' unmatched'}`} role="listitem">
+          <summary>
+            <span className={`video-source source-${video.source}`}>{SOURCE_TAG[video.source] ?? video.source}</span>
+            <span className="video-when">{when}</span>
+            <span className="video-where" title={video.sessionGuid ? [s?.track, s?.layout].filter(Boolean).join(' · ') : video.matchNote ?? undefined}>{where}</span>
+            <span className="video-laps">{covers}</span>
+            <span className="video-length">{minutes(video.durationS)}</span>
+          </summary>
+          <div className="video-row-body">
+            <dl className="video-facts">
+              <div><dt>File</dt><dd>{video.fileName}{video.sourcePath ? <span className="muted"> · {video.sourcePath}</span> : null}</dd></div>
+              <div><dt>Session</dt><dd>{video.sessionGuid ? `${[s?.track, s?.layout].filter(Boolean).join(' · ') || 'Unknown track'} · ${startLabel(s?.start)}` : <span className="reference">Not matched{video.matchNote ? ` — ${video.matchNote}` : ''}</span>}</dd></div>
+              <div><dt>Recorded</dt><dd>{video.recordedAt ? startLabel(video.recordedAt) : '—'} · {minutes(video.durationS)} · {humaniseBytes(video.sizeBytes)}{video.height ? ` · ${video.height}p` : ''}</dd></div>
+              {video.sessionGuid && video.matchNote && <div><dt>Note</dt><dd className="reference">{video.matchNote}</dd></div>}
+            </dl>
+            <VideoSyncControls video={video} onChange={replace} />
+            <div className="video-row-actions">
+              {video.sessionGuid && <NavLink className="btn ghost small" to={`/review/${segment(video.sessionGuid)}`}>Session Review</NavLink>}
+              {video.sessionGuid && <NavLink className="btn ghost small" to={routeUrl('/analysis', { session: [video.sessionGuid] })}>Analysis</NavLink>}
+              <button type="button" className="btn ghost small" disabled={busy === video.id} onClick={() => void match(video, null)}>{busy === video.id ? 'Working…' : 'Match again'}</button>
+              {sameDay.length > 0 && <select className="video-assign" aria-label={`Attach ${video.fileName} to a session`} value="" disabled={busy === video.id}
+                onChange={e => { if (e.target.value) void match(video, e.target.value) }}>
+                <option value="">{video.sessionGuid ? 'Attach to another session…' : 'Attach to a session…'}</option>
+                {sameDay.map(row => <option key={row.session_guid} value={row.session_guid}>{startLabel(row.session_start)} · {[shortTrack(row.track_name), row.track_configuration_name].filter(Boolean).join(' · ')}{row.vehicle_model ? ` · ${row.vehicle_model}` : ''}</option>)}
+              </select>}
+              <button type="button" className="btn ghost small danger" disabled={busy === video.id} onClick={() => void remove(video)}>Delete</button>
+            </div>
+            {notes[video.id] && <p className="small" role="status">{notes[video.id]}</p>}
           </div>
-          <div className="video-card-actions">
-            {video.sessionGuid && <NavLink className="btn ghost small" to={`/review/${segment(video.sessionGuid)}`}>Session Review</NavLink>}
-            {video.sessionGuid && <NavLink className="btn ghost small" to={routeUrl('/analysis', { session: [video.sessionGuid] })}>Analysis</NavLink>}
-            <button type="button" className="btn ghost small" disabled={busy === video.id} onClick={() => void match(video, null)}>{busy === video.id ? 'Working…' : 'Match again'}</button>
-            <button type="button" className="btn ghost small danger" disabled={busy === video.id} onClick={() => void remove(video)}>Delete</button>
-          </div>
-        </div>
-        {video.sessionGuid
-          ? <p className="small">Session: <b>{[video.session?.track, video.session?.layout].filter(Boolean).join(' · ') || 'Unknown track'}</b> · {startLabel(video.session?.start)} · {video.source === 'catalyst-optimal' ? 'Garmin’s optimal-lap render' : video.laps.length ? `laps ${video.laps.map(i => `L${i + 1}`).join(', ')}` : 'no complete laps'}{video.matchNote ? <span className="reference"> · {video.matchNote}</span> : null}</p>
-          : <p className="small reference">Not matched to a session. {video.matchNote}</p>}
-        {sameDay.length > 0 && <label className="video-assign small">Attach to
-          <select value="" disabled={busy === video.id} onChange={e => { if (e.target.value) void match(video, e.target.value) }}>
-            <option value="">{video.sessionGuid ? 'a different session…' : 'a session from that day…'}</option>
-            {sameDay.map(s => <option key={s.session_guid} value={s.session_guid}>{startLabel(s.session_start)} · {[s.track_name, s.track_configuration_name].filter(Boolean).join(' · ')}{s.vehicle_model ? ` · ${s.vehicle_model}` : ''}</option>)}
-          </select>
-        </label>}
-        <VideoSyncControls video={video} onChange={replace} />
-        {notes[video.id] && <p className="small" role="status">{notes[video.id]}</p>}
-      </article>
-    })}
+        </details>
+      })}
+    </div>
   </div>
 }
