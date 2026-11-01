@@ -6,6 +6,3 @@
 .import-doc-results { margin: 10px 0 0; padding-left: 18px; font-size: 13px; }
 .import-docs p { margin: 10px 0 0; }
 
-/* Overview: the video import entry. */
-.home-video-import { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.home-video-import p { margin: 0; color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 640px; }

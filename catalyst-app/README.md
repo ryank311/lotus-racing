@@ -139,7 +139,7 @@ the PDR's own lap counter. The brake channel is linear in deceleration
 (≈1.1 g at 141) and shown as bar; that unit is inferred. Channels not
 identified yet (temperatures, pressures, PDR internals) are stored raw.
 
-**Import** (sidebar, ⌘9) or **Overview → Import PDR videos** takes one or more
+**Import** (sidebar, ⌘9) takes one or more
 videos. Each is matched to the Garmin session it was recorded in, without
 choosing one:
 
