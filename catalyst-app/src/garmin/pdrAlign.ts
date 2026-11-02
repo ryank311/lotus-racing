@@ -7,25 +7,31 @@
 // lap from the next because lap times differ), then the PDR's own GPS track
 // against the Garmin positions to a fraction of a second.
 
-import { PDR_CHANNELS } from '../shared/pdr.js'
+import { LAP_STAT_KEYS, SENSOR_KEYS, pdrDecoders, type LapStat, type PdrChannelDef } from '../shared/pdr.js'
 import type { RawSeries } from './pdrFile.js'
 
 export interface PdrSignal { t: Float64Array; v: Float64Array; hold: boolean }
 export type PdrSignals = Map<string, PdrSignal>
 
-/** Known channels in their units; repeated timestamps keep the last value. */
-export function pdrSignals(series: Map<number, RawSeries>): PdrSignals {
+/**
+ * Known channels in their units, read with the video's channel table (the
+ * C8's when it has none). Repeated timestamps keep the last value; "no
+ * reading" values are left out.
+ */
+export function pdrSignals(series: Map<number, RawSeries>, table: PdrChannelDef[] = []): PdrSignals {
   const out: PdrSignals = new Map()
+  const decoders = pdrDecoders(table)
   for (const [id, raw] of series) {
-    const info = PDR_CHANNELS[id]
-    if (!info || !raw.t.length) continue
+    const decoder = decoders.get(id)
+    if (!decoder || !raw.t.length) continue
     const t: number[] = [], v: number[] = []
     for (let i = 0; i < raw.t.length; i++) {
-      const value = info.scale(raw.v[i])
+      const value = decoder.value(raw.v[i])
+      if (value == null) continue
       if (t.length && t[t.length - 1] === raw.t[i]) v[v.length - 1] = value
       else { t.push(raw.t[i]); v.push(value) }
     }
-    out.set(info.key, { t: Float64Array.from(t), v: Float64Array.from(v), hold: !!info.hold })
+    if (t.length) out.set(decoder.key, { t: Float64Array.from(t), v: Float64Array.from(v), hold: decoder.hold })
   }
   // A position of exactly 0,0 is no fix.
   const lat = out.get('lat'), lon = out.get('lon')
@@ -242,6 +248,8 @@ export interface CarSample {
   longG: number | null
   wheels: [number | null, number | null, number | null, number | null]
   slip: number | null
+  // SENSOR_KEYS in order (kPa, °C).
+  sensors: Array<number | null>
 }
 
 // Typical rear/front wheel-speed ratio when nothing is slipping (straight,
@@ -268,6 +276,7 @@ export function lapCarSamples(signals: PdrSignals, durationS: number, offsetS: n
     speed: get('speed'), rpm: get('rpm'), throttle: get('throttle'), brake: get('brake'), gear: get('gear'),
     steering: get('steering'), latG: get('latG'), longG: get('longG'),
     wheels: ['wheelFL', 'wheelFR', 'wheelRL', 'wheelRR'].map(get),
+    sensors: SENSOR_KEYS.map(get),
   }
   // A video without the car's speed (a Garmin Catalyst recording) shows
   // the Garmin GPS speed instead.
@@ -287,8 +296,33 @@ export function lapCarSamples(signals: PdrSignals, durationS: number, offsetS: n
       distM: lap.distM[i], videoT: t,
       speedKmh: gpsSpeed ? (gps == null ? null : gps * 3.6) : s.speed.at(t), rpm: s.rpm.at(t), throttle: s.throttle.at(t), brake: s.brake.at(t),
       gear: s.gear.at(t), steering: s.steering.at(t), latG: s.latG.at(t), longG: s.longG.at(t),
-      wheels, slip,
+      wheels, slip, sensors: s.sensors.map(x => x.at(t)),
     })
+  }
+  return out
+}
+
+/**
+ * Tyre pressures and temperatures, fluids and electrics over a lap: the
+ * value as it started and ended, and its range. Nothing when the video holds
+ * less than half the lap.
+ */
+export function lapStats(signals: PdrSignals, durationS: number, offsetS: number, lap: GarminLap): Map<string, LapStat> {
+  const out = new Map<string, LapStat>()
+  const times = lap.timeMs.filter((t): t is number => t != null)
+  const lengthMs = lap.durationMs || (times.length ? Math.max(...times) : 0)
+  const lapStart = lap.startMs / 1000 - offsetS, lapEnd = lapStart + lengthMs / 1000
+  const from = Math.max(0, lapStart), to = Math.min(durationS, lapEnd)
+  if (!(lengthMs > 0) || to - from < (lapEnd - lapStart) / 2) return out
+  for (const key of LAP_STAT_KEYS) {
+    const signal = signals.get(key)
+    if (!signal) continue
+    const sampler = new Sampler(signal)
+    const inside: number[] = []
+    for (let i = 0; i < signal.t.length; i++) if (signal.t[i] >= from && signal.t[i] <= to) inside.push(signal.v[i])
+    const first = sampler.at(from) ?? inside[0], last = sampler.at(to) ?? inside[inside.length - 1]
+    if (first == null || last == null) continue
+    out.set(key, { first, last, min: Math.min(first, last, ...inside), max: Math.max(first, last, ...inside) })
   }
   return out
 }

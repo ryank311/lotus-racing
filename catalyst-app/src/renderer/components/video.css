@@ -89,6 +89,17 @@
 .review-video .review-section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .review-video-charts { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .review-video-chart .channel-tag { display: inline-block; margin: 2px 0 0; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; color: var(--text-dim); }
-.review-video-inputs, .review-video-files { margin-top: 14px; }
-.review-video-inputs > summary, .review-video-files > summary { cursor: pointer; }
+.review-video-inputs, .review-video-files, .review-video-tyres { margin-top: 14px; }
+.review-video-inputs > summary, .review-video-files > summary, .review-video-tyres > summary { cursor: pointer; }
+/* Tyres by lap: pressure, temperature and fluid groups set apart. */
+.tyre-table-wrap { margin-top: 8px; }
+.tyre-table .tyre-group { border-left: 1px solid var(--border); }
+.tyre-table thead tr:first-child th.tyre-group { text-align: center; }
+.tyre-table thead tr + tr th { padding-top: 6px; }
+.tyre-table thead tr:first-child th { border-bottom: 0; padding-bottom: 4px; }
+.tyre-table tbody td { padding: 8px 12px; }
+.tyre-table tr.tyre-start td { color: var(--text-dim); }
+.tyre-trends { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 6px 14px; margin-top: 10px; }
+.tyre-trends .review-video-key span + span { margin-left: 8px; }
+.tyre-trends-note { margin: 4px 0 0; }
 .review-video-files .video-card { margin-top: 8px; }

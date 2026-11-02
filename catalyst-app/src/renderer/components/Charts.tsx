@@ -125,11 +125,18 @@ interface LineChartProps {
   // Omit xRange to let the chart keep its own zoom.
   xRange?: [number, number] | null
   onXRangeChange?: (range: [number, number] | null) => void
+  // An x axis other than distance: the tick and tooltip label for an x
+  // (null leaves that tick unlabelled). Distance in metres by default.
+  xLabel?: (x: number) => string | null
+  // Draw each point (for series of a few points, such as one per lap).
+  markers?: boolean
+  // Tooltip decimals (default 1; 2 for g).
+  yDecimals?: number
 }
 
 const LP = { l: 36, r: 10, t: 18, b: 24 } as const
 
-export function LineChart({ series, height, yUnit = '', yRange, corners, segments, zeroLine, onHoverX, hoverX = null, xRange, onXRangeChange }: LineChartProps) {
+export function LineChart({ series, height, yUnit = '', yRange, corners, segments, zeroLine, onHoverX, hoverX = null, xRange, onXRangeChange, xLabel, markers, yDecimals }: LineChartProps) {
   const canvasRef  = useRef<HTMLCanvasElement>(null)
   const wrapRef    = useRef<HTMLDivElement>(null)
   const rafRef     = useRef(0)
@@ -241,7 +248,8 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     for (const t of xTicks) {
       const px = toX(t)
       if (px < LP.l || px > LP.l + plotW) continue
-      const label = String(Math.round(t))
+      const label = xLabel ? xLabel(t) : String(Math.round(t))
+      if (label == null) continue
       ctx.textAlign = px + ctx.measureText(label).width / 2 > w - 2 ? 'right' : 'center'
       ctx.fillText(label, px, LP.t + plotH + 5)
     }
@@ -294,6 +302,13 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
         first ? (ctx.moveTo(px, py), first = false) : ctx.lineTo(px, py)
       }
       ctx.stroke()
+      if (markers) {
+        ctx.fillStyle = s.color
+        for (let i = 0; i < s.xs.length; i++) {
+          if (s.xs[i] < xMin - xSpan * 0.01 || s.xs[i] > xMax + xSpan * 0.01) continue
+          ctx.beginPath(); ctx.arc(toX(s.xs[i]), toY(s.ys[i]), 2.5, 0, Math.PI * 2); ctx.fill()
+        }
+      }
     }
     ctx.globalAlpha = 1
 
@@ -345,7 +360,7 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     ctx.beginPath()
     ctx.moveTo(LP.l, LP.t); ctx.lineTo(LP.l, LP.t + plotH); ctx.lineTo(LP.l + plotW, LP.t + plotH)
     ctx.stroke()
-  }, [series, yRange, corners, segments, zeroLine, xZoom])
+  }, [series, yRange, corners, segments, zeroLine, xZoom, xLabel, markers])
 
   useEffect(() => {
     draw()
@@ -408,13 +423,13 @@ export function LineChart({ series, height, yUnit = '', yRange, corners, segment
     const dx = b.fromPx(mx)
     hoverXRef.current = dx; onHoverX?.(dx)
 
-    const dec = yUnit === 'g' ? 2 : 1
+    const dec = yDecimals ?? (yUnit === 'g' ? 2 : 1)
     const rows = series.filter(s => s.xs.length && s.ys.length).map(s => ({
       label: s.label,
       value: `${s.ys[nearestIdx(s.xs, dx)].toFixed(dec)}${yUnit ? ' ' + yUnit : ''}`,
       color: s.color,
     }))
-    setTooltip({ px: mx, py: my, header: `${Math.round(dx)} m`, rows })
+    setTooltip({ px: mx, py: my, header: xLabel ? xLabel(Math.round(dx)) ?? '' : `${Math.round(dx)} m`, rows })
     schedRedraw()
   }
 

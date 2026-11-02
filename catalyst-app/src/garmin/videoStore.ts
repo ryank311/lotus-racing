@@ -1,20 +1,45 @@
 // PDR videos attached to sessions, and the car data decoded from them.
 //
-// Three tables: session_videos (one row per video and where it sits in the
+// Tables: session_videos (one row per video and where it sits in the
 // session), pdr_records (every telemetry record in the video, raw, so
-// channels can be re-read or re-scaled later without the video), and
+// channels can be re-read or re-scaled later without the video),
+// pdr_channels (the video's own channel table: names, units, scales),
 // pdr_lap_samples (the known channels on each lap's 1 m Garmin samples,
-// which Analysis and Session Review read). The video file itself lives in
-// the workspace's videos folder; callers own the file.
+// which Analysis and Session Review read) and pdr_lap_stats (tyres, fluids
+// and electrics summarised per lap). The video file itself lives in the
+// workspace's videos folder; callers own the file.
 
+import fs from 'node:fs'
+import path from 'node:path'
 import type { DuckDBConnection } from '@duckdb/node-api'
-import { readPdrFile, channelSeries, type PdrFile, type PdrRecords, type RawSeries } from './pdrFile.js'
-import { alignVideo, lapCarSamples, pdrSignals, slipBaseline, type GarminLap, type PdrSignals, type VideoAlignment } from './pdrAlign.js'
+import { readPdrFile, readPdrChannels, channelSeries, type PdrFile, type PdrRecords, type RawSeries } from './pdrFile.js'
+import { alignVideo, lapCarSamples, lapStats, pdrSignals, slipBaseline, type GarminLap, type PdrSignals, type VideoAlignment } from './pdrAlign.js'
 import { lapLabel } from './lapData.js'
-import { speedFromMps, speedUnitLabel, DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
-import type { CarData, CarTrace, SessionVideo, VideoImportResult } from '../shared/pdr.js'
+import {
+  pressureFromKpa, pressureUnitLabel, speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, DEFAULT_UNIT_SYSTEM, type UnitSystem,
+} from '../shared/units.js'
+import { SENSOR_KEYS, type CarData, type CarLapStats, type CarTrace, type PdrChannelDef, type SessionVideo, type VideoImportResult } from '../shared/pdr.js'
+
+// How the stored car data was decoded. Raise it when decoding changes, and
+// redecodeVideos() recomputes every video's lap data from its stored records.
+// 1: hand-fitted scales. 2: the video's own channel table; tyres and fluids.
+const DECODE_VERSION = 2
+
+// pdr_lap_samples columns for SENSOR_KEYS, in order.
+const SENSOR_COLUMNS = [
+  'tyre_pressure_fl_kpa', 'tyre_pressure_fr_kpa', 'tyre_pressure_rl_kpa', 'tyre_pressure_rr_kpa',
+  'tyre_temp_fl_c', 'tyre_temp_fr_c', 'tyre_temp_rl_c', 'tyre_temp_rr_c',
+  'oil_temp_c', 'coolant_c', 'trans_temp_c', 'oil_pressure_kpa',
+]
 
 export async function initVideoSchema(con: DuckDBConnection): Promise<void> {
+  // Lap samples are derived from the stored records. When their columns
+  // change (decode version 2: brake in %, tyres and fluids), drop them and
+  // mark every video for redecodeVideos() to write them again.
+  const columns = (await con.runAndReadAll(`SELECT column_name FROM information_schema.columns WHERE table_name = 'pdr_lap_samples'`))
+    .getRowsJson().map(r => String(r[0]))
+  const outdated = columns.length > 0 && !columns.includes(SENSOR_COLUMNS[SENSOR_COLUMNS.length - 1])
+  if (outdated) await con.run('DROP TABLE pdr_lap_samples')
   await con.run(`
     CREATE TABLE IF NOT EXISTS session_videos (
       video_id VARCHAR PRIMARY KEY,
@@ -58,7 +83,7 @@ export async function initVideoSchema(con: DuckDBConnection): Promise<void> {
       speed_kmh DOUBLE,
       rpm DOUBLE,
       throttle_pct DOUBLE,
-      brake_bar DOUBLE,
+      brake_pct DOUBLE,
       gear INTEGER,
       steering_deg DOUBLE,
       lat_g DOUBLE,
@@ -67,14 +92,40 @@ export async function initVideoSchema(con: DuckDBConnection): Promise<void> {
       wheel_fr_kmh DOUBLE,
       wheel_rl_kmh DOUBLE,
       wheel_rr_kmh DOUBLE,
-      rear_slip_pct DOUBLE
+      rear_slip_pct DOUBLE,
+      ${SENSOR_COLUMNS.map(c => `${c} DOUBLE`).join(',\n      ')}
     );
     CREATE INDEX IF NOT EXISTS idx_pdr_lap_samples ON pdr_lap_samples(session_guid, lap_index);
+    -- The video's channel table, as the PDR wrote it (see shared/pdr.ts).
+    CREATE TABLE IF NOT EXISTS pdr_channels (
+      video_id VARCHAR NOT NULL,
+      channel USMALLINT NOT NULL,
+      name VARCHAR NOT NULL,
+      unit VARCHAR,
+      quantity INTEGER,
+      period_s DOUBLE,
+      si_scale DOUBLE NOT NULL,
+      si_offset DOUBLE NOT NULL
+    );
+    -- Slow channels over each lap (shared/pdr.ts LAP_STAT_KEYS), in kPa and °C.
+    CREATE TABLE IF NOT EXISTS pdr_lap_stats (
+      session_guid VARCHAR NOT NULL,
+      lap_index INTEGER NOT NULL,
+      video_id VARCHAR NOT NULL,
+      channel VARCHAR NOT NULL,
+      first_value DOUBLE,
+      last_value DOUBLE,
+      min_value DOUBLE,
+      max_value DOUBLE
+    );
   `)
   // Added with Garmin Catalyst videos. NULL source = a PDR video; source_path
   // is where a Catalyst video sat on the device (DRIVER/Track/Car/date/time/file).
   await con.run('ALTER TABLE session_videos ADD COLUMN IF NOT EXISTS source VARCHAR')
   await con.run('ALTER TABLE session_videos ADD COLUMN IF NOT EXISTS source_path VARCHAR')
+  // DECODE_VERSION its lap data was computed with; NULL = before versions.
+  await con.run('ALTER TABLE session_videos ADD COLUMN IF NOT EXISTS decode_version INTEGER')
+  if (outdated) await con.run('UPDATE session_videos SET decode_version = NULL')
 }
 
 const json = (value: unknown): any => {
@@ -174,8 +225,14 @@ function clockGapS(later: string | null, earlier: string | null): number | null 
   return Number.isFinite(a) && Number.isFinite(b) ? (a - b) / 1000 : null
 }
 
-async function writeLapSamples(con: DuckDBConnection, videoId: string, sessionGuid: string, signals: PdrSignals, durationS: number, offsetS: number, laps: GarminLap[], baseline: number): Promise<number> {
+async function clearLapData(con: DuckDBConnection, videoId: string): Promise<void> {
   await con.run('DELETE FROM pdr_lap_samples WHERE video_id = ?', [videoId])
+  await con.run('DELETE FROM pdr_lap_stats WHERE video_id = ?', [videoId])
+}
+
+async function writeLapSamples(con: DuckDBConnection, videoId: string, sessionGuid: string, signals: PdrSignals, durationS: number, offsetS: number, laps: GarminLap[], baseline: number): Promise<number> {
+  await clearLapData(con, videoId)
+  await writeLapStats(con, videoId, sessionGuid, signals, durationS, offsetS, laps)
   const appender = await con.createAppender('pdr_lap_samples')
   let count = 0
   const double = (v: number | null) => (v == null || !Number.isFinite(v) ? appender.appendNull() : appender.appendDouble(v))
@@ -192,6 +249,7 @@ async function writeLapSamples(con: DuckDBConnection, videoId: string, sessionGu
         double(s.steering); double(s.latG); double(s.longG)
         for (const w of s.wheels) double(w)
         double(s.slip)
+        for (const v of s.sensors) double(v)
         appender.endRow()
         count++
       }
@@ -201,6 +259,57 @@ async function writeLapSamples(con: DuckDBConnection, videoId: string, sessionGu
     appender.close()
   }
   return count
+}
+
+async function writeLapStats(con: DuckDBConnection, videoId: string, sessionGuid: string, signals: PdrSignals, durationS: number, offsetS: number, laps: GarminLap[]): Promise<void> {
+  const appender = await con.createAppender('pdr_lap_stats')
+  try {
+    for (const lap of laps) {
+      for (const [key, stat] of lapStats(signals, durationS, offsetS, lap)) {
+        appender.appendVarchar(sessionGuid)
+        appender.appendInteger(lap.lapIndex)
+        appender.appendVarchar(videoId)
+        appender.appendVarchar(key)
+        appender.appendDouble(stat.first); appender.appendDouble(stat.last); appender.appendDouble(stat.min); appender.appendDouble(stat.max)
+        appender.endRow()
+      }
+    }
+    appender.flush()
+  } finally {
+    appender.close()
+  }
+}
+
+async function writeChannelTable(con: DuckDBConnection, videoId: string, table: PdrChannelDef[]): Promise<void> {
+  await con.run('DELETE FROM pdr_channels WHERE video_id = ?', [videoId])
+  if (!table.length) return
+  const appender = await con.createAppender('pdr_channels')
+  try {
+    for (const c of table) {
+      appender.appendVarchar(videoId)
+      appender.appendUSmallInt(c.id)
+      appender.appendVarchar(c.name)
+      appender.appendVarchar(c.unit)
+      appender.appendInteger(c.quantity)
+      appender.appendDouble(c.periodS)
+      appender.appendDouble(c.scale)
+      appender.appendDouble(c.offset)
+      appender.endRow()
+    }
+    appender.flush()
+  } finally {
+    appender.close()
+  }
+}
+
+async function storedChannelTable(con: DuckDBConnection, videoId: string): Promise<PdrChannelDef[]> {
+  const rows = (await con.runAndReadAll(
+    'SELECT channel, name, unit, quantity, period_s, si_scale, si_offset FROM pdr_channels WHERE video_id = ? ORDER BY channel', [videoId],
+  )).getRowsJson()
+  return rows.map(([id, name, unit, quantity, periodS, scale, offset]) => ({
+    id: Number(id), name: String(name), unit: unit == null ? '' : String(unit), quantity: Number(quantity ?? 0),
+    periodS: Number(periodS ?? 0), scale: Number(scale), offset: Number(offset),
+  }))
 }
 
 async function writeRecords(con: DuckDBConnection, videoId: string, records: PdrRecords): Promise<void> {
@@ -231,7 +340,7 @@ async function storedSignals(con: DuckDBConnection, videoId: string): Promise<Pd
     const s = series.get(Number(channels[i]))!
     s.t[s.n] = Number(times[i]); s.v[s.n] = Number(values[i]); s.n++
   }
-  return pdrSignals(new Map([...series].map(([c, s]) => [c, { t: s.t, v: s.v }])))
+  return pdrSignals(new Map([...series].map(([c, s]) => [c, { t: s.t, v: s.v }])), await storedChannelTable(con, videoId))
 }
 
 // "YYYY-MM-DD HH:MM:SS" + seconds, in the same wall-clock format.
@@ -313,7 +422,7 @@ async function findSession(con: DuckDBConnection, video: Decoded, sessionGuid: s
 }
 
 async function placeVideo(con: DuckDBConnection, videoId: string, found: Found, video: Decoded): Promise<void> {
-  await con.run('DELETE FROM pdr_lap_samples WHERE video_id = ?', [videoId])
+  await clearLapData(con, videoId)
   if (found.guid === null) {
     await con.run(`UPDATE session_videos SET session_guid = NULL, match_note = ?, offset_s = NULL, auto_offset_s = NULL,
       alignment = NULL, alignment_error = NULL, laps = '[]' WHERE video_id = ?`, [found.note, videoId])
@@ -355,17 +464,18 @@ export async function importVideo(con: DuckDBConnection, opts: {
   videoId: string; filePath: string; fileName: string; sizeBytes: number; sessionGuid: string | null; ensureDetails: EnsureDetails
 }): Promise<VideoImportResult> {
   const file: PdrFile = await readPdrFile(opts.filePath)
-  const video: Decoded = { durationS: file.durationS, recordedAt: file.recordedAt, signals: pdrSignals(channelSeries(file.records)) }
+  const video: Decoded = { durationS: file.durationS, recordedAt: file.recordedAt, signals: pdrSignals(channelSeries(file.records), file.channels) }
   const found = await findSession(con, video, opts.sessionGuid, opts.ensureDetails)
   await inTransaction(con, async () => {
     await con.run(`
-      INSERT INTO session_videos (video_id, file_name, size_bytes, duration_s, recorded_at, device, width, height, channels, record_count, laps)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]')
+      INSERT INTO session_videos (video_id, file_name, size_bytes, duration_s, recorded_at, device, width, height, channels, record_count, laps, decode_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?)
     `, [
       opts.videoId, opts.fileName, opts.sizeBytes, file.durationS, file.recordedAt, file.device, file.width, file.height,
-      JSON.stringify([...video.signals.keys()].sort()), file.records.channel.length,
+      JSON.stringify([...video.signals.keys()].sort()), file.records.channel.length, DECODE_VERSION,
     ] as any)
     await writeRecords(con, opts.videoId, file.records)
+    await writeChannelTable(con, opts.videoId, file.channels)
     await placeVideo(con, opts.videoId, found, video)
   })
   const stored = (await getSessionVideo(con, opts.videoId))!
@@ -423,7 +533,7 @@ export interface PlainPlacement {
 export async function placePlainVideo(con: DuckDBConnection, videoId: string, place: PlainPlacement): Promise<SessionVideo> {
   const offset = place.sessionGuid && place.offsetS != null ? Math.round(place.offsetS * 1000) / 1000 : null
   await inTransaction(con, async () => {
-    await con.run('DELETE FROM pdr_lap_samples WHERE video_id = ?', [videoId])
+    await clearLapData(con, videoId)
     await con.run(`UPDATE session_videos SET session_guid = ?, match_note = ?, offset_s = ?, auto_offset_s = ?, alignment = ?,
       alignment_error = NULL, laps = '[]', slip_baseline = 1 WHERE video_id = ?`, [
       place.sessionGuid, place.note, offset, offset, offset == null ? null : 'clock', videoId,
@@ -442,11 +552,11 @@ export async function attachPlainVideo(con: DuckDBConnection, video: {
   width: number | null; height: number | null; source: Exclude<SessionVideo['source'], 'pdr'>; sourcePath: string
 }, place: PlainPlacement): Promise<SessionVideo> {
   await con.run(`
-    INSERT INTO session_videos (video_id, file_name, size_bytes, duration_s, recorded_at, device, width, height, channels, record_count, laps, source, source_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, '[]', ?, ?)
+    INSERT INTO session_videos (video_id, file_name, size_bytes, duration_s, recorded_at, device, width, height, channels, record_count, laps, source, source_path, decode_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, '[]', ?, ?, ?)
   `, [
     video.videoId, video.fileName, video.sizeBytes, video.durationS, video.recordedAt, video.device, video.width, video.height,
-    video.source, video.sourcePath,
+    video.source, video.sourcePath, DECODE_VERSION,
   ] as any)
   return placePlainVideo(con, video.videoId, place)
 }
@@ -482,8 +592,9 @@ export async function deleteSessionVideo(con: DuckDBConnection, videoId: string)
   const video = await getSessionVideo(con, videoId)
   if (!video) return null
   await inTransaction(con, async () => {
-    await con.run('DELETE FROM pdr_lap_samples WHERE video_id = ?', [videoId])
+    await clearLapData(con, videoId)
     await con.run('DELETE FROM pdr_records WHERE video_id = ?', [videoId])
+    await con.run('DELETE FROM pdr_channels WHERE video_id = ?', [videoId])
     await con.run('DELETE FROM session_videos WHERE video_id = ?', [videoId])
   })
   return video
@@ -538,25 +649,102 @@ export async function carDataForLaps(
     const pick = chosen.get(`${lap.sg}:${lap.lapIdx}`)
     if (!pick) continue
     const rows = (await con.runAndReadAll(`
-      SELECT distance_m, video_time_s, throttle_pct, brake_bar, rpm, gear, steering_deg, rear_slip_pct, speed_kmh
+      SELECT distance_m, video_time_s, throttle_pct, brake_pct, rpm, gear, steering_deg, rear_slip_pct, speed_kmh, ${SENSOR_COLUMNS.join(', ')}
       FROM pdr_lap_samples WHERE session_guid = ? AND lap_index = ? AND video_id = ? AND distance_m % ? = 0
       ORDER BY distance_m
     `, [lap.sg, lap.lapIdx, pick.videoId, strideM])).getRowsJson()
     const trace: CarTrace = { sg: lap.sg, lapIdx: lap.lapIdx, videoId: pick.videoId, dist: [], videoT: [], throttle: [], brake: [], rpm: [], gear: [], steering: [], slip: [], speed: [] }
+    const sensors = SENSOR_KEYS.map(() => [] as Array<number | null>)
     for (const r of rows) {
       const d = Number(r[0])
       if (trace.dist.length && trace.dist[trace.dist.length - 1] === d) continue
       trace.dist.push(d); trace.videoT.push(round(r[1], 3))
       trace.throttle.push(round(r[2], 0)); trace.brake.push(round(r[3], 1)); trace.rpm.push(round(r[4], 0))
       trace.gear.push(num(r[5])); trace.steering.push(round(r[6], 1)); trace.slip.push(round(r[7], 2)); trace.speed.push(toSpeed(r[8]))
+      SENSOR_KEYS.forEach((key, k) => { const v = num(r[9 + k]); sensors[k].push(v == null ? null : statDisplay(key, v, system)) })
     }
+    // Only what the video logged.
+    SENSOR_KEYS.forEach((key, k) => { if (sensors[k].some(v => v != null)) (trace.sensors ??= {})[key] = sensors[k] })
     if (trace.dist.length) traces.push(trace)
   }
   return {
     videos: videos.map(v => ({ id: String(v[0]), sg: String(v[1]), fileName: String(v[2]), durationS: num(v[3]) ?? 0, recordedAt: v[4] == null ? null : String(v[4]) })),
     traces,
     speedUnit: speedUnitLabel(system),
+    lapStats: await lapStatsFor(con, laps, chosen, system),
+    tempUnit: tempUnitLabel(system),
+    pressureUnit: pressureUnitLabel(system),
   }
+}
+
+// Stored in kPa and °C; shown in the driver's units.
+function statDisplay(key: string, value: number, system: UnitSystem): number | null {
+  if (/pressure/i.test(key)) return round(pressureFromKpa(value, system), system === 'imperial' ? 1 : 0)
+  if (/^tyreTemp|Temp$|^coolant$|Air$/.test(key)) return round(tempFromC(value, system), 0)
+  return round(value, 1)
+}
+
+// Each lap's slow channels from the video its car data comes from.
+async function lapStatsFor(
+  con: DuckDBConnection, laps: Array<{ sg: string; lapIdx: number }>, chosen: Map<string, { videoId: string }>, system: UnitSystem,
+): Promise<CarLapStats[]> {
+  const sessions = [...new Set(laps.map(l => l.sg))]
+  const rows = (await con.runAndReadAll(`
+    SELECT session_guid, lap_index, video_id, channel, first_value, last_value, min_value, max_value FROM pdr_lap_stats
+    WHERE session_guid IN (${sessions.map(() => '?').join(',')})
+  `, sessions)).getRowsJson()
+  const byLap = new Map<string, CarLapStats>()
+  for (const [sg, lap, video, key, ...values] of rows) {
+    const id = `${sg}:${lap}`
+    if (chosen.get(id)?.videoId !== String(video)) continue
+    const [first, last, min, max] = values.map(v => statDisplay(String(key), Number(v), system))
+    if (first == null || last == null || min == null || max == null) continue
+    if (!byLap.has(id)) byLap.set(id, { sg: String(sg), lapIdx: Number(lap), values: {} })
+    byLap.get(id)!.values[String(key)] = { first, last, min, max }
+  }
+  return laps.flatMap(l => byLap.get(`${l.sg}:${l.lapIdx}`) ?? [])
+}
+
+/** Where a stored video's file is: the videos folder, or the data folder it is moving from. */
+export function storedVideoFile(dirs: string[], videoId: string): string | null {
+  return dirs.map(dir => path.join(dir, `${videoId}.mp4`)).find(file => fs.existsSync(file)) ?? null
+}
+
+/**
+ * Bring every video's car data up to DECODE_VERSION, from what is stored:
+ * a PDR video's channel table is read again from its file (`videoFile`)
+ * when there is none stored, then each video's lap data is recomputed.
+ * Returns how many videos were updated.
+ */
+export async function redecodeVideos(con: DuckDBConnection, videoFile: (videoId: string) => string | null): Promise<number> {
+  const rows = (await con.runAndReadAll(
+    'SELECT video_id, source IS NULL FROM session_videos WHERE decode_version IS NULL OR decode_version < ? ORDER BY created_at',
+    [DECODE_VERSION],
+  )).getRowsJson()
+  let count = 0
+  for (const [id, isPdr] of rows) {
+    const videoId = String(id)
+    try {
+      if (isPdr === true && !(await storedChannelTable(con, videoId)).length) {
+        const file = videoFile(videoId)
+        const table = file ? await readPdrChannels(file).catch(() => []) : []
+        await writeChannelTable(con, videoId, table)
+      }
+      const video = await getSessionVideo(con, videoId)
+      if (!video) continue
+      if (isPdr === true) {
+        const signals = await storedSignals(con, videoId)
+        await con.run('UPDATE session_videos SET channels = ? WHERE video_id = ?', [JSON.stringify([...signals.keys()].sort()), videoId])
+      }
+      if (video.sessionGuid && video.offsetS != null) await relayVideo(con, video, video.offsetS)
+      await con.run('UPDATE session_videos SET decode_version = ? WHERE video_id = ?', [DECODE_VERSION, videoId])
+      count++
+    } catch (error) {
+      console.error(`[video] ${videoId}: car data could not be decoded again:`, error)
+    }
+  }
+  if (count) console.log(`[video] decoded the car data of ${count} video${count === 1 ? '' : 's'} again`)
+  return count
 }
 
 /**

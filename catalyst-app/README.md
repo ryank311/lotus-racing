@@ -131,13 +131,22 @@ A Corvette Performance Data Recorder (PDR) writes its telemetry inside each
 named "Cougar PDR 2.0" (sample format `marl`) of 16-byte records, each a
 channel number, a signed value and a 100 ns timestamp on the video's own
 timeline. `pdrFile.ts` reads it straight from the MP4's sample table (no
-ffmpeg; a 3 GB video costs a few MB of reads). The channels and scales in
-`shared/pdr.ts` were identified against GPS and lap timing on a 2021 C8 at
-VIR: speed, engine RPM, throttle, brake, gear, steering angle, the four wheel
-speeds, lateral/longitudinal G, GPS position/heading/altitude, odometer and
-the PDR's own lap counter. The brake channel is linear in deceleration
-(≈1.1 g at 141) and shown as bar; that unit is inferred. Channels not
-identified yet (temperatures, pressures, PDR internals) are stored raw.
+ffmpeg; a 3 GB video costs a few MB of reads).
+
+The track's sample description (`stsd` → `marl` → `mrld`) also holds the
+PDR's own table of its channels: one 448-byte entry per channel with its
+number, name, unit, logging period, and the scale and offset to SI units
+(the table Cosworth Toolbox reads). A C8 Z51 lists 66 channels. Each video is
+decoded with its own table; `shared/pdr.ts` names the ones the app uses
+(`PDR_CHANNELS`, by the PDR's name) and keeps the C8's table for videos
+stored before the table was read. Decoded: speed, engine RPM, throttle and
+brake pedal (%), gear, steering angle, the four wheel speeds, lateral and
+longitudinal G, GPS position/heading/altitude, odometer, the PDR's lap
+counter, the four **tyre pressures and temperatures** (the TPMS sensors:
+4 kPa and 1 °C steps, 1 s), engine oil, coolant, transmission oil, intake and
+outside air temperatures, oil pressure, fuel level, battery voltage and the
+ABS/traction/stability flags. The rest (clutch, boost, the PDR's CPU and SD
+card) stays raw.
 
 **Import** (sidebar, ⌘9) takes one or more
 videos. Each is matched to the Garmin session it was recorded in, without
@@ -171,21 +180,35 @@ What is stored, in the workspace database:
   offset), as matched and as adjusted by hand.
 - `pdr_records` — every telemetry record, raw, so channels can be re-read or
   re-scaled later without the video file.
+- `pdr_channels` — the video's channel table, as the PDR wrote it.
 - `pdr_lap_samples` — the known channels on each lap's 1 m Garmin samples,
-  with the video time at each metre. Re-computed when the sync is nudged or
-  the session's laps are reloaded.
+  with the video time at each metre (tyres and fluids included). Re-computed
+  when the sync is nudged or the session's laps are reloaded.
+- `pdr_lap_stats` — tyres, fluids, fuel and battery over each lap: first,
+  last, lowest and highest.
+
+`session_videos.decode_version` records how a video's lap data was decoded.
+When decoding changes, raise `DECODE_VERSION` in `videoStore.ts`: on its next
+start each workspace recomputes older videos from `pdr_records` in the
+background (`redecodeVideos`), reading a missing channel table from the video
+file. Nothing is re-uploaded.
 
 Where it shows up:
 
-- **Analysis** adds throttle, brake pressure, gear/RPM, steering and
-  rear-wheel slip (rears vs fronts, against a no-slip baseline taken from
-  the session) charts for laps a video covers, and the lap video player
-  (below).
+- **Analysis** adds throttle, brake, gear/RPM, steering and rear-wheel slip
+  (rears vs fronts, against a no-slip baseline taken from the session)
+  charts for laps a video covers, then tyre pressure and tyre temperature
+  (one tyre at a time) and fluids (oil, coolant, transmission temperature,
+  oil pressure), and the lap video player (below). Each tyre and fluid chart,
+  and each choice on it, appears only when a video logged it.
 - **Session Review** shows the lap video player beside speed, the time gap
   and (with a PDR video) throttle, brake, gear and steering for the lap
   against a reference, and a table of driver inputs per corner: where braking
-  starts, peak pressure, coasting time, throttle pickup, lowest gear and
-  steering.
+  starts, peak brake, coasting time, throttle pickup, lowest gear and
+  steering. **Tyres and fluids by lap** charts each tyre's pressure and
+  temperature and the hottest fluids across the laps, with a table of them
+  at the end of each lap (and as the first lap started); clicking a lap plays
+  it.
 - **Import** lists every video with its session and laps, nudges the sync
   (±0.1/0.5 s) if the video runs ahead of or behind the charts, re-matches
   and deletes. Sessions with video are marked on the Sessions page.

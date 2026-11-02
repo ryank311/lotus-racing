@@ -40,3 +40,14 @@ export function tempFromC(c: number, system: UnitSystem): number {
 export function speedFromMph(mphValue: number, system: UnitSystem): number {
   return system === 'imperial' ? mphValue : mphValue * MPH_TO_KMH
 }
+
+const KPA_PER_PSI = 6.894757
+
+export function pressureUnitLabel(system: UnitSystem): string {
+  return system === 'imperial' ? 'psi' : 'kPa'
+}
+
+// Canonical kPa → display pressure (tyres, oil) in the active system.
+export function pressureFromKpa(kpa: number, system: UnitSystem): number {
+  return system === 'imperial' ? kpa / KPA_PER_PSI : kpa
+}

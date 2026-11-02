@@ -2,7 +2,8 @@
 // lap (or the optimal lap, cut from the session's fastest pass through each
 // segment) and another to compare it with, side by side or overlaid; the
 // charts show both, and every chart, the lap strip and the corners explorer
-// move the video. PDR videos add throttle, brake, gear and steering.
+// move the video. PDR videos add throttle, brake, gear and steering, and
+// each lap's tyre pressures and temperatures.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, msToLap } from '../api'
@@ -12,6 +13,7 @@ import { PALETTE } from './chartTheme'
 import { VideoDeck, type DeckLap } from './VideoDeck'
 import { channelPoints, cornerInputs, gapSeries, stitchOptimalLap, traceKey, type CarChannel } from './carData'
 import { UploadQueue, VideoPickerButton, VideoSyncControls } from './VideoImport'
+import { TyreTable, TyreTrendCharts, hasTyreData } from './TyreTable'
 import { onVideoImported } from '../videoUploads'
 import type { SessionCarData, SessionVideo } from '../../shared/pdr'
 import type { TrackCorner } from '../../garmin/trackYaml'
@@ -20,7 +22,7 @@ import './video.css'
 
 const CHARTS: Array<{ channel: CarChannel; label: string; unit: string; range?: [number, number]; zero?: boolean }> = [
   { channel: 'throttle', label: 'THROTTLE', unit: '%', range: [0, 100] },
-  { channel: 'brake', label: 'BRAKE', unit: 'bar' },
+  { channel: 'brake', label: 'BRAKE', unit: '%' },
   { channel: 'gear', label: 'GEAR', unit: '' },
   { channel: 'steering', label: 'STEERING', unit: '°', zero: true },
 ]
@@ -91,6 +93,8 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
   const refInputs = useMemo(() => reference && !reference.pieces && hasInputs ? new Map(cornerInputs(reference.trace, corners).map(c => [c.turn, c])) : null, [reference, corners, hasInputs])
   const replace = (video: SessionVideo) => { setData(d => d ? { ...d, attached: d.attached.map(v => (v.id === video.id ? video : v)) } : d); void load() }
   const synced = data?.attached.filter(v => v.offsetS != null) ?? []
+  const playable = useMemo(() => new Set(plain.map(l => l.trace.lapIdx)), [plain])
+  const showTyres = !!data && hasTyreData(data.lapStats)
   const chart = (key: string, label: string, unit: string, list: LineSeries[], extra: { range?: [number, number]; zero?: boolean; height?: number } = {}) =>
     <div key={key} className="review-video-chart">
       <span className="channel-tag">{label}{unit ? ` · ${unit}` : ''}</span>
@@ -105,7 +109,7 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
     </div>
     {error && <p className="loss" role="alert">{error}</p>}
     {!data && !error && <p className="muted">Loading…</p>}
-    {data && !data.attached.length && <p className="muted">Import this session’s video from the Garmin Catalyst on the <NavLink to="/import">Import</NavLink> page to watch any lap beside its charts, or attach the Corvette PDR video recorded during it to add throttle, brake, gear and steering. Imported videos are matched to their sessions automatically.</p>}
+    {data && !data.attached.length && <p className="muted">Import this session’s video from the Garmin Catalyst on the <NavLink to="/import">Import</NavLink> page to watch any lap beside its charts, or attach the Corvette PDR video recorded during it to add throttle, brake, gear, steering and tyre pressures and temperatures. Imported videos are matched to their sessions automatically.</p>}
     <UploadQueue compact only="pdr" />
     {data && synced.length > 0 && !plain.length && <p className="muted">The attached video does not cover a complete valid lap of this session.</p>}
     {current && data && <>
@@ -138,7 +142,7 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
                   onClick={() => requestVideoRange({ startM: corner.startM, endM: corner.endM, label: `${c.turn}${c.name ? ` · ${c.name}` : ''}`, play: true })}>▶ {c.turn}{c.name ? ` · ${c.name}` : ''}</button>
                 : <>{c.turn}{c.name ? ` · ${c.name}` : ''}</>}</td>
               <td>{pair(c.brakeOnM == null ? 'no braking' : `${c.brakeOnM} m`, b ? (b.brakeOnM == null ? 'no braking' : `${b.brakeOnM} m`) : undefined)}</td>
-              <td>{pair(fmt(c.peakBrake, ' bar'), b ? fmt(b.peakBrake, ' bar') : undefined)}</td>
+              <td>{pair(fmt(c.peakBrake, '%'), b ? fmt(b.peakBrake, '%') : undefined)}</td>
               <td>{pair(fmt(c.coastS, ' s', 2), b ? fmt(b.coastS, ' s', 2) : undefined)}</td>
               <td>{pair(c.throttleOnM == null ? '—' : `${c.throttleOnM > 0 ? '+' : ''}${c.throttleOnM} m`, b ? (b.throttleOnM == null ? '—' : `${b.throttleOnM > 0 ? '+' : ''}${b.throttleOnM} m`) : undefined)}</td>
               <td>{pair(fmt(c.minGear), b ? fmt(b.minGear) : undefined)}</td>
@@ -148,6 +152,13 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
         </table></div>
       </details>}
     </>}
+    {showTyres && data && <details className="review-video-tyres" open>
+      <summary><span className="review-eyebrow">Tyres and fluids by lap</span> <span className="muted small">from the car’s tyre pressure sensors · at the end of each lap{playable.size ? ' · click a lap to watch it' : ''}</span></summary>
+      <TyreTrendCharts stats={data.lapStats} laps={data.laps} pressureUnit={data.pressureUnit} tempUnit={data.tempUnit} />
+      <TyreTable stats={data.lapStats} laps={data.laps} pressureUnit={data.pressureUnit} tempUnit={data.tempUnit}
+        currentLapIdx={current && !current.pieces ? current.trace.lapIdx : null} playable={playable}
+        onPick={lapIdx => { const pick = plain.find(l => l.trace.lapIdx === lapIdx); if (pick) setLap(pick.key) }} />
+    </details>}
     {data && data.attached.length > 0 && <details className="review-video-files">
       <summary><span className="review-eyebrow">Attached videos</span> <span className="muted small">{data.attached.length} · sync and files</span></summary>
       {data.attached.map(v => <div key={v.id} className="video-card">

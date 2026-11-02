@@ -1,7 +1,7 @@
 // Pure helpers over PDR car data: moving between a lap's distance and the
 // video's time, chart series, and per-corner driver inputs.
 
-import type { CarTrace } from '../../shared/pdr'
+import type { CarTrace, SensorKey } from '../../shared/pdr'
 
 // Linear interpolation over paired arrays with gaps (nulls skipped).
 function lookup(xs: Array<number | null>, ys: Array<number | null>, x: number): number | null {
@@ -122,11 +122,13 @@ export function stitchedElapsed(pieces: StitchPiece[], index: number, videoT: nu
 }
 
 export type CarChannel = 'throttle' | 'brake' | 'rpm' | 'gear' | 'steering' | 'slip' | 'speed'
+const CAR_CHANNELS = new Set<string>(['throttle', 'brake', 'rpm', 'gear', 'steering', 'slip', 'speed'])
+const isSensor = (channel: CarChannel | SensorKey): channel is SensorKey => !CAR_CHANNELS.has(channel)
 
-/** One channel as chart points, skipping gaps. */
-export function channelPoints(trace: CarTrace, channel: CarChannel): { xs: number[]; ys: number[] } {
+/** One channel as chart points, skipping gaps (a tyre or fluid channel the lap lacks has none). */
+export function channelPoints(trace: CarTrace, channel: CarChannel | SensorKey): { xs: number[]; ys: number[] } {
   const xs: number[] = [], ys: number[] = []
-  const values = trace[channel]
+  const values = isSensor(channel) ? trace.sensors?.[channel] ?? [] : trace[channel]
   for (let i = 0; i < trace.dist.length; i++) {
     const v = values[i]
     if (v == null) continue
@@ -149,7 +151,8 @@ export interface CornerInputs {
   maxSteering: number | null
 }
 
-const BRAKE_ON = 5      // bar
+const BRAKE_ON = 2      // % pedal
+const BRAKE_OFF = 1     // % pedal
 const THROTTLE_ON = 20  // %
 
 /**
@@ -175,7 +178,7 @@ export function cornerInputs(trace: CarTrace, corners: Array<{ turn: string; nam
       out.brakeOnM = Math.round(corner.apexM - trace.dist[onIdx])
       const braking = idx.filter(i => i >= onIdx && trace.dist[i] <= corner.apexM + 60)
       out.peakBrake = Math.max(...braking.map(i => trace.brake[i] ?? 0))
-      releaseIdx = braking.find((i, n) => n > 0 && (trace.brake[i] ?? 0) < 2)
+      releaseIdx = braking.find((i, n) => n > 0 && (trace.brake[i] ?? 0) < BRAKE_OFF)
     }
     const pickupFrom = releaseIdx ?? onIdx ?? idx[0]
     const pickup = idx.find(i => i >= pickupFrom && (trace.throttle[i] ?? 0) >= THROTTLE_ON && trace.dist[i] >= corner.apexM - 150)

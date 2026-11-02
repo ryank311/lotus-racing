@@ -4,7 +4,7 @@ import { cornerInputs, distanceAt, videoSpan, videoTimeAt } from '../src/rendere
 import type { CarTrace } from '../src/shared/pdr'
 
 // A 1 km lap on a 5 m grid at 20 m/s, video starting 100 s into the file.
-// Braking 300 → 380 m (peak 90 bar at 340 m), coasting to 400 m, throttle
+// Braking 300 → 380 m (peak 90 % pedal at 340 m), coasting to 400 m, throttle
 // from 400 m; apex at 420 m.
 function lap(): CarTrace {
   const dist = Array.from({ length: 201 }, (_, i) => i * 5)

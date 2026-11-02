@@ -10,8 +10,9 @@ import {
   TRACKS_DIR, COACHING_DIR, SETTINGS_PATH, VIDEOS_DIR,
 } from '../garmin/paths.js'
 import { VIDEO_ID_RE } from '../shared/pdr.js'
-import { openDb, initSchema } from '../garmin/loadToDb.js'
+import { openDb, initSchema, withDb } from '../garmin/loadToDb.js'
 import { syncCatalystVideoOffsets } from '../garmin/catalystVideos.js'
+import { redecodeVideos, storedVideoFile } from '../garmin/videoStore.js'
 import { prepareTrackLibrary } from '../garmin/trackStore.js'
 import fs from 'node:fs'
 import { startCatalystServer, type RunningCatalystServer } from './server.js'
@@ -236,6 +237,9 @@ app.whenReady().then(async () => {
       // Catalyst videos imported before their recording clock was used.
       await syncCatalystVideoOffsets(db.con).catch(error => console.error('[video] re-sync failed:', error))
       await db.close()
+      // Videos stored before the car data was decoded the current way.
+      void withDb(con => redecodeVideos(con, id => storedVideoFile([VIDEOS_DIR], id)), DB_PATH)
+        .catch(error => console.error('[video] decoding stored videos again failed:', error))
     } catch (e) {
       console.error('[startup] schema migration failed:', e)
     }

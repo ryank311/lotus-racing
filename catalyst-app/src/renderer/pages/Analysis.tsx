@@ -9,6 +9,7 @@ import { refRange, stitchOptimalLap, traceKey } from '../components/carData'
 import { PALETTE } from '../components/chartTheme'
 import { requestVideoRange } from '../videoBus'
 import { TrackMap } from '../components/TrackMap'
+import { SensorCharts } from '../components/SensorCharts'
 import { ConditionsPanel } from '../components/ConditionsPanel'
 import { useUnits } from '../units'
 import { useNavigation, useRoute } from '../navigation'
@@ -833,8 +834,8 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
             <LineChart series={carCharts.throttle} height={240} yUnit="%" yRange={[0, 100]} corners={data.corners} segments={data.segments}
               onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
           </ChartCard>
-          <ChartCard channel="BRAKE PRESSURE" meta="bar · from the PDR">
-            <LineChart series={carCharts.brake} height={240} yUnit="bar" corners={data.corners} segments={data.segments}
+          <ChartCard channel="BRAKE" meta="% pedal · from the PDR">
+            <LineChart series={carCharts.brake} height={240} yUnit="%" corners={data.corners} segments={data.segments}
               onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
           </ChartCard>
           <ChartCard channel={engineMode === 'gear' ? 'GEAR' : 'ENGINE RPM'} meta="from the PDR"
@@ -857,6 +858,7 @@ function AnalysisBody({ data, selected, setSelected, onEditComparison, onRemoveD
               onHoverX={onHoverDistance} hoverX={hoverDistanceM} xRange={xRange} onXRangeChange={setXRange} />
           </ChartCard>
         </>}
+        <SensorCharts data={data} hoverDistanceM={hoverDistanceM} onHoverDistance={onHoverDistance} xRange={xRange} setXRange={setXRange} />
 
         {(data.cornerBrakingRows?.length ?? 0) > 0 && (
           <ChartCard channel="BRAKING TECHNIQUE" meta="onset → release · distance relative to apex">

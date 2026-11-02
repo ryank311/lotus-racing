@@ -7,7 +7,7 @@ import { layoutForSession } from './trackStore.js'
 import { fetchValidLaps } from './lapData.js'
 import { segmentBounds } from './lapPhases.js'
 import { carDataForLaps, listSessionVideos } from './videoStore.js'
-import { speedUnitLabel, DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
+import { pressureUnitLabel, speedUnitLabel, tempUnitLabel, DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
 import type { SessionCarData } from '../shared/pdr.js'
 
 export async function sessionCarData(con: DuckDBConnection, sessionGuid: string, system: UnitSystem = DEFAULT_UNIT_SYSTEM): Promise<SessionCarData> {
@@ -26,5 +26,6 @@ export async function sessionCarData(con: DuckDBConnection, sessionGuid: string,
   return {
     sessionGuid, attached, laps, corners, splits,
     videos: car?.videos ?? [], traces: car?.traces ?? [], speedUnit: car?.speedUnit ?? speedUnitLabel(system),
+    lapStats: car?.lapStats ?? [], tempUnit: tempUnitLabel(system), pressureUnit: pressureUnitLabel(system),
   }
 }

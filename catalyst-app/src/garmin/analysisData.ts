@@ -9,7 +9,7 @@ import { openDb } from './loadToDb.js'
 import { DB_PATH } from './paths.js'
 import { layoutForSession, type TrackCorner, type TrackSegment } from './trackStore.js'
 import { buildTrackGeometry, projectLatLon, TrackGeometry } from './trackGeometry.js'
-import { DEFAULT_UNIT_SYSTEM, speedFromMps, speedUnitLabel, type UnitSystem } from '../shared/units.js'
+import { DEFAULT_UNIT_SYSTEM, pressureUnitLabel, speedFromMps, speedUnitLabel, tempUnitLabel, type UnitSystem } from '../shared/units.js'
 import { cornerPhases, plausibleMin, segmentBounds, spanTimeMs, valueAt, type LapSeries, type SplitBound } from './lapPhases.js'
 import { fetchLapSamples, fetchOptimalLapSeries, fetchOptimalLapTimes, fetchValidLaps, lapLabel, representativeKeys, seriesFromSamples, type LapSamples } from './lapData.js'
 import { selectLaps, type LapFilter } from '../shared/coachingScope.js'
@@ -836,7 +836,10 @@ export async function buildAnalysis(
     // Compared drivers' videos join the player (side by side or overlaid).
     const theirVideo = comparisonVideoTraces(aligned, toSpeed)
     const car = theirVideo.length
-      ? { videos: ownCar?.videos ?? [], traces: [...(ownCar?.traces ?? []), ...theirVideo], speedUnit }
+      ? {
+        videos: ownCar?.videos ?? [], traces: [...(ownCar?.traces ?? []), ...theirVideo], speedUnit,
+        lapStats: ownCar?.lapStats ?? [], tempUnit: tempUnitLabel(system), pressureUnit: pressureUnitLabel(system),
+      }
       : ownCar
 
     console.log(`[analysis] complete — ${ownLines.length + otherLines.length} racing lines, theoretical best: ${theoreticalBestMs ? (theoreticalBestMs / 1000).toFixed(3) + 's' : 'n/a'}`)

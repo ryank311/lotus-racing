@@ -7,7 +7,7 @@ const childProcess = require('node:child_process')
 const { legacyVideoDir, userDirectory, workspaceDbPath, workspaceVideoDir } = require('../dist-main/main/serverStorage.js')
 const { readPdrFile } = require('../dist-main/garmin/pdrFile.js')
 const { TRACK_YAML, lapRows, writeMeanLines } = require('./fixtures/compareFixture.cjs')
-const { drivingRecords, writePdrVideo } = require('./fixtures/pdrFixture.cjs')
+const { drivingRecords, writePdrVideo, tyrePressureAt, tyreTempAt } = require('./fixtures/pdrFixture.cjs')
 
 // Workers run without Electron, like tests/server.test.cjs.
 const fork = childProcess.fork
@@ -159,6 +159,7 @@ test('PDR videos upload in chunks, find their session, and feed Analysis', { tim
     assert.ok(lap.throttle.some(v => v > 50), 'throttle out of it')
     assert.ok(lap.gear.every(g => g == null || [2, 3].includes(g)))
     assert.ok(lap.rpm.every(r => r == null || r > 900))
+    assert.equal(lap.sensors, undefined, 'no tyre or fluid charts without the data')
     // Speed from the car, in the display unit.
     assert.ok(Math.abs(lap.speed[lap.dist.indexOf(200)] - lapRows(AFTERNOON.laps[1]).rows[200].v * 3.6) < 1)
     // The morning session has no video.
@@ -279,6 +280,116 @@ test('with a media directory, videos live apart from the data a deploy keeps', {
   assert.equal((await call(`/api/videos/${id}.mp4`, { headers: { Range: 'bytes=0-9' } }, cookie)).status, 206)
   assert.equal(await rpc('videos:delete', id), true)
   assert.ok(!fs.existsSync(path.join(videos, `${id}.mp4`)), 'deleted from the media directory')
+})
+
+test('tyres come from the video’s own channel table, and videos imported earlier are decoded again', { timeout: 120000 }, async t => {
+  const { C8_CHANNELS } = require('../dist-main/shared/pdr.js')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-pdr-tyres-'))
+  const dataDir = path.join(root, 'server')
+  fs.mkdirSync(path.join(root, 'tracks'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'tracks', 'test-raceway.yaml'), TRACK_YAML)
+  const dir = userDirectory(dataDir, 'Ryan')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'account.json'), JSON.stringify({ username: 'Ryan' }))
+  writeMeanLines(path.join(dir, 'garmin', 'data', 'mean_lines'))
+  childProcess.execFileSync(process.execPath, [path.join(__dirname, 'fixtures/compareFixture.cjs'), workspaceDbPath(dir), JSON.stringify([AFTERNOON])], { stdio: 'pipe' })
+
+  // This PDR numbers its tyre channels differently from the C8: only its
+  // own table says where they are.
+  const moved = ['LF Tyre Pressure', 'RF Tyre Pressure', 'LR Tyre Pressure', 'RR Tyre Pressure', 'LF Tyre Temp', 'RF Tyre Temp', 'LR Tyre Temp', 'RR Tyre Temp']
+  const channels = C8_CHANNELS.map(c => (moved.includes(c.name) ? { ...c, id: 0x70 + moved.indexOf(c.name) } : c))
+  const tyres = { pressure: [0x70, 0x71, 0x72, 0x73], temp: [0x74, 0x75, 0x76, 0x77] }
+  const video = path.join(root, 'PDR_0913.mp4')
+  writePdrVideo(video, drivingRecords(AFTERNOON.laps, VIDEO_START_S, VIDEO_S, { tyres }),
+    { durationS: VIDEO_S, recordedAt: clockPlus(AFTERNOON.start, VIDEO_START_S + 3600), channels })
+  const table = (await readPdrFile(video)).channels
+  assert.equal(table.length, channels.length)
+  assert.deepEqual(table.find(c => c.name === 'LF Tyre Pressure'), { ...C8_CHANNELS.find(c => c.name === 'LF Tyre Pressure'), id: 0x70 })
+
+  let server = await startCatalystServer({ host: '127.0.0.1', port: 0, dataDir, templateRoot: root })
+  t.after(async () => { await server.close(); fs.rmSync(root, { recursive: true, force: true }) })
+  const call = (endpoint, init = {}, cookie) => fetch(server.url + endpoint, {
+    ...init, headers: { ...(init.headers ?? {}), ...(cookie ? { cookie } : {}) }, signal: AbortSignal.timeout(30000),
+  })
+  const postJson = (endpoint, body, cookie) => call(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, cookie)
+  const login = async () => (await postJson('/api/login', { username: 'Ryan' })).headers.get('set-cookie').split(';')[0]
+  let cookie = await login()
+  const rpc = async (channel, ...args) => {
+    const body = await (await postJson('/api/rpc', { channel, args }, cookie)).json()
+    assert.equal(body.error, undefined)
+    return body.result
+  }
+  const bytes = fs.readFileSync(video)
+  const start = await (await postJson('/api/videos/uploads', { fileName: 'PDR_0913.mp4', size: bytes.length }, cookie)).json()
+  assert.equal((await call(`/api/videos/uploads/${start.uploadId}?offset=0`, { method: 'PUT', body: bytes }, cookie)).status, 200)
+  assert.equal((await postJson(`/api/videos/uploads/${start.uploadId}/finish`, {}, cookie)).status, 202)
+  let status
+  for (let i = 0; i < 200; i++) {
+    status = await (await call(`/api/videos/uploads/${start.uploadId}`, {}, cookie)).json()
+    if (status.state !== 'importing') break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.equal(status.state, 'done', status.error)
+  assert.deepEqual(status.result.video.laps, [1, 2])
+
+  // Each covered lap: the tyres as it ended (kPa and °C in metric), and how
+  // they started and ranged over it.
+  const lapEndS = 30 + durations.reduce((a, b) => a + b, 0)
+  const lapStartS = lapEndS - durations[2]
+  const checkTyres = (car, toUnit, close) => {
+    assert.deepEqual(car.lapStats.map(s => s.lapIdx), [1, 2], 'only laps the video covers')
+    const last = car.lapStats[1].values
+    ;['FL', 'FR', 'RL', 'RR'].forEach((corner, c) => {
+      const p = last[`tyrePressure${corner}`], temp = last[`tyreTemp${corner}`]
+      assert.ok(Math.abs(p.last - toUnit.pressure(tyrePressureAt(lapEndS, c))) <= close.pressure, `${corner} ${p.last}`)
+      assert.ok(Math.abs(p.first - toUnit.pressure(tyrePressureAt(lapStartS, c))) <= close.pressure, `${corner} ${p.first}`)
+      assert.ok(p.min <= p.first && p.max >= p.last && p.last > p.first, 'warming through the lap')
+      assert.ok(Math.abs(temp.last - toUnit.temp(tyreTempAt(lapEndS, c))) <= close.temp, `${corner} ${temp.last}`)
+    })
+  }
+  const metric = await rpc('analysis:build', [AFTERNOON.sg], 'metric', 'all')
+  assert.deepEqual([metric.car.pressureUnit, metric.car.tempUnit], ['kPa', '°C'])
+  checkTyres(metric.car, { pressure: v => v, temp: v => v }, { pressure: 4, temp: 1 })
+  // The distance charts get the tyres at every sample, and nothing the video did not log.
+  const trace = metric.car.traces.find(tr => tr.lapIdx === 2)
+  assert.deepEqual(Object.keys(trace.sensors).sort(), ['FL', 'FR', 'RL', 'RR'].flatMap(c => [`tyrePressure${c}`, `tyreTemp${c}`]).sort())
+  const k = trace.dist.indexOf(500)
+  const atSample = 30 + durations[0] + durations[1] + lapRows(AFTERNOON.laps[2]).rows[500].t / 1000
+  assert.ok(Math.abs(trace.sensors.tyrePressureRR[k] - tyrePressureAt(atSample, 3)) <= 4, `${trace.sensors.tyrePressureRR[k]}`)
+  assert.ok(Math.abs(trace.sensors.tyreTempFL[k] - tyreTempAt(atSample, 0)) <= 1)
+  const review = await rpc('videos:carData', AFTERNOON.sg)
+  assert.deepEqual([review.pressureUnit, review.tempUnit], ['psi', '°F'])
+  checkTyres(review, { pressure: v => v / 6.894757, temp: v => v * 9 / 5 + 32 }, { pressure: 0.65, temp: 2 })
+  const before = review.lapStats
+  // The brake is pedal travel, in %.
+  assert.ok(review.traces.every(tr => tr.brake.every(b => b == null || (b >= 0 && b <= 100))))
+  assert.ok(review.traces.some(tr => tr.brake.some(b => b > 10)))
+
+  // As if imported before the channel table was read: no table, no lap
+  // stats, and lap samples with the brake as "bar".
+  await server.close()
+  childProcess.execFileSync(process.execPath, ['-e', `
+    const { DuckDBInstance } = require('@duckdb/node-api')
+    ;(async () => {
+      const con = await (await DuckDBInstance.create(process.argv[1])).connect()
+      await con.run(\`DELETE FROM pdr_channels; DELETE FROM pdr_lap_stats; UPDATE session_videos SET decode_version = NULL;
+        DROP TABLE pdr_lap_samples;
+        CREATE TABLE pdr_lap_samples (session_guid VARCHAR, lap_index INTEGER, distance_m INTEGER, video_id VARCHAR, video_time_s DOUBLE, brake_bar DOUBLE)\`)
+    })()
+  `, workspaceDbPath(dir)], { cwd: path.join(__dirname, '..'), stdio: 'pipe' })
+
+  // The next start reads the table from the video file again and recomputes the laps.
+  server = await startCatalystServer({ host: '127.0.0.1', port: 0, dataDir, templateRoot: root })
+  cookie = await login()
+  let again
+  for (let i = 0; i < 100; i++) {
+    again = await rpc('videos:carData', AFTERNOON.sg)
+    if (again.lapStats.length && again.traces.length) break
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.deepEqual(again.lapStats, before)
+  assert.deepEqual(again.traces.map(tr => tr.lapIdx).sort(), [1, 2])
+  assert.deepEqual(again.traces, review.traces)
 })
 
 test('videos copy across volumes when they cannot be renamed', async () => {

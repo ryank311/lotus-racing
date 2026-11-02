@@ -1,6 +1,7 @@
 // Synthetic Corvette PDR videos for tests: telemetry records for a car
 // driving the compare fixture's laps, in an MP4 laid out like the PDR's
-// (a stub video track and a "Cougar PDR 2.0" data track of 16-byte records).
+// (a stub video track and a "Cougar PDR 2.0" data track of 16-byte records,
+// optionally with the PDR's channel table in its sample description).
 
 const fs = require('node:fs')
 const { lapRows } = require('./compareFixture.cjs')
@@ -39,7 +40,11 @@ function carAt(laps, sessionS) {
  * Records for a video whose first frame is at session time `startS`.
  * `scales` are the session's laps (as passed to compareFixture's seed).
  */
-function drivingRecords(scales, startS, durationS, { moving = true } = {}) {
+// Tyres warming through the session (session time s): kPa and °C.
+const tyrePressureAt = (sessionS, corner) => 180 + 0.2 * sessionS + corner * 8
+const tyreTempAt = (sessionS, corner) => 30 + 0.1 * sessionS + corner
+
+function drivingRecords(scales, startS, durationS, { moving = true, tyres = null } = {}) {
   const laps = scales.map(scale => lapRows(scale))
   const out = []
   for (let k = 0; k * 0.1 <= durationS; k++) {
@@ -54,6 +59,12 @@ function drivingRecords(scales, startS, durationS, { moving = true } = {}) {
     out.push(record(0x1a, 0x8000 + car.ay * 16 * 8, t))
     for (const ch of [0x3b, 0x3c, 0x3d, 0x3e]) out.push(record(ch, kmh * 32 * (ch >= 0x3d ? 1.01 : 1), t))
     if (k % 2 === 0) out.push(record(0x1c, kmh * 64, t), record(0x16, gear, t))
+    // Once a second: { pressure: [4 channels], temp: [4 channels] }, as the
+    // car sends them (pressure in 4 kPa steps, temperature + 20 °C).
+    if (tyres && k % 10 === 0) {
+      tyres.pressure.forEach((ch, c) => out.push(record(ch, Math.round(tyrePressureAt(startS + t, c) / 4), t)))
+      tyres.temp.forEach((ch, c) => out.push(record(ch, Math.round(tyreTempAt(startS + t, c)) + 20, t)))
+    }
   }
   return out
 }
@@ -74,11 +85,26 @@ function tkhd(width, height) {
 }
 const mdhd = (scale, duration) => full('mdhd', 0, u32(0, 0, scale, duration, 0))
 const hdlr = (type, name) => full('hdlr', 0, u32(0), Buffer.from(type, 'latin1'), Buffer.alloc(12), Buffer.from(`${name}\0`, 'utf8'))
-const stsd = format => full('stsd', 0, u32(1), box(format, Buffer.alloc(8)))
+const stsd = (format, entries = []) => full('stsd', 0, u32(1), box(format, Buffer.alloc(8), ...entries))
 
-function track({ width = 0, height = 0, scale, duration, handler, name, format, sizes = [], offsets = [] }) {
+// The PDR's channel table ('mrld'): one 448-byte entry per channel, laid
+// out as in a real C8 video. `channels`: { id, name, unit, quantity, periodS, scale, offset }.
+function channelTable(channels) {
+  const entries = channels.map(c => {
+    const b = Buffer.alloc(448)
+    b.writeUInt32BE(c.id, 0); b.writeUInt32BE(c.quantity, 4); b.writeUInt32BE(1, 8)
+    b.write(c.unit, 12, 64, 'utf8')
+    b.writeUInt32BE(7, 76); b.writeBigUInt64BE(BigInt(Math.round(c.periodS * 1e7)), 80); b.writeBigUInt64BE(0xffn, 88)
+    b.writeDoubleBE(0, 96); b.writeDoubleBE(100, 104); b.writeDoubleBE(c.scale, 112); b.writeDoubleBE(c.offset, 120)
+    b.write(c.name, 128, 320, 'utf8')
+    return b
+  })
+  return [box('mrlh', u32(0x40000)), box('mrlv', Buffer.alloc(16)), box('mrld', ...entries)]
+}
+
+function track({ width = 0, height = 0, scale, duration, handler, name, format, sizes = [], offsets = [], entries = [] }) {
   const stbl = box('stbl',
-    stsd(format),
+    stsd(format, entries),
     full('stts', 0, u32(0)),
     full('stsc', 0, ...(sizes.length ? [u32(1, 1, 1, 1)] : [u32(0)])),
     full('stsz', 0, u32(0, sizes.length, ...sizes)),
@@ -91,14 +117,17 @@ function track({ width = 0, height = 0, scale, duration, handler, name, format, 
 const mp4Seconds = clock => Math.round(Date.parse(`${clock.replace(' ', 'T')}Z`) / 1000 + 2082844800)
 
 /** Write a PDR-like MP4 holding `records`, ~2 s of records per sample. */
-function writePdrVideo(file, records, { durationS, recordedAt }) {
+function writePdrVideo(file, records, { durationS, recordedAt, channels = null }) {
   const samples = []
   for (let i = 0; i < records.length; i += 200) samples.push(Buffer.concat(records.slice(i, i + 200)))
   const ftyp = box('ftyp', Buffer.from('mp42', 'latin1'), u32(0), Buffer.from('mp42isom', 'latin1'))
   const moov = offsets => box('moov',
     full('mvhd', 0, u32(mp4Seconds(recordedAt), mp4Seconds(recordedAt), 1000, Math.round(durationS * 1000)), Buffer.alloc(80)),
     track({ width: 1920, height: 1080, scale: 3000, duration: Math.round(durationS * 3000), handler: 'vide', name: 'VideoHandler', format: 'avc1' }),
-    track({ scale: 1000, duration: Math.round(durationS * 1000), handler: 'meta', name: 'Cougar PDR 2.0', format: 'marl', sizes: samples.map(s => s.length), offsets }),
+    track({
+      scale: 1000, duration: Math.round(durationS * 1000), handler: 'meta', name: 'Cougar PDR 2.0', format: 'marl',
+      sizes: samples.map(s => s.length), offsets, entries: channels ? channelTable(channels) : [],
+    }),
   )
   const head = ftyp.length + moov(samples.map(() => 0)).length + 8
   const offsets = []
@@ -118,4 +147,4 @@ function writePlainVideo(file, { durationS, width = 1920, height = 1080 }) {
   fs.writeFileSync(file, Buffer.concat([ftyp, moov, box('mdat', Buffer.alloc(4096, 7))]))
 }
 
-module.exports = { record, drivingRecords, writePdrVideo, writePlainVideo }
+module.exports = { record, drivingRecords, writePdrVideo, writePlainVideo, tyrePressureAt, tyreTempAt }

@@ -3,6 +3,7 @@
 // megabytes of I/O. See shared/pdr.ts for the record format.
 
 import fs from 'node:fs/promises'
+import type { PdrChannelDef } from '../shared/pdr.js'
 
 const DATA_HEAD = 0xe000
 const RECORD_BYTES = 16
@@ -28,6 +29,8 @@ export interface PdrRecords {
 
 export interface PdrFile extends PdrVideoInfo {
   records: PdrRecords
+  // The PDR's table of its channels; empty when the video has none.
+  channels: PdrChannelDef[]
 }
 
 interface Box { type: string; start: number; body: number; end: number }
@@ -149,6 +152,34 @@ function sampleTable(moov: Buffer, trak: Box): Array<{ offset: number; size: num
   return out
 }
 
+// The data track's sample entry ('marl') holds three boxes: 'mrlh', 'mrlv'
+// (recording details) and 'mrld', the channel table: one 448-byte entry per
+// channel. Each entry: number (u32), quantity code (u32), unit code (u32),
+// unit (64 bytes, UTF-8), data type (u32), logging period (u64, 100 ns
+// ticks), value mask (u64), display range (2 doubles), scale and offset to
+// SI (doubles), name (UTF-8, to the end of the entry).
+const CHANNEL_ENTRY_BYTES = 448
+
+function channelTable(moov: Buffer, trak: Box): PdrChannelDef[] {
+  const stsd = path(moov, trak, 'mdia', 'minf', 'stbl', 'stsd')
+  const entry = stsd && stsd.end - stsd.body > 8 ? children(moov, stsd.body + 8, stsd.end)[0] : undefined
+  // A sample entry starts with 6 reserved bytes and a data reference index.
+  const mrld = entry && entry.end - entry.body > 8 ? children(moov, entry.body + 8, entry.end).find(b => b.type === 'mrld') : undefined
+  if (!mrld || (mrld.end - mrld.body) % CHANNEL_ENTRY_BYTES) return []
+  const text = (from: number, to: number) => moov.toString('utf8', from, to).replace(/\0[\s\S]*$/, '').trim()
+  const out: PdrChannelDef[] = []
+  for (let p = mrld.body; p + CHANNEL_ENTRY_BYTES <= mrld.end; p += CHANNEL_ENTRY_BYTES) {
+    const id = moov.readUInt32BE(p), name = text(p + 128, p + CHANNEL_ENTRY_BYTES)
+    const scale = moov.readDoubleBE(p + 112), offset = moov.readDoubleBE(p + 120)
+    if (!id || id > 0xffff || !name || !Number.isFinite(scale) || !Number.isFinite(offset)) continue
+    out.push({
+      id, name, unit: text(p + 12, p + 76), quantity: moov.readUInt32BE(p + 4),
+      periodS: Number(moov.readBigUInt64BE(p + 80)) / TICKS_PER_S, scale, offset,
+    })
+  }
+  return out
+}
+
 export function isPdrTrack(t: { handlerName: string; format: string }): boolean {
   return t.format === 'marl' || /\bPDR\b/i.test(t.handlerName)
 }
@@ -236,8 +267,20 @@ export async function readPdrFile(filePath: string): Promise<PdrFile> {
     return {
       durationS: video?.durationS ?? durationS, recordedAt, device: data.handlerName || null,
       width: video?.width ?? null, height: video?.height ?? null,
-      records: decodeRecords(chunks),
+      records: decodeRecords(chunks), channels: channelTable(moov, data.box),
     }
+  } finally {
+    await file.close()
+  }
+}
+
+/** Just the video's channel table (its movie header only). */
+export async function readPdrChannels(filePath: string): Promise<PdrChannelDef[]> {
+  const file = await fs.open(filePath, 'r')
+  try {
+    const { moov, tracks: all } = await readMovie(file, (await file.stat()).size)
+    const data = all.find(isPdrTrack)
+    return data ? channelTable(moov, data.box) : []
   } finally {
     await file.close()
   }

@@ -9,8 +9,9 @@
 import fs from 'node:fs'
 import type { AiKeyStore, AiKeys } from './aiKeyStore.js'
 import { registerApiHandlers, type ApiHandler, type BackendEventTarget } from './ipc.js'
-import { DB_PATH, seedUserData } from '../garmin/paths.js'
-import { initSchema, openDb } from '../garmin/loadToDb.js'
+import { DB_PATH, LEGACY_VIDEOS_DIR, VIDEOS_DIR, seedUserData } from '../garmin/paths.js'
+import { initSchema, openDb, withDb } from '../garmin/loadToDb.js'
+import { redecodeVideos, storedVideoFile } from '../garmin/videoStore.js'
 import { syncCatalystVideoOffsets } from '../garmin/catalystVideos.js'
 import { prepareTrackLibrary } from '../garmin/trackStore.js'
 import { remoteTrackLibrary, useTrackLibrary } from '../garmin/trackLibrary.js'
@@ -129,6 +130,12 @@ async function start(): Promise<void> {
   })
 
   send({ type: 'ready' })
+  // Videos stored before the car data was decoded the current way: after
+  // ready, since it reads every stored record.
+  if (fs.existsSync(DB_PATH)) {
+    void withDb(con => redecodeVideos(con, id => storedVideoFile([VIDEOS_DIR, LEGACY_VIDEOS_DIR], id)), DB_PATH)
+      .catch(error => console.error('[video] decoding stored videos again failed:', error))
+  }
 }
 
 void start().catch(error => {
