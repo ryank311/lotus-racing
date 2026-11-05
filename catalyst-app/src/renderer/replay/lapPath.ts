@@ -18,6 +18,8 @@ export interface LapPose {
   /** m/s²: longitudinal (braking negative) and lateral (Garmin: positive = turning right). */
   accelX: number
   accelY: number
+  /** The path's curvature, 1/m: positive turning left (1 / the radius). */
+  curvature: number
 }
 
 export type CarChannel = 'throttle' | 'brake' | 'rpm' | 'gear' | 'steering' | 'speed'
@@ -83,11 +85,22 @@ export class LapPath {
   readonly speed: Float64Array
   readonly ax: Float64Array
   readonly ay: Float64Array
+  /** Curvature (1/m, + = turning left), smoothed over ~10 m. */
+  readonly curv: Float64Array
   readonly durationMs: number
   readonly minSpeed: number
   readonly maxSpeed: number
   readonly car: CarTrace | null
+  /**
+   * +1 when the steering channel reads positive turning left, −1 when it
+   * reads positive turning right (as PDR and Catalyst traces do), 0 when it
+   * is missing or does not follow the path's turns.
+   */
+  readonly steeringSign: number
   private carDist: number[] = []
+  // The last lookup (index and fraction), so a frame's lookups allocate nothing.
+  private li = 0
+  private lf = 0
 
   constructor(readonly lap: ReplayLap, frame: LocalFrame, totalM: number) {
     const n = this.n = lap.timeMs.length
@@ -121,37 +134,87 @@ export class LapPath {
     this.speed = filled(lap.speedMps)
     this.ax = filled(lap.accelX)
     this.ay = filled(lap.accelY)
+    // Curvature: the heading's turn toward the left (fz, −fx) over about
+    // 5 m each way, per metre, then smoothed.
+    const k = new Float64Array(n)
+    for (let i = 0, a = 0, b = 0; i < n; i++) {
+      while (a < i && s[i] - s[a + 1] >= 5) a++
+      b = Math.max(b, i)
+      while (b < n - 1 && s[b] - s[i] < 5) b++
+      const ds = s[b] - s[a]
+      k[i] = ds > 1 ? ((this.fx[b] - this.fx[a]) * this.fz[i] - (this.fz[b] - this.fz[a]) * this.fx[i]) / ds : i ? k[i - 1] : 0
+    }
+    this.curv = smooth(k, [1, 2, 3, 4, 5, 4, 3, 2, 1])
     let lo = Infinity, hi = 0
     for (const v of this.speed) { lo = Math.min(lo, v); hi = Math.max(hi, v) }
     this.minSpeed = Number.isFinite(lo) ? lo : 0
     this.maxSpeed = hi
     this.car = lap.car
     if (lap.car) this.carDist = lap.car.dist
+    this.steeringSign = this.measureSteeringSign()
+  }
+
+  // The steering channel's sign convention, from how it follows the path's
+  // curvature through the lap (a trace whose steering does not is not used).
+  private measureSteeringSign(): number {
+    if (!this.hasChannel('steering')) return 0
+    let sk = 0, ss = 0, kk = 0
+    for (let i = 0; i < this.n; i++) {
+      const steering = this.channel('steering', this.d[i])
+      if (steering == null) continue
+      sk += steering * this.curv[i]; ss += steering * steering; kk += this.curv[i] * this.curv[i]
+    }
+    const correlation = ss > 0 && kk > 0 ? sk / Math.sqrt(ss * kk) : 0
+    return Math.abs(correlation) < 0.5 ? 0 : Math.sign(correlation)
   }
 
   /** Sample index and fraction at a lap time (ms from the lap start). */
   at(timeMs: number): [number, number] {
+    this.locate(timeMs)
+    return [this.li, this.lf]
+  }
+
+  private locate(timeMs: number) {
     const t = this.t[0] + timeMs
     const i = lowerIndex(this.t, t), j = Math.min(this.n - 1, i + 1)
     const span = this.t[j] - this.t[i]
-    return [i, span > 0 ? Math.min(1, Math.max(0, (t - this.t[i]) / span)) : 0]
+    this.li = i
+    this.lf = span > 0 ? Math.min(1, Math.max(0, (t - this.t[i]) / span)) : 0
+  }
+
+  private mix(a: Float64Array): number {
+    const i = this.li, j = Math.min(this.n - 1, i + 1)
+    return a[i] + (a[j] - a[i]) * this.lf
   }
 
   pose(timeMs: number, out: LapPose = {} as LapPose): LapPose {
-    const [i, f] = this.at(timeMs), j = Math.min(this.n - 1, i + 1)
-    const mix = (a: Float64Array) => a[i] + (a[j] - a[i]) * f
-    out.x = mix(this.x); out.z = mix(this.z)
-    const fx = mix(this.fx), fz = mix(this.fz), len = Math.hypot(fx, fz) || 1
+    this.locate(timeMs)
+    out.x = this.mix(this.x); out.z = this.mix(this.z)
+    const fx = this.mix(this.fx), fz = this.mix(this.fz), len = Math.hypot(fx, fz) || 1
     out.fx = fx / len; out.fz = fz / len
-    out.dist = mix(this.d)
-    out.speedMps = mix(this.speed)
-    out.accelX = mix(this.ax); out.accelY = mix(this.ay)
+    out.dist = this.mix(this.d)
+    out.speedMps = this.mix(this.speed)
+    out.accelX = this.mix(this.ax); out.accelY = this.mix(this.ay)
+    out.curvature = this.mix(this.curv)
     return out
   }
 
+  /** The accelerations at a lap time (m/s², as in LapPose), into `out`. */
+  accelAt(timeMs: number, out: { accelX: number; accelY: number }) {
+    this.locate(timeMs)
+    out.accelX = this.mix(this.ax); out.accelY = this.mix(this.ay)
+  }
+
   distAt(timeMs: number): number {
-    const [i, f] = this.at(timeMs), j = Math.min(this.n - 1, i + 1)
-    return this.d[i] + (this.d[j] - this.d[i]) * f
+    this.locate(timeMs)
+    return this.mix(this.d)
+  }
+
+  /** Steering-wheel angle at a distance, degrees, positive turning left; null without a usable steering channel. */
+  steeringAt(dist: number): number | null {
+    if (!this.steeringSign) return null
+    const value = this.channel('steering', dist)
+    return value == null ? null : value * this.steeringSign
   }
 
   /** Lap time (ms) when this lap reached a distance; null before its first or past its last sample. */

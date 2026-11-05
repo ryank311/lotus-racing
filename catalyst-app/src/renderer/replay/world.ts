@@ -14,6 +14,7 @@ import { buildTrees } from './trees'
 import { interp, unwrapDistance } from './lapPath'
 import type { ReplayWorld } from './engine'
 import { buildFarField, loadAcTrack } from './acTrack'
+import { patchWorldMaterial, type SurfaceKind } from './surfaces'
 
 export interface TerrainData {
   info: TerrainInfo
@@ -31,6 +32,11 @@ export interface BuiltWorld extends ReplayWorld {
 }
 
 const HORIZON = new THREE.Color(0xc4d2de)
+// The public world's meshes by name, to the shading they take.
+const PUBLIC_KINDS: Record<string, SurfaceKind> = {
+  'terrain-tile': 'far', 'terrain-skirt': 'far', ground: 'far', verge: 'ground', road: 'road',
+  'edge-lines': 'paint', kerbs: 'kerb', 'start-finish': 'paint', tree: 'foliage',
+}
 
 export async function buildWorld(track: ReplayTrack, terrain: TerrainData | null, lap: ReplayLap, maxAnisotropy: number, onStep?: (label: string) => void): Promise<BuiltWorld> {
   const frame = makeFrame(track.area)
@@ -96,16 +102,23 @@ export async function buildWorld(track: ReplayTrack, terrain: TerrainData | null
   if (kerbs) group.add(kerbs)
   group.add(buildStartLine(road))
 
-  // The world skips tone mapping: lit as below, flat ground shows the photo
-  // at about its own brightness and colour (tone mapping greys it), and
-  // slopes shade with the sun. The sky and the car stay tone-mapped.
+  // The same sun, sky, haze and wet surface as a track model (surfaces.ts),
+  // and the sun's shadows from the trees.
   group.traverse(object => {
     const mesh = object as THREE.Mesh
-    if (mesh.isMesh) for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.toneMapped = false
+    if (!mesh.isMesh) return
+    const kind = PUBLIC_KINDS[mesh.name] ?? 'object'
+    mesh.receiveShadow = true
+    mesh.castShadow = kind === 'foliage'
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) if (!m.userData.surfaceKind) patchWorldMaterial(m, kind)
   })
 
+  // The far shadows cover the road and the woods near it, not the whole ground plane.
+  const shadowBounds = new THREE.Box3()
+  for (let s = 0; s < road.n; s += 8) shadowBounds.expandByPoint(new THREE.Vector3(road.cx[s], road.heights[s * LAT + (LAT >> 1)] || 0, road.cz[s]))
+  shadowBounds.expandByVector(new THREE.Vector3(250, 40, 250))
   return {
-    group, road, frame, edges, note, trees,
+    group, road, frame, edges, note, trees, shadowBounds,
     horizon: HORIZON.clone(),
     dispose: () => {
       disposeObject(group)
@@ -167,11 +180,13 @@ export async function buildModelWorld(track: ReplayTrack, terrain: TerrainData |
         } catch (error) { console.warn('[replay] aerial photo unusable', error) }
       }
       group.add(buildFarField(terrain.info, terrain.grid, frame, model, texture))
-      groundColor = averageColor(pixels).lerp(HORIZON, 0.15)
+      groundColor = averageColor(pixels)
       groundY = Math.min(groundY, terrain.info.grid.minM - frame.baseM - 2)
     }
-    const ground = buildGround(groundY, groundColor)
-    ;(ground.material as THREE.Material).toneMapped = false
+    // Turf-dark (as the model's own ground): it shows through slivers between
+    // the model's meshes, where a light colour reads as hairlines.
+    const ground = buildGround(groundY, groundColor.multiplyScalar(0.62))
+    patchWorldMaterial(ground.material as THREE.Material, 'ground')
     group.add(ground)
     console.info(`[replay] track model ${source.model.id}: ${(model.triangles / 1e6).toFixed(2)} M triangles, ${model.surface.triangleCount.toLocaleString()} on the surface index`)
   } catch (error) {
@@ -182,6 +197,8 @@ export async function buildModelWorld(track: ReplayTrack, terrain: TerrainData |
 
   return {
     group, road, frame, edges: null, note: null, trees: 0,
+    // The model's ground and roads, and the trees and stands on them.
+    shadowBounds: model.surface.bounds.clone().expandByVector(new THREE.Vector3(10, 30, 10)),
     horizon: HORIZON.clone(),
     surface: (x, z, refY) => model.surface.heightAt(x, z, refY),
     dispose: () => {

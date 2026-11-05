@@ -4,15 +4,21 @@
 // from the state it publishes each frame.
 
 import * as THREE from 'three'
-import { Sky } from 'three/addons/objects/Sky.js'
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { CarModelFit, CarPreset } from '../../shared/replay'
 import { LapPath, type LapPose } from './lapPath'
 import type { RoadModel } from './road'
 import { applyFit, blobShadow, buildPlaceholder, disposeGeometry, disposeObject, fittedModel, ghostCopy, ghostMaterial } from './car'
+import { CarMotion } from './motion'
+import { rigModelWheels } from './wheels'
+import { REPLAY_DEBUG } from './debug'
 import { buildLapLine } from './roadMesh'
 import { LensPass } from './lens'
+import { Atmosphere, installToneMapping } from './atmosphere'
+import { SHADOW_QUALITY, markCarCasters } from './shadows'
+import { ensureDetailTextures } from './surfaces'
+import { GrassField, GRASS_QUALITY } from './grass'
+import type { Look as WeatherLook } from './weather'
 
 export type ReplayView = 'driver' | 'garmin' | 'chase' | 'orbit'
 
@@ -24,6 +30,8 @@ export interface ReplayWorld {
    * NaN off it: the cars sit on it wheel by wheel (kerbs and all).
    */
   surface?: (x: number, z: number, refY: number) => number
+  /** Where the world has things that cast shadows (the far shadow map's extent); default: its group's bounds. */
+  shadowBounds?: THREE.Box3
   /** Sky-matched colour for fog and the far ground. */
   horizon: THREE.Color
   dispose: () => void
@@ -41,13 +49,14 @@ export interface FrameState {
   fps: number
   /** The camera is dragged away from its default view (show a reset). */
   lookActive: boolean
+  /** The graphics level drawn now (Auto picks one). */
+  quality: 'high' | 'medium'
 }
 
 const GHOST_COLOR = 0x7dd3fc
 const CHASE_BACK = 6.6, CHASE_UP = 2.1
-// Car reflections, and the lights: a warm-white sun and a neutral sky fill
-// (the world's materials are calibrated against these; see world.ts).
-const CAR_ENV_INTENSITY = 0.8
+// The car reflects the same sky, woods and ground that light the world (atmosphere.ts).
+const CAR_ENV_INTENSITY = 1
 const TURN_AROUND = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI)
 const X_AXIS = new THREE.Vector3(1, 0, 0)
 const DRIVER_LOOK_DOWN_DEG = 4
@@ -55,6 +64,8 @@ const DRIVER_LOOK_DOWN_DEG = 4
 const GARMIN_BARREL = 0.65
 const Y_AXIS = new THREE.Vector3(0, 1, 0)
 const DEG = Math.PI / 180
+// Auto graphics step down to medium only at or below this pixel ratio.
+const AUTO_QUALITY_RATIO = 1.25
 // The inside cameras ride a steady mount, not the car's every bump: its
 // height, pitch and roll come from the ground this far ahead of and behind
 // the car, then a light spring (with lead, so it never lags on a climb).
@@ -80,6 +91,8 @@ interface CarRig {
   shadow: THREE.Mesh
   hint: number
   pose: LapPose
+  /** Rolling, steering wheels and the body on its springs; null for a model whose wheels were not found. */
+  motion: CarMotion | null
 }
 
 function supportsReversedDepth(): boolean {
@@ -95,10 +108,11 @@ export class ReplayEngine {
   readonly renderer: THREE.WebGLRenderer
   readonly scene = new THREE.Scene()
   readonly camera = new THREE.PerspectiveCamera(70, 1, 0.1, 12000)
-  private sky = new Sky()
-  private sun = new THREE.DirectionalLight(0xfff4e2, 2.3)
-  private hemi = new THREE.HemisphereLight(0xf5f6f8, 0x8a8068, 1.25)
-  private envTarget: THREE.WebGLRenderTarget | null = null
+  /** Sky, sun, shadows, haze, environment and exposure for the session's weather. */
+  readonly atmosphere: Atmosphere
+  private shadowedBodies = new WeakSet<THREE.Object3D>()
+  private quality: 'high' | 'medium' = 'high'
+  private graphics: 'auto' | 'high' | 'medium' = 'auto'
   private world: ReplayWorld | null = null
   private lap: LapPath | null = null
   private ghost: LapPath | null = null
@@ -155,9 +169,12 @@ export class ReplayEngine {
     const reversedDepthBuffer = supportsReversedDepth()
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', reversedDepthBuffer, logarithmicDepthBuffer: !reversedDepthBuffer })
     this.renderer.setPixelRatio(this.pixelRatio)
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.62
+    installToneMapping()
+    this.renderer.toneMapping = THREE.CustomToneMapping
+    this.renderer.toneMappingExposure = 0.7
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFShadowMap
     const canvas = this.renderer.domElement
     canvas.className = 'replay-canvas'
     container.appendChild(canvas)
@@ -172,19 +189,8 @@ export class ReplayEngine {
     canvas.addEventListener('wheel', this.onWheel, { passive: false })
     canvas.addEventListener('contextmenu', this.onContextMenu)
 
-    this.sky.scale.setScalar(10000)
-    const sun = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 38), THREE.MathUtils.degToRad(215))
-    const u = this.sky.material.uniforms
-    u.sunPosition.value.copy(sun)
-    u.turbidity.value = 3.5
-    u.rayleigh.value = 1.4
-    u.mieCoefficient.value = 0.004
-    u.mieDirectionalG.value = 0.8
-    if (u.cloudCoverage) u.cloudCoverage.value = 0.3
-    this.scene.add(this.sky)
-    this.sun.position.copy(sun).multiplyScalar(1000)
-    this.scene.add(this.sun, this.sun.target, this.hemi)
-    this.buildEnvironment()
+    ensureDetailTextures(this.renderer.capabilities.getMaxAnisotropy())
+    this.atmosphere = new Atmosphere(this.renderer, this.scene)
 
     const rig = (): CarRig => {
       const root = new THREE.Group()
@@ -192,7 +198,7 @@ export class ReplayEngine {
       root.add(shadow)
       root.visible = false
       this.scene.add(root)
-      return { root, body: null, shadow, hint: 0, pose: {} as LapPose }
+      return { root, body: null, shadow, hint: 0, pose: {} as LapPose, motion: null }
     }
     this.car = rig()
     this.ghostCar = rig()
@@ -204,24 +210,45 @@ export class ReplayEngine {
     this.frameHandle = requestAnimationFrame(this.frame)
   }
 
-  // Reflections for the car's paint and glass: a neutral studio (three's
-  // RoomEnvironment), so silver stays silver and black stays black. The
-  // sky's own colours would tint the paint blue and, with the hemisphere
-  // light, light it twice.
-  private buildEnvironment() {
-    const pmrem = new THREE.PMREMGenerator(this.renderer)
-    const room = new RoomEnvironment()
-    this.envTarget?.dispose()
-    this.envTarget = pmrem.fromScene(room, 0.04)
-    room.dispose()
-    pmrem.dispose()
+  /** The session's weather and light (weather.ts lookFor). */
+  setLook(look: WeatherLook) {
+    this.atmosphere.apply(look)
+    this.wind = [look.windToDeg, look.windMps]
+    this.grass?.setWind(...this.wind)
+    this.invalidate()
+  }
+
+  /** Grass blades on a track model's turf (grass.ts); none on public data. */
+  private grass: GrassField | null = null
+  private wind: [number, number] = [70, 2]
+
+  /**
+   * Grass, shadows and detail: 'high', 'medium' for slower graphics, or
+   * 'auto' (high, stepping down when the frame rate drops at a modest
+   * resolution; see adaptResolution).
+   */
+  setGraphics(choice: 'auto' | 'high' | 'medium') {
+    this.graphics = choice
+    this.setQuality(choice === 'auto' ? 'high' : choice)
+    if (choice === 'auto') this.ceiling = 2
+  }
+
+  private setQuality(quality: 'high' | 'medium') {
+    this.quality = quality
+    this.atmosphere.setQuality(SHADOW_QUALITY[quality])
+    this.grass?.setQuality(GRASS_QUALITY[quality])
+    this.invalidate()
+    this.publish()
+  }
+
+  // The environment map is the sky over the ground and woods round the
+  // track (atmosphere.ts), so the car reflects what it drives under.
+  private refreshReflections() {
     for (const rig of [this.car, this.ghostCar]) if (rig?.body) this.reflectEnvironment(rig.body)
   }
 
-  // Only the car's PBR materials take the environment: in three.js a
-  // scene-wide one would also multiply into the Lambert terrain.
   private reflectEnvironment(root: THREE.Object3D) {
-    const env = this.envTarget?.texture ?? null
+    const env = this.atmosphere.environment
     root.traverse(object => {
       const mesh = object as THREE.Mesh
       if (!mesh.isMesh) return
@@ -241,7 +268,7 @@ export class ReplayEngine {
 
   private contextRestored = () => {
     this.lost = false
-    this.buildEnvironment()
+    this.atmosphere.invalidate()
     this.onContextLost?.(false)
     this.invalidate()
     this.frameHandle = requestAnimationFrame(this.frame)
@@ -263,6 +290,22 @@ export class ReplayEngine {
     this.renderFrames = Math.max(this.renderFrames, frames)
   }
 
+  /**
+   * Get the scene onto the GPU before it is shown: place the cars and the
+   * camera, compile every material and draw a couple of frames (which
+   * uploads the textures), so the view fades in finished, without stalls.
+   */
+  async prepare(): Promise<void> {
+    if (this.disposed || this.lost) return
+    this.placeCars()
+    this.placeCamera(0)
+    // The sky's environment and the shadows first: the materials compile with them.
+    this.prepareLight(performance.now())
+    try { await this.renderer.compileAsync(this.scene, this.camera) } catch { /* drawing compiles what is left */ }
+    this.invalidate(3)
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  }
+
   subscribe(listener: (state: FrameState) => void): () => void {
     this.listeners.add(listener)
     listener(this.state())
@@ -274,10 +317,17 @@ export class ReplayEngine {
   setWorld(world: ReplayWorld | null) {
     if (this.world) { this.scene.remove(this.world.group); this.world.dispose() }
     this.world = world
-    if (world) {
-      this.scene.add(world.group)
-      this.scene.fog = new THREE.Fog(world.horizon, 350, 4200)
-    } else this.scene.fog = null
+    if (world) this.scene.add(world.group)
+    // The world's materials haze themselves (surfaces.ts); the far shadows cover its extent.
+    this.scene.fog = null
+    this.atmosphere.setWorld(world?.group ?? null, world ? world.shadowBounds ?? new THREE.Box3().setFromObject(world.group) : null)
+    this.grass?.dispose()
+    this.grass = null
+    if (world?.surface) {
+      this.grass = new GrassField(this.renderer, world.group, GRASS_QUALITY[this.quality])
+      this.grass.setWind(...this.wind)
+      this.scene.add(this.grass.group)
+    }
     this.rebuildLines()
     this.chaseReady = this.mount.ready = false
     this.ceiling = 2
@@ -336,6 +386,12 @@ export class ReplayEngine {
     this.fit = fit
     if (model && fit) {
       const fitted = fittedModel(model, fit)
+      // Before the ghost's copy, which takes the rig along.
+      if (!fit.staticWheels) {
+        const wheels = rigModelWheels(fitted, { pattern: fit.wheelPartsPattern })
+        if (!wheels.ok) console.warn(`[replay] the car model's wheels were not found (${wheels.reason}); they stay still and the body level.`)
+        else if (REPLAY_DEBUG) console.info(`[replay] car wheels by ${wheels.method}: ${wheels.wheels.map(w => `${w.corner} r ${w.radiusM.toFixed(3)} m at [${w.centreM.join(', ')}] ← ${w.parts.join(', ')}`).join(' · ')}`)
+      }
       this.car.body = fitted
       this.ghostCar.body = ghostCopy(fitted, this.ghostShape)
     } else {
@@ -344,6 +400,7 @@ export class ReplayEngine {
     }
     this.car.root.add(this.car.body)
     this.ghostCar.root.add(this.ghostCar.body)
+    this.findMotion()
     this.reflectEnvironment(this.car.body)
     for (const rig of [this.car, this.ghostCar]) rig.shadow.scale.set(preset.widthM / 1.8, 1, preset.lengthM / 4)
     this.applyView()
@@ -360,17 +417,38 @@ export class ReplayEngine {
       if (this.ghostCar.body) disposeGeometry(this.ghostCar.body)
     }
     this.car.body = this.ghostCar.body = null
+    this.car.motion = this.ghostCar.motion = null
   }
 
   /** Refit the uploaded model in place (the fit editor). */
   setFit(fit: CarModelFit) {
     this.fit = fit
     if (!this.model || !this.car.body) return
+    // Fitted at rest (wheels straight, body level), then re-measured.
+    this.car.motion?.rest()
     applyFit(this.car.body as THREE.Group, fit)
+    this.car.motion?.refresh()
     this.ghostCar.root.remove(this.ghostCar.body!)
     this.ghostCar.body = ghostCopy(this.car.body, this.ghostShape)
     this.ghostCar.root.add(this.ghostCar.body)
+    this.findMotion()
     this.invalidate()
+  }
+
+  private carMotion = true
+
+  /** Wheels that roll and steer and a body that leans with the g-forces (on by default). */
+  setCarMotion(on: boolean) {
+    this.carMotion = on
+    this.findMotion()
+    this.invalidate()
+  }
+
+  private findMotion() {
+    for (const rig of [this.car, this.ghostCar]) {
+      if (rig === this.ghostCar || !rig.motion) rig.motion = CarMotion.find(rig.body)
+      if (rig.motion) rig.motion.enabled = this.carMotion && !this.fit?.staticWheels
+    }
   }
 
   /** The Garmin camera: mount point, lens and tilt (the fit's, else the preset's). */
@@ -460,7 +538,7 @@ export class ReplayEngine {
       if (ghostTime != null) gapMs = this.timeMs - ghostTime
     }
     const fps = this.fpsWindow.length > 1 ? 1000 * (this.fpsWindow.length - 1) / (this.fpsWindow[this.fpsWindow.length - 1] - this.fpsWindow[0]) : 0
-    return { timeMs: this.timeMs, durationMs: this.duration, playing: this.playing, rate: this.rate, pose, gapMs, view: this.view, fps, lookActive: this.lookActive }
+    return { timeMs: this.timeMs, durationMs: this.duration, playing: this.playing, rate: this.rate, pose, gapMs, view: this.view, fps, lookActive: this.lookActive, quality: this.quality }
   }
 
   private publish() {
@@ -491,7 +569,7 @@ export class ReplayEngine {
     this.placeCars()
     if (this.easeLook(dt)) this.invalidate(1)
     this.placeCamera(dt)
-    this.sky.position.copy(this.camera.position)
+    this.prepareLight(now)
     if (this.view === 'garmin') {
       this.lens ??= new LensPass()
       this.lens.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
@@ -499,6 +577,23 @@ export class ReplayEngine {
     } else this.renderer.render(this.scene, this.camera)
     this.adaptResolution(now)
     this.publish()
+  }
+
+  // Before each render: the sky and the sun's shadows follow the camera, the
+  // environment map is rebuilt after a change of weather (and the car's
+  // reflections with it), and a new car body casts and takes shadows.
+  private prepareLight(now: number) {
+    const env = this.atmosphere.environment
+    this.atmosphere.update(this.camera, now / 1000, this.car.root.visible ? this.car.root.position : null)
+    this.atmosphere.prepare()
+    this.atmosphere.renderShadows()
+    this.grass?.update(this.camera)
+    if (this.atmosphere.environment !== env) this.refreshReflections()
+    const body = this.car.body
+    if (body && !this.shadowedBodies.has(body)) {
+      this.shadowedBodies.add(body)
+      markCarCasters(body)
+    }
   }
 
   // Every change of resolution is a visible jump (fine detail such as leaves
@@ -513,7 +608,10 @@ export class ReplayEngine {
     this.perfStart = 0
     const max = Math.min(this.ceiling, 2, window.devicePixelRatio || 1)
     let next = this.pixelRatio
-    if (fps < 45 && this.pixelRatio > 1) {
+    // Auto graphics: down to 1.25 × resolution first, then medium graphics, then lower.
+    if (fps < 45 && this.graphics === 'auto' && this.quality === 'high' && this.pixelRatio <= AUTO_QUALITY_RATIO) {
+      this.setQuality('medium')
+    } else if (fps < 45 && this.pixelRatio > 1) {
       next = Math.max(1, this.pixelRatio - 0.25)
       this.ceiling = next
     } else if (fps > 58 && this.pixelRatio < max && now > this.raiseAfter) {
@@ -552,6 +650,19 @@ export class ReplayEngine {
     const s = rig.hint = road.nearestFrom(pose.x, pose.z, road.stationAt(pose.dist), 12)
     const y = this.restOn(pose, s, halfBase, halfTrack, rig.root.quaternion)
     rig.root.position.set(pose.x, y, pose.z)
+    // Wheels and body; the inside cameras ride the steady mount, not the body.
+    if (rig.motion && preset?.dynamics) rig.motion.update(lap, timeMs, pose, preset.dynamics, this.restingHeight)
+  }
+
+  private restPose = {} as LapPose
+  private restQuat = new THREE.Quaternion()
+
+  /** A car's height on the ground at a lap time, as placeRig rests it (for its springs). */
+  private restingHeight = (lap: LapPath, timeMs: number): number => {
+    const road = this.world!.road
+    const pose = lap.pose(timeMs, this.restPose)
+    const halfBase = (this.preset?.wheelbaseM ?? 2.4) / 2, halfTrack = ((this.preset?.widthM ?? 1.8) - 0.25) / 2
+    return this.restOn(pose, road.nearestFrom(pose.x, pose.z, road.stationAt(pose.dist), 12), halfBase, halfTrack, this.restQuat)
   }
 
   /** The ground under a point near station `s`: the track model's, else the road's. */
@@ -833,8 +944,8 @@ export class ReplayEngine {
     this.clearCars()
     disposeObject(this.car.shadow); disposeObject(this.ghostCar.shadow)
     this.ghostShape.dispose()
-    this.sky.geometry.dispose(); this.sky.material.dispose()
-    this.envTarget?.dispose()
+    this.atmosphere.dispose()
+    this.grass?.dispose()
     this.renderer.dispose()
     canvas.remove()
   }

@@ -11,8 +11,8 @@ import { routeUrl, segment } from '../routes'
 import { useResource } from '../useResource'
 import { startLabel } from '../components/reviewTimeline'
 import { SPEED_RAMP } from '../components/chartTheme'
-import { presetFor, trackModelFor, type CarModel, type CarModelFit, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
-import { speedFromMps, speedUnitLabel } from '../../shared/units'
+import { carModelFor, presetFor, trackModelFor, type CarModel, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
+import { speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem } from '../../shared/units'
 import type { DbSessionRow } from '../../shared/types'
 import { ReplayEngine, type ReplayView } from '../replay/engine'
 import { LapPath } from '../replay/lapPath'
@@ -22,18 +22,14 @@ import { parseGlb } from '../replay/car'
 import { shortTrackName } from '../replay/geo'
 import { REPLAY_DEBUG } from '../replay/debug'
 import { ReplayHud, clock, useFrame } from '../replay/Hud'
+import { WEATHER_CHOICES, lookFor, type Look, type WeatherChoice } from '../replay/weather'
 import '../replay/replay.css'
 
-const RATES = [0.25, 0.5, 1, 2]
 // The cameras, in the order C cycles them.
 const VIEWS = ['chase', 'driver', 'garmin'] as const
 const VIEW_NAMES: Record<string, string> = { chase: 'Chase', driver: 'Driver', garmin: 'Garmin' }
 const nextView = (view: ReplayView): ReplayView => VIEWS[(VIEWS.indexOf(view as typeof VIEWS[number]) + 1) % VIEWS.length]
 const lapValue = (ref: ReplayLapRef) => `${ref.sessionGuid}:${ref.lap}`
-const MODEL_CHOICE = 'catalyst:replay-model:'
-// Which track to draw when a track model matches: 'public' or 'model'.
-const TRACK_CHOICE = 'catalyst:replay-track'
-
 // The last terrain and car model bytes stay in memory while the app is open,
 // so changing laps, layouts of the same circuit or sessions does not refetch.
 let terrainCache: { key: string; data: Omit<TerrainData, 'sample'> } | null = null
@@ -52,19 +48,6 @@ function trackFile(id: string, file: string): Promise<ArrayBuffer> {
   return bytes
 }
 
-function readTrackChoice(): 'public' | 'model' {
-  try { return localStorage.getItem(TRACK_CHOICE) === 'public' ? 'public' : 'model' } catch { return 'model' }
-}
-function saveTrackChoice(value: 'public' | 'model') {
-  try { localStorage.setItem(TRACK_CHOICE, value) } catch { /* optional */ }
-}
-
-function readChoice(key: string | null): string | null {
-  try { return key ? localStorage.getItem(MODEL_CHOICE + key) : null } catch { return null }
-}
-function saveChoice(key: string | null, value: string | null) {
-  try { if (key) value ? localStorage.setItem(MODEL_CHOICE + key, value) : localStorage.removeItem(MODEL_CHOICE + key) } catch { /* optional */ }
-}
 
 function sessionGroups(rows: DbSessionRow[]) {
   const groups = new Map<string, DbSessionRow[]>()
@@ -159,9 +142,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   // A track model for this layout (a converted sim track), when the server has one.
   const trackModels = useResource(() => api.listTrackModels().catch(() => []), '', refreshTick)
   const trackMatch = useMemo(() => (scene ? trackModelFor(trackModels.data ?? [], scene.track) : null), [scene, trackModels.data])
-  const [trackChoice, setTrackChoice] = useState<'public' | 'model'>(readTrackChoice)
-  const useTrackModel = !!trackMatch && trackChoice === 'model'
-  const chooseTrack = (value: 'public' | 'model') => { setTrackChoice(value); saveTrackChoice(value) }
+  // A track model always wins; public data is only the fallback without one.
+  const useTrackModel = !!trackMatch
   // Wait for the listing before building, so a model track is not built twice.
   const trackSource = !trackModels.data && !trackModels.error ? null : useTrackModel ? `${trackMatch!.model.id}:${trackMatch!.layout.files.join(',')}:${trackMatch!.model.updatedAt}` : 'public'
   const trackKey = scene && trackSource ? `${scene.track.meanLineGuid}|${trackSource}` : ''
@@ -244,28 +226,32 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   useEffect(() => { engine?.setView(debugOrbit ? 'orbit' : view) }, [engine, view, debugOrbit])
   const [lines, setLines] = useState({ racing: true, ghost: true })
   useEffect(() => { engine?.setLines(lines.racing, lines.ghost) }, [engine, lines])
-  const [rate, setRate] = useState(1)
-  useEffect(() => { engine?.setRate(rate) }, [engine, rate])
+
+  // ── Weather and graphics ───────────────────────────────────────────────
+  const [weather, setWeather] = useState<WeatherChoice>(() => readStored(WEATHER_KEY, WEATHER_CHOICES, 'auto'))
+  const look = useMemo(() => (scene ? lookFor(scene, weather) : null), [scene, weather])
+  useEffect(() => { if (engine && look) engine.setLook(look) }, [engine, look])
+  const [graphics, setGraphics] = useState<GraphicsChoice>(() => readStored(GRAPHICS_KEY, GRAPHICS_CHOICES, 'auto'))
+  useEffect(() => { engine?.setGraphics(graphics) }, [engine, graphics])
 
   // ── Car model ──────────────────────────────────────────────────────────
-  const [modelsRevision, setModelsRevision] = useState(0)
-  const modelsResource = useResource(() => api.listCarModels(), '', `${refreshTick}:${modelsRevision}`)
+  // The model chosen and fitted for this car in the Garage (by vehicle key),
+  // else the placeholder.
+  const modelsResource = useResource(() => api.listCarModels(), '', refreshTick)
   const models = modelsResource.data ?? []
   const vehicleKey = scene?.vehicle.key ?? null
   const preset = useMemo(() => presetFor(vehicleKey), [vehicleKey])
-  const matching = useMemo(() => models.filter(m => vehicleKey && m.matches.includes(vehicleKey)).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt)), [models, vehicleKey])
-  const [choice, setChoice] = useState<string | null>(null)
-  useEffect(() => setChoice(readChoice(vehicleKey)), [vehicleKey])
-  // Several models can match a car: the newest, unless one was picked here.
-  const model = choice === 'placeholder' ? null : models.find(m => m.id === choice) ?? matching[0] ?? null
-  const [fitDraft, setFitDraft] = useState<CarModelFit | null>(null)
+  const model = carModelFor(models, vehicleKey)
   const [modelStatus, setModelStatus] = useState<string>('')
-  const fit = fitDraft ?? model?.fit ?? null
-  useEffect(() => setFitDraft(null), [model?.id])
+  // The car is in the scene (its model, or the placeholder after a failure).
+  const [carReady, setCarReady] = useState(false)
+  const loadedModel = useRef<string | null>(null)
   useEffect(() => {
     if (!engine || !scene) return
-    if (!model) { engine.setCar(preset, null, null); setModelStatus(''); return }
+    loadedModel.current = null
+    if (!model) { engine.setCar(preset, null, null); setModelStatus(''); setCarReady(true); return }
     let cancelled = false
+    setCarReady(false)
     setModelStatus(`Loading ${model.name}…`)
     void (async () => {
       let bytes = modelBytes.get(model.id)
@@ -277,31 +263,31 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       const root = await parseGlb(bytes)
       if (cancelled) return
       engine.setCar(preset, root, model.fit)
+      loadedModel.current = model.id
       setModelStatus('')
+      setCarReady(true)
     })().catch(error => {
       if (cancelled) return
       engine.setCar(preset, null, null)
       setModelStatus(`${model.name} could not be loaded (${error instanceof Error ? error.message : String(error)}); showing the placeholder.`)
+      setCarReady(true)
     })
     return () => { cancelled = true }
     // Refits go through setFit; only a new model reloads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, model?.id, preset, !!scene])
-  useEffect(() => { if (engine && fitDraft) engine.setFit(fitDraft) }, [engine, fitDraft])
-
-  const saveFit = async () => {
-    if (!model || !fitDraft) return
-    setModelStatus('Saving fit…')
-    try {
-      const saved = await api.updateCarModel(model.id, { fit: fitDraft })
-      modelsResource.setData(list => list?.map(m => (m.id === saved.id ? saved : m)))
-      setFitDraft(null)
-      setModelStatus('Fit saved')
-    } catch (error) { setModelStatus(`Could not save the fit: ${error instanceof Error ? error.message : String(error)}`) }
-  }
+  // A fit saved in the Garage meanwhile (the list reloads): refit in place.
+  const fitKey = model ? JSON.stringify(model.fit) : ''
+  useEffect(() => {
+    if (engine && model && loadedModel.current === model.id) engine.setFit(model.fit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, fitKey])
 
   // ── Controls ───────────────────────────────────────────────────────────
   const setView = useCallback((next: ReplayView) => { setDebugOrbit(false); query({ view: next }) }, [query])
+  const playerRef = useRef<HTMLDivElement>(null)
+  const fullscreen = useFullscreen(playerRef)
+  const toggleFullscreen = fullscreen.toggle
   useEffect(() => {
     if (!engine) return
     const onKey = (event: KeyboardEvent) => {
@@ -313,26 +299,44 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
         event.preventDefault()
         engine.seek(engine.time + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 5000 : 1000))
       } else if (event.key === 'c' || event.key === 'C') setView(nextView(view))
+      else if (event.key === 'f' || event.key === 'F') toggleFullscreen()
       else if (REPLAY_DEBUG && (event.key === 'o' || event.key === 'O')) setDebugOrbit(v => !v)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [engine, view, setView])
+  }, [engine, view, setView, toggleFullscreen])
 
   const selectLap = (value: string) => query({ lap: value })
   const selectGhost = (value: string) => query({ ghost: value })
   const selectSession = (guid: string) => go(routeUrl(`/replay/${segment(guid)}`, { view: params.get('view') }))
 
   // ── Status ─────────────────────────────────────────────────────────────
-  const loadingStep = engineError ? null
-    : !id && catalogue.data && !sessions.length ? null
-    : sceneResource.error || lapResource.error ? null
-    : !scene ? 'Loading the session'
-    : !lapData ? `Loading ${lapInfo?.label ?? 'the lap'}`
-    : worldStatus.error ? null
-    : !world ? worldStatus.step || 'Building the track'
-    : null
   const error = engineError ?? sceneResource.error ?? lapResource.error ?? worldStatus.error ?? null
+
+  // The view stays under the loading screen until the world, the lap and the
+  // car are all in and on the GPU; then it fades in. A new lap on the same
+  // world and car does not bring it back.
+  const [prepared, setPrepared] = useState<string | null>(null)
+  useEffect(() => { setPrepared(null) }, [world])
+  const readyKey = engine && world && lapPath && carReady ? `${trackKey}|${model?.id ?? 'placeholder'}` : null
+  useEffect(() => {
+    if (!engine || !readyKey || prepared === readyKey) return
+    let cancelled = false
+    void engine.prepare().then(() => { if (!cancelled) setPrepared(readyKey) })
+    return () => { cancelled = true }
+  }, [engine, readyKey, prepared])
+  const ready = !!readyKey && prepared === readyKey
+  const loaderSteps: LoaderStep[] = [
+    { label: 'Session and lap', state: scene && lapData ? 'done' : 'active',
+      detail: !scene ? 'Loading the session' : !lapData ? `Loading ${lapInfo?.label ?? 'the lap'}` : null },
+    { label: 'Track', state: world ? 'done' : scene && lapData ? 'active' : 'pending',
+      detail: world ? null : worldStatus.step || null,
+      note: worldStatus.building && !world ? 'The first visit downloads elevation and imagery for the whole circuit; it is kept for every later replay.' : null },
+    { label: 'Car', state: carReady ? 'done' : scene ? 'active' : 'pending', detail: carReady ? null : modelStatus || null },
+    { label: 'Getting the view ready', state: ready ? 'done' : readyKey ? 'active' : 'pending' },
+  ]
+  const loaderTitle = scene ? [shortTrackName(scene.track.trackName), scene.track.configName].filter(Boolean).join(' · ') : 'Loading the replay'
+  const showLoader = !error && !engineError && !(!id && catalogue.data && !sessions.length)
   const ghostLabel = ghostInfo ? (ghostInfo.sessionGuid === scene?.sessionGuid ? ghostInfo.label.split(' · ').pop()! : ghostInfo.label) : null
   const units = scene?.units ?? 'imperial'
 
@@ -360,37 +364,24 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           {g.laps.map(l => <option key={lapValue(l)} value={lapValue(l)}>{g.group === 'This session' ? (l.lap === 'optimal' ? '◆ Optimal' : `${l.isBest ? '★ ' : ''}L${(l.lap as number) + 1}`) : l.label} · {msToLap(l.durationMs)}</option>)}
         </optgroup>)}
       </select></label>
-      <div className="replay-view-switch" role="group" aria-label="Camera">
-        <span>Camera</span>
-        <div>{VIEWS.map(v => <button key={v} type="button" className={!debugOrbit && view === v ? 'on' : ''} aria-pressed={!debugOrbit && view === v} onClick={() => setView(v)}>{VIEW_NAMES[v]}</button>)}</div>
-      </div>
-      {trackMatch && <div className="replay-view-switch" role="group" aria-label="Track">
-        <span>Track</span>
-        <div>
-          <button type="button" className={!useTrackModel ? 'on' : ''} aria-pressed={!useTrackModel} onClick={() => chooseTrack('public')} title="Lidar terrain, aerial photo and the road along Garmin’s line">Public data</button>
-          <button type="button" className={useTrackModel ? 'on' : ''} aria-pressed={useTrackModel} onClick={() => chooseTrack('model')} title={trackMatch.model.name}>{trackModelLabel(trackMatch.model)}</button>
-        </div>
-      </div>}
     </div>
 
+    <div className={`replay-player${fullscreen.overlay ? ' pseudo-full' : ''}${ready ? '' : ' waiting'}`} ref={playerRef}>
     <div className={`replay-stage ${view === 'garmin' && !debugOrbit ? 'garmin' : ''}`} ref={stageRef}>
       {engine && lapPath && world && <ReplayHud engine={engine} lap={lapPath} ghost={ghostPath} ghostLabel={ghostLabel} units={units} showVideo />}
       {engine && lapPath && world && <PlayOverlay engine={engine} />}
       {engine && world && <ResetView engine={engine} />}
       {world?.note && <div className="replay-note" role="status">{world.note}</div>}
       {!world?.note && lapMissing && <div className="replay-note" role="status">{lapParam === 'optimal' ? 'Garmin has no optimal lap for this session' : `Lap ${Number(lapParam) + 1} is not a valid lap of this session`}; showing {lapInfo!.label.split(' · ').pop()}.</div>}
-      {loadingStep && <div className="replay-loading" role="status">
-        <span className="replay-spinner" aria-hidden="true" />
-        <strong>{loadingStep}</strong>
-        {worldStatus.building && !world && <span>The first visit downloads lidar elevation and aerial imagery for the whole circuit; it is kept for every later replay.</span>}
-      </div>}
+      {showLoader && <ReplayLoader active={!ready} title={loaderTitle} subtitle={lapInfo?.label ?? null} steps={loaderSteps} />}
       {error && <div className="replay-loading error" role="alert"><strong>{error}</strong>
         {worldStatus.error && <button className="btn ghost small" type="button" onClick={() => setWorldAttempt(n => n + 1)}>Try again</button>}</div>}
       {!id && catalogue.data && !sessions.length && <div className="replay-loading"><strong>No sessions with laps yet.</strong><NavLink to="/sessions">Download sessions</NavLink></div>}
       {contextLost && <div className="replay-loading" role="status"><strong>Graphics were reset by the system; restoring…</strong></div>}
+      {engine && lapPath && <Transport engine={engine} lap={lapPath} scene={scene!} view={debugOrbit ? null : view} onView={setView}
+        fullscreen={fullscreen.active} onFullscreen={toggleFullscreen} stage={stageRef} />}
     </div>
-
-    {engine && lapPath && <Transport engine={engine} lap={lapPath} scene={scene!} rate={rate} onRate={setRate} view={view} onView={setView} />}
+    </div>
 
     <div className="replay-panels">
       {lapPath && <section className="replay-panel replay-lines">
@@ -404,12 +395,63 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
         <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets</p>
         {world?.edges && <p className="muted small">Road edges: {world.edges.applied ? `from the aerial photo (${Math.round(world.edges.found * 100)}% of the lap; the tarmac centre sits ${Math.abs(world.edges.medianShiftM).toFixed(1)} m ${world.edges.medianShiftM >= 0 ? 'left' : 'right'} of Garmin’s line, typically)` : `±${((scene?.track.widthM ?? 10) / 2).toFixed(1)} m around Garmin’s line`}{world.trees ? ` · ${world.trees.toLocaleString()} trees from the photo` : ''}</p>}
       </section>}
-      {scene && <CarPanel scene={scene} preset={preset} models={models} matching={matching} model={model} fit={fit} dirty={!!fitDraft}
-        status={modelStatus} view={view}
-        onChoose={value => { setChoice(value); saveChoice(vehicleKey, value) }}
-        onFit={setFitDraft} onSave={() => void saveFit()} onReset={() => { setFitDraft(null); if (model) engine?.setFit(model.fit) }} />}
+      {scene && <CarPanel scene={scene} preset={preset} model={model} status={modelStatus} />}
+      {scene && look && engine && <ConditionsPanel engine={engine} scene={scene} look={look} units={units}
+        weather={weather} onWeather={value => { setWeather(value); store(WEATHER_KEY, value) }}
+        graphics={graphics} onGraphics={value => { setGraphics(value); store(GRAPHICS_KEY, value) }} />}
     </div>
   </div>
+}
+
+// The weather to show (the session's, or a look to check) and the graphics
+// level, remembered in this browser.
+const WEATHER_KEY = 'catalyst:replay-weather'
+const GRAPHICS_KEY = 'catalyst:replay-graphics'
+const GRAPHICS_CHOICES = ['auto', 'high', 'medium'] as const
+type GraphicsChoice = typeof GRAPHICS_CHOICES[number]
+const WEATHER_NAMES: Record<WeatherChoice, string> = { auto: 'Auto', sunny: 'Sunny', overcast: 'Overcast', wet: 'Wet' }
+const GRAPHICS_NAMES: Record<GraphicsChoice, string> = { auto: 'Auto', high: 'High', medium: 'Medium' }
+
+function readStored<T extends string>(key: string, choices: readonly T[], fallback: T): T {
+  try { const v = localStorage.getItem(key) as T | null; return v && choices.includes(v) ? v : fallback } catch { return fallback }
+}
+function store(key: string, value: string) {
+  try { localStorage.setItem(key, value) } catch { /* optional */ }
+}
+
+const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+const compass = (deg: number) => COMPASS[Math.round((((deg % 360) + 360) % 360) / 45) % 8]
+
+function ConditionsPanel({ engine, scene, look, units, weather, onWeather, graphics, onGraphics }: {
+  engine: ReplayEngine; scene: ReplayScene; look: Look; units: UnitSystem
+  weather: WeatherChoice; onWeather: (value: WeatherChoice) => void
+  graphics: GraphicsChoice; onGraphics: (value: GraphicsChoice) => void
+}) {
+  const c = scene.conditions
+  const session = [
+    c?.description || 'Weather not recorded',
+    c?.temperatureC != null ? `${Math.round(tempFromC(c.temperatureC, units))} ${tempUnitLabel(units)}` : null,
+    c?.humidityPct != null ? `${Math.round(c.humidityPct)}% humidity` : null,
+    c && c.surface !== 'unknown' ? `${c.surface} track` : null,
+  ].filter(Boolean).join(' · ')
+  const sun = `Sun ${Math.round(look.sun.elevationDeg)}° up in the ${compass(look.sun.azimuthDeg)}${c?.localStart ? ` at ${c.localStart.slice(11, 16)}` : ''}`
+  const state = useFrame(engine)
+  const level = state?.quality
+  return <section className="replay-panel replay-conditions">
+    <span className="review-eyebrow">Weather and light</span>
+    <div className="replay-view-switch" role="group" aria-label="Weather">
+      <span>Weather</span>
+      <div>{WEATHER_CHOICES.map(v => <button key={v} type="button" className={weather === v ? 'on' : ''} aria-pressed={weather === v} onClick={() => onWeather(v)}
+        title={v === 'auto' ? `As the session ran: ${session}` : undefined}>{WEATHER_NAMES[v]}</button>)}</div>
+    </div>
+    <p className="muted small">{weather === 'auto' ? session : `${look.label}, instead of: ${session}`}. {sun}.</p>
+    <div className="replay-view-switch" role="group" aria-label="Graphics">
+      <span>Graphics</span>
+      <div>{GRAPHICS_CHOICES.map(v => <button key={v} type="button" className={graphics === v ? 'on' : ''} aria-pressed={graphics === v} onClick={() => onGraphics(v)}
+        title={v === 'auto' ? 'High, stepping down to Medium if the frame rate drops' : v === 'high' ? 'Grass out to 60 m, sharp shadows near and far' : 'Less grass, softer shadows, for slower graphics'}>{GRAPHICS_NAMES[v]}</button>)}</div>
+    </div>
+    {graphics === 'auto' && level && <p className="muted small">Now {GRAPHICS_NAMES[level].toLowerCase()}.</p>}
+  </section>
 }
 
 function ResetView({ engine }: { engine: ReplayEngine }) {
@@ -427,14 +469,134 @@ function PlayOverlay({ engine }: { engine: ReplayEngine }) {
   </button>
 }
 
-function Transport({ engine, lap, scene, rate, onRate, view, onView }: {
-  engine: ReplayEngine; lap: LapPath; scene: ReplayScene; rate: number; onRate: (rate: number) => void; view: ReplayView; onView: (view: ReplayView) => void
+interface LoaderStep { label: string; state: 'done' | 'active' | 'pending'; detail?: string | null; note?: string | null }
+
+/**
+ * Covers the view while the replay loads: a ring filling as the steps
+ * finish, and what each one is doing. When everything is ready it fades
+ * out (the view fading in beneath it), then leaves the page.
+ */
+function ReplayLoader({ active, title, subtitle, steps }: { active: boolean; title: string; subtitle: string | null; steps: LoaderStep[] }) {
+  const [shown, setShown] = useState(active)
+  useEffect(() => { if (active) setShown(true) }, [active])
+  if (!shown) return null
+  const done = steps.filter(s => s.state === 'done').length
+  const current = steps.find(s => s.state === 'active')
+  const R = 26, C = 2 * Math.PI * R
+  return <div className={`replay-loader${active ? '' : ' leaving'}`} role="status" aria-live="polite" aria-busy={active}
+    onTransitionEnd={event => { if (!active && event.target === event.currentTarget) setShown(false) }}>
+    <div className="replay-loader-card">
+      <svg className="replay-loader-ring" viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r={R} className="track" />
+        <circle cx="32" cy="32" r={R} className="fill" strokeDasharray={C} strokeDashoffset={C * (1 - done / steps.length)} />
+        <circle cx="32" cy="32" r={R} className="spin" strokeDasharray={`${C * 0.12} ${C}`} />
+      </svg>
+      <div className="replay-loader-title">
+        <strong>{title}</strong>
+        {subtitle && <span>{subtitle}</span>}
+      </div>
+      {current && <p className="replay-loader-current">{current.label}{current.detail ? ` · ${current.detail}` : ''}</p>}
+      <ol className="replay-loader-steps">
+        {steps.map(step => <li key={step.label} className={step.state}>
+          <i aria-hidden="true">{step.state === 'done' ? '✓' : ''}</i>
+          <span>{step.label}{step === current && step.detail ? <small>{step.detail}</small> : null}</span>
+        </li>)}
+      </ol>
+      {current?.note && <p className="replay-loader-note">{current.note}</p>}
+    </div>
+  </div>
+}
+
+type FullscreenDocument = Document &{ webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void }
+type FullscreenElement = HTMLElement & { webkitRequestFullscreen?: () => void }
+
+/**
+ * Full screen for the view and its transport. Where elements cannot go full
+ * screen (Safari on iPhone) the player becomes a fixed overlay instead; both
+ * close with Escape.
+ */
+function useFullscreen(target: { current: HTMLElement | null }):{ active: boolean; overlay: boolean; toggle: () => void } {
+  const [native, setNative] = useState(false)
+  const [overlay, setOverlay] = useState(false)
+  useEffect(() => {
+    const doc = document as FullscreenDocument
+    const sync = () => setNative(!!target.current && (document.fullscreenElement ?? doc.webkitFullscreenElement ?? null) === target.current)
+    document.addEventListener('fullscreenchange', sync)
+    document.addEventListener('webkitfullscreenchange', sync)
+    return () => { document.removeEventListener('fullscreenchange', sync); document.removeEventListener('webkitfullscreenchange', sync) }
+  }, [target])
+  useEffect(() => {
+    if (!overlay) return
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setOverlay(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [overlay])
+  const toggle = useCallback(() => {
+    const doc = document as FullscreenDocument
+    const el = target.current as FullscreenElement | null
+    if (!el) return
+    if (overlay) { setOverlay(false); return }
+    if (document.fullscreenElement || doc.webkitFullscreenElement) {
+      if (document.exitFullscreen) void document.exitFullscreen().catch(() => {})
+      else doc.webkitExitFullscreen?.()
+      return
+    }
+    if (el.requestFullscreen) el.requestFullscreen().catch(() => setOverlay(true))
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen()
+    else setOverlay(true)
+  }, [target, overlay])
+  return { active: native || overlay, overlay, toggle }
+}
+
+// The transport, over the bottom of the view like a video player's: it
+// fades away while the lap plays and the pointer rests, and comes back on
+// any movement. The instruments above it keep clear of its height.
+const TRANSPORT_IDLE_MS = 2800
+
+function Transport({ engine, lap, scene, view, onView, fullscreen, onFullscreen, stage }: {
+  engine: ReplayEngine; lap: LapPath; scene: ReplayScene
+  view: ReplayView | null; onView: (view: ReplayView) => void
+  fullscreen: boolean; onFullscreen: () => void; stage: { current: HTMLElement | null }
 }) {
   const state = useFrame(engine)
   const duration = lap.durationMs
   const markers = useMemo(() => scene.track.corners.map(c => ({ turn: c.turn, name: c.name, at: lap.timeAtDist(c.apexM) })).filter(m => m.at != null), [scene, lap])
   const time = state?.timeMs ?? 0
-  return <div className="replay-transport">
+  const bar = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = bar.current, host = stage.current
+    if (!el || !host) return
+    const observer = new ResizeObserver(() => host.style.setProperty('--transport-h', `${el.offsetHeight}px`))
+    observer.observe(el)
+    return () => { observer.disconnect(); host.style.removeProperty('--transport-h') }
+  }, [stage])
+  const [awake, setAwake] = useState(true)
+  const hovering = useRef(false)
+  useEffect(() => {
+    const host = stage.current
+    if (!host) return
+    let timer = 0
+    const wake = () => {
+      setAwake(true)
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => { if (!hovering.current) setAwake(false) }, TRANSPORT_IDLE_MS)
+    }
+    wake()
+    host.addEventListener('pointermove', wake)
+    host.addEventListener('pointerdown', wake)
+    window.addEventListener('keydown', wake)
+    return () => { window.clearTimeout(timer); host.removeEventListener('pointermove', wake); host.removeEventListener('pointerdown', wake); window.removeEventListener('keydown', wake) }
+  }, [stage])
+  const shown = awake || !state?.playing
+  // The instruments follow the bar: down to the bottom edge while it is hidden.
+  useEffect(() => {
+    const host = stage.current
+    if (!host) return
+    host.dataset.transport = shown ? 'shown' : 'asleep'
+    return () => { delete host.dataset.transport }
+  }, [stage, shown])
+  return <div ref={bar} className={`replay-transport${shown ? '' : ' asleep'}`}
+    onPointerEnter={() => { hovering.current = true }} onPointerLeave={() => { hovering.current = false }}>
     <button type="button" className="replay-play" onClick={() => engine.toggle()} aria-label={state?.playing ? 'Pause' : 'Play'} title={state?.playing ? 'Pause (Space)' : 'Play (Space)'}>
       {state?.playing
         ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" /></svg>
@@ -448,81 +610,24 @@ function Transport({ engine, lap, scene, rate, onRate, view, onView }: {
         onClick={() => engine.seek(Math.max(0, m.at! - 3000))}><i />{m.turn.replace(/^T/, '')}</span>)}
     </div>
     <span className="replay-time">{clock(time, 1)}<small> / {clock(duration, 1)}</small></span>
-    <div className="replay-rates" role="group" aria-label="Playback speed">
-      {RATES.map(r => <button key={r} type="button" className={r === rate ? 'on' : ''} aria-pressed={r === rate} onClick={() => onRate(r)}>{r}×</button>)}
+    <div className="replay-rates replay-cameras" role="group" aria-label="Camera" title="Camera (C cycles)">
+      {VIEWS.map(v => <button key={v} type="button" className={view === v ? 'on' : ''} aria-pressed={view === v} onClick={() => onView(v)}>{VIEW_NAMES[v]}</button>)}
     </div>
-    <button type="button" className="btn ghost small replay-camera" onClick={() => onView(nextView(view))} title="Next camera (C)">
-      {VIEW_NAMES[nextView(view)]} view
+    <button type="button" className="replay-fullscreen" onClick={onFullscreen} aria-pressed={fullscreen}
+      aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} title={fullscreen ? 'Exit full screen (F or Esc)' : 'Full screen (F)'}>
+      {fullscreen
+        ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" fill="none" stroke="currentColor" strokeWidth="2" /></svg>
+        : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" strokeWidth="2" /></svg>}
     </button>
   </div>
 }
 
-const nudge = (fit: CarModelFit, key: 'eyeM' | 'offsetM' | 'dashcamM', axis: number, by: number): CarModelFit => {
-  const next = [...(fit[key] ?? [0, 0, 0])] as [number, number, number]
-  next[axis] = Math.round((next[axis] + by) * 1000) / 1000
-  return { ...fit, [key]: next }
-}
-
-function CarPanel({ scene, preset, models, matching, model, fit, dirty, status, view, onChoose, onFit, onSave, onReset }: {
-  scene: ReplayScene; preset: ReturnType<typeof presetFor>; models: CarModel[]; matching: CarModel[]; model: CarModel | null; fit: CarModelFit | null
-  dirty: boolean; status: string; view: ReplayView
-  onChoose: (value: string | null) => void; onFit: (fit: CarModelFit) => void; onSave: () => void; onReset: () => void
-}) {
-  const others = models.filter(m => !matching.includes(m))
-  // A model's default fit is its own car's (a C8 model shown on an Exige lap).
-  const modelPreset = model?.matches[0] ? presetFor(model.matches[0]) : preset
-  // The Garmin camera's fields fall back to the model's car preset.
-  const camera = fit && {
-    ...fit,
-    dashcamM: fit.dashcamM ?? modelPreset.fit.dashcamM ?? [0, 1.05, 0.2],
-    dashcamFovDeg: fit.dashcamFovDeg ?? modelPreset.fit.dashcamFovDeg ?? 120,
-    dashcamPitchDeg: fit.dashcamPitchDeg ?? modelPreset.fit.dashcamPitchDeg ?? 0,
-  } as CarModelFit & Required<Pick<CarModelFit, 'dashcamM' | 'dashcamFovDeg' | 'dashcamPitchDeg'>>
-  const degrees = (label: string, key: 'dashcamPitchDeg' | 'dashcamFovDeg', step: number, minus: string, plus: string) => camera && <div className="replay-fit-row">
-    <span>{label}</span>
-    <button type="button" className="btn ghost tiny" aria-label={`${label} −${Math.abs(step)}°`} onClick={() => onFit({ ...camera, [key]: camera[key] - step })}>{minus}</button>
-    <output>{(key === 'dashcamPitchDeg' ? -camera[key] : camera[key]).toFixed(1)}°</output>
-    <button type="button" className="btn ghost tiny" aria-label={`${label} +${Math.abs(step)}°`} onClick={() => onFit({ ...camera, [key]: camera[key] + step })}>{plus}</button>
-  </div>
-  const row = (label: string, key: 'eyeM' | 'offsetM' | 'dashcamM', axis: number, minus: string, plus: string, step = 0.02) => camera && <div className="replay-fit-row">
-    <span>{label}</span>
-    <button type="button" className="btn ghost tiny" aria-label={`${label} −${step * 100} cm`} onClick={() => onFit(nudge(camera, key, axis, -step))}>{minus}</button>
-    <output>{(camera[key][axis] * 100).toFixed(0)} cm</output>
-    <button type="button" className="btn ghost tiny" aria-label={`${label} +${step * 100} cm`} onClick={() => onFit(nudge(camera, key, axis, step))}>{plus}</button>
-  </div>
+// Which model the replay draws for this car: chosen and fitted in the Garage.
+function CarPanel({ scene, preset, model, status }: { scene: ReplayScene; preset: ReturnType<typeof presetFor>; model: CarModel | null; status: string }) {
+  const garage = scene.vehicle.guid ? `/garage/${segment(scene.vehicle.guid)}` : routeUrl('/garage', { vehicle: scene.vehicle.key })
   return <section className="replay-panel replay-car">
     <span className="review-eyebrow">Car</span>
-    <label>Model<select value={model ? model.id : 'placeholder'} onChange={e => onChoose(e.target.value)}>
-      {matching.length > 0 && <optgroup label={`For ${scene.vehicle.key ?? 'this car'}`}>
-        {matching.map((m, i) => <option key={m.id} value={m.id}>{m.name}{i === 0 ? ' (newest)' : ''}</option>)}
-      </optgroup>}
-      <option value="placeholder">Placeholder · {preset.name}</option>
-      {others.length > 0 && <optgroup label="Other models">{others.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</optgroup>}
-    </select></label>
-    <p className="muted small">{model
-      ? <>{model.name}</>
-      : <>A simple shape at the {preset.name}’s real size ({preset.lengthM.toFixed(2)} × {preset.widthM.toFixed(2)} × {preset.heightM.toFixed(2)} m). Upload a .glb model of the car in the <NavLink to="/garage">Garage</NavLink>.</>}</p>
-    {model && fit && <div className="replay-fit">
-      <div className="replay-fit-row"><span>Nose points</span>
-        {[0, 90, 180, 270].map(yaw => <button key={yaw} type="button" className={`btn ghost tiny ${fit.yawDeg === yaw ? 'on' : ''}`} onClick={() => onFit({ ...fit, yawDeg: yaw })}>{yaw}°</button>)}
-      </div>
-      <label className="replay-fit-row"><span>Length</span><input type="number" min={2} max={7} step={0.01} value={Math.round(fit.lengthM * 100) / 100} onChange={e => { const v = Number(e.target.value); if (v >= 2 && v <= 7) onFit({ ...fit, lengthM: v }) }} /> m</label>
-      {row('Ride height', 'offsetM', 1, '↓', '↑', 0.01)}
-      <p className="muted small">Driver’s eye{view === 'driver' ? '' : ' (switch to the driver view to check)'}:</p>
-      {row('Left', 'eyeM', 0, '→', '←')}
-      {row('Height', 'eyeM', 1, '↓', '↑')}
-      {row('Forward', 'eyeM', 2, '−', '+')}
-      <p className="muted small">Garmin camera on the windscreen{view === 'garmin' ? '' : ' (switch to the Garmin view to check)'}:</p>
-      {row('Height', 'dashcamM', 1, '↓', '↑', 0.01)}
-      {row('Forward', 'dashcamM', 2, '−', '+', 0.01)}
-      {degrees('Tilt up', 'dashcamPitchDeg', -0.5, '↓', '↑')}
-      {degrees('Lens', 'dashcamFovDeg', 2, '−', '+')}
-      <div className="replay-fit-actions">
-        <button type="button" className="btn primary small" disabled={!dirty} onClick={onSave}>Save fit</button>
-        <button type="button" className="btn ghost small" disabled={!dirty} onClick={onReset}>Undo</button>
-        <button type="button" className="btn ghost small" onClick={() => onFit(structuredClone(modelPreset.fit))}>{modelPreset.name} default</button>
-      </div>
-    </div>}
+    <p className="muted small">3D model: {model ? model.name : `placeholder shape (${preset.name} size)`} · <NavLink to={garage}>Change in Garage</NavLink></p>
     {status && <p className="small" role="status">{status}</p>}
   </section>
 }

@@ -844,6 +844,18 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         json(res, 405, { error: 'Method not allowed' }, origin)
         return
       }
+      // The Garage's choice of a vehicle's model: { vehicleKey, modelId | null }.
+      if (url.pathname === '/api/car-models/assign' && req.method === 'POST') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const body = await readJson(req)
+        try {
+          json(res, 200, { models: await carModels.assign(body?.vehicleKey, body?.modelId ?? null) }, origin)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          json(res, /no longer/.test(message) ? 404 : 400, { error: message }, origin)
+        }
+        return
+      }
       const modelMatch = /^\/api\/car-models\/([a-zA-Z0-9_-]{1,100})(\.glb)?$/.exec(url.pathname)
       if (modelMatch && CAR_MODEL_ID_RE.test(modelMatch[1])) {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }

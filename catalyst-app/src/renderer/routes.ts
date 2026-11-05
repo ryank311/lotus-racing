@@ -58,10 +58,14 @@ const enums: Record<string, [string[], string]> = {
 // Pages that give a shared param name other values.
 const pageEnums: Partial<Record<Page, Record<string, [string[], string]>>> = {
   replay: { view: [['chase', 'driver', 'garmin'], 'chase'] },
+  // A selected car's panel: its 3D model (the default) or its context files.
+  garage: { tab: [['model', 'files'], 'model'] },
 }
 // A lap index or Garmin's optimal lap; a ghost is <session guid>:<lap>, or none.
 const REPLAY_LAP = /^(\d{1,4}|optimal)$/
 const REPLAY_GHOST = /^(none|[A-Za-z0-9_-]{1,128}:(\d{1,4}|optimal))$/
+// The Garage selects a car by its make and model ("LOTUS EXIGE"), e.g. from the replay.
+const isVehicleKey = (value: string) => value.length <= 80 && value === value.trim() && !/[\u0000-\u001f/\\]/.test(value)
 export function normalizeRoute(pathname: string, search: string): { url: string; error?: string } {
   const route = matchRoute(pathname)
   const path = pathname === '/' ? '/overview' : pathname.replace(/\/$/, '')
@@ -70,6 +74,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
     progress: ['anchor', 'surface', 'temp'],
     sessions: ['q', 'vehicle', 'track', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report', 'focus', 'compare'],
     coach: ['session'], tracks: ['track', 'turn'], replay: ['lap', 'ghost', 'view'], logs: ['q', 'level', 'follow'], 'sign-in': ['returnTo'],
+    garage: ['tab', 'vehicle'],
   }
   const input = new URLSearchParams(search), output = new URLSearchParams()
   let error: string | undefined
@@ -88,6 +93,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
       if (key === 'anchor' && !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) { error = 'Invalid session identifier.'; continue }
       if (key === 'lap' && !REPLAY_LAP.test(value)) { error = 'Invalid lap.'; continue }
       if (key === 'ghost' && !REPLAY_GHOST.test(value)) { error = 'Invalid ghost lap.'; continue }
+      if (key === 'vehicle' && route.page === 'garage' && !isVehicleKey(value)) { error = 'Invalid vehicle.'; continue }
       const choices = pageEnums[route.page]?.[key] ?? enums[key]
       if (choices) {
         if (!choices[0].includes(value)) { error = `Invalid ${key} value.`; continue }
@@ -95,7 +101,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
       }
       if (key === 'level' && !['log', 'info', 'warn', 'error', 'none'].includes(value)) { error = 'Invalid log level.'; continue }
       // Sessions filters by layout key; the Tracks page uses circuit names, which contain spaces.
-      const identifier = ['session', 'selected', 'vehicle', 'report'].includes(key) || (key === 'track' && route.page === 'sessions')
+      const identifier = ['session', 'selected', 'report'].includes(key) || (key === 'vehicle' && route.page !== 'garage') || (key === 'track' && route.page === 'sessions')
       if (identifier && (value.length > 200 || /[\s/\\\u0000-\u001f]/.test(value))) { error = `Invalid ${key} identifier.`; continue }
       output.append(key, key === 'returnTo' ? safeReturnTo(value) : value)
     }

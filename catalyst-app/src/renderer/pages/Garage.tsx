@@ -3,9 +3,10 @@ import { InlineLoadStatus, LoadingRows } from '../components/Loading'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, humaniseBytes, isRemote } from '../api'
 import { NavLink, useNavigation, useRoute, useUnsavedChanges } from '../navigation'
-import { fileId, segment } from '../routes'
+import { fileId, routeUrl, segment } from '../routes'
 import type { AiContextFile, CarProfile, VehicleSummary } from '../../shared/types'
-import { glbCredits, glbJsonLength, MAX_CAR_MODEL_BYTES, presetKeysIn, vehicleKey, type CarModel } from '../../shared/replay'
+import { carModelFor, vehicleKey, type CarModel } from '../../shared/replay'
+import { CarModelPanel } from './GarageCarModel'
 import './pages-extras.css'
 import './garage-models.css'
 
@@ -20,10 +21,15 @@ function slugify(s: string): string {
   return s.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 32)
 }
 
+// The unsaved-changes guard: a document is left by changing page or car; a
+// fit also by switching to the car's files (the same path, another query).
+const pathScope = (url: string) => url.split('?')[0]
+const urlScope = (url: string) => url
+
 // ─── Garage page ─────────────────────────────────────────────────────────────
 
 export function Garage() {
-  const { id: selected, fileId: selectedFile } = useRoute()
+  const { id: selected, fileId: selectedFile, params } = useRoute()
   const { go } = useNavigation()
   const fleet = useResource(async () => {
     const [vehicles, profiles] = await Promise.all([api.listVehicles(), api.listProfiles()])
@@ -33,6 +39,16 @@ export function Garage() {
   const vehicles = fleet.data?.vehicles ?? []
   const profiles = fleet.data?.profiles ?? []
   const load = fleet.reload
+  // The replay's car models, shared by every driver on the server.
+  const models = useResource(() => api.listCarModels())
+  const setModels = models.setData
+  const onModels = useCallback((next: CarModel[] | ((list: CarModel[]) => CarModel[])) => {
+    setModels(list => (typeof next === 'function' ? next(list ?? []) : next))
+  }, [setModels])
+  // A selected car shows its 3D model (?tab=model, the default) or its context files.
+  const tab = selectedFile || params.get('tab') === 'files' ? 'files' : 'model'
+  const [fitSave, setFitSave] = useState<(() => Promise<boolean>) | null>(null)
+  const onFitPending = useCallback((save: (() => Promise<boolean>) | null) => setFitSave(() => save), [])
   const [filesOwner, setFilesOwner] = useState<string | null>(null)
   const filesRequest = useRef(0)
   const [filesError, setFilesError] = useState<string | null>(null)
@@ -51,6 +67,14 @@ export function Garage() {
   const selectedVehicle = vehicles.find(v => v.vehicleGuid === selected) ?? null
   const editPath = filesOwner === selectedVehicle?.profile ? files.find(f => fileId(f.name) === selectedFile)?.path ?? null : null
   const vehicleUrl = `/garage/${segment(selected ?? '')}`
+  const filesUrl = routeUrl(vehicleUrl, { tab: 'files' })
+
+  // ?vehicle=<make model> (the replay's "Change in Garage"): that car, when the driver has one.
+  const wantedKey = selected ? null : params.get('vehicle')
+  const wanted = wantedKey ? vehicles.find(v => vehicleKey(v.make, v.model) === vehicleKey(wantedKey, null)) ?? null : null
+  useEffect(() => {
+    if (wanted) go(`/garage/${segment(wanted.vehicleGuid)}`, { replace: true })
+  }, [wanted, go])
 
   const refreshFiles = useCallback(async (profileName: string) => {
     const request = ++filesRequest.current
@@ -88,8 +112,10 @@ export function Garage() {
     return () => { cancelled = true }
   }, [editPath, fileAttempt])
 
+  // Another car opens on the same tab.
+  const carUrl = (guid: string) => routeUrl(`/garage/${segment(guid)}`, { tab: tab === 'files' ? 'files' : null })
   const onSelectVehicle = (guid: string) => {
-    go(`/garage/${segment(guid)}`)
+    go(carUrl(guid))
   }
 
   const onSave = useCallback(async () => {
@@ -110,22 +136,24 @@ export function Garage() {
       setSaving(false)
     }
   }, [editPath, selectedVehicle?.profile, content, original])
-  useUnsavedChanges(dirty, onSave)
+  // An open document, or an unsaved fit in the 3D model panel.
+  const saveAll = useCallback(async () => (fitSave ? await fitSave() : true) && (dirty ? await onSave() : true), [fitSave, dirty, onSave])
+  useUnsavedChanges(dirty || !!fitSave, saveAll, fitSave ? urlScope : pathScope)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        void onSave()
+        void saveAll()
       }
     }
     window.addEventListener('keydown', onKey)
-    const unsub = typeof api.onSaveRequest === 'function' ? api.onSaveRequest(() => { void onSave() }) : () => {}
+    const unsub = typeof api.onSaveRequest === 'function' ? api.onSaveRequest(() => { void saveAll() }) : () => {}
     return () => {
       window.removeEventListener('keydown', onKey)
       unsub()
     }
-  }, [onSave])
+  }, [saveAll])
 
   const onDelete = async (fileName: string) => {
     if (!selectedVehicle?.profile) return
@@ -133,7 +161,7 @@ export function Garage() {
     await api.deleteContextFile(selectedVehicle.profile, fileName)
     if (editPath?.endsWith('/' + fileName)) {
       setContent(''); setOriginal('')
-      go(vehicleUrl, { replace: true })
+      go(filesUrl, { replace: true })
     }
     await refreshFiles(selectedVehicle.profile)
   }
@@ -184,16 +212,16 @@ export function Garage() {
         </div>
       </header>
 
-      <div className="page-body garage-layout" data-route-loading={loading || fileLoading || undefined} data-stage={selectedFile ? 'editor' : selected ? 'files' : 'vehicles'}>
+      <div className="page-body garage-layout" data-route-loading={loading || fileLoading || undefined} data-stage={selectedFile ? 'editor' : selected ? tab : 'vehicles'}>
         <div className="garage-mobile-navigation">
           {selectedFile && editPath && selectedVehicle ? (
             <span className="text-mono">{vehicleLabel(selectedVehicle)}</span>
           ) : selectedFile ? (
-            <NavLink className="btn ghost" to={vehicleUrl}>Close editor</NavLink>
+            <NavLink className="btn ghost" to={filesUrl}>Close editor</NavLink>
           ) : selected ? (
             <NavLink className="btn ghost" to="/garage">← Change car</NavLink>
           ) : <span className="muted text-mono">Choose a car</span>}
-          {selected && <span className="muted text-mono">{selectedFile ? 'Edit file' : 'Choose a file'}</span>}
+          {selected && <span className="muted text-mono">{selectedFile ? 'Edit file' : tab === 'files' ? 'Choose a file' : '3D model'}</span>}
         </div>
         {/* ── Vehicle list ── */}
         <div className="garage-vehicles" aria-busy={fleet.pending}>
@@ -205,7 +233,9 @@ export function Garage() {
             <VehicleCard
               key={v.vehicleGuid}
               vehicle={v}
+              to={carUrl(v.vehicleGuid)}
               profiles={profiles}
+              model={models.data ? carModelFor(models.data, vehicleKey(v.make, v.model)) ?? 'none' : null}
               selected={v.vehicleGuid === selected}
               onClick={() => onSelectVehicle(v.vehicleGuid)}
               onProfileChange={async (profileName) => {
@@ -215,38 +245,56 @@ export function Garage() {
               }}
             />
           ))}
-          {fleet.data && <CarModels vehicles={vehicles} />}
         </div>
 
-        {/* ── Profile detail ── */}
+        {/* ── The selected car: its 3D model or its context files ── */}
         <div className="garage-detail">
-          {!fleet.data ? null : selectedVehicle?.profile && filesOwner !== selectedVehicle.profile ? <><InlineLoadStatus label="context files" pending={!filesError} error={filesError} onRetry={() => void refreshFiles(selectedVehicle.profile!)} />{!filesError && <LoadingRows />}</> : selectedFile && editPath && (fileLoading || fileError) ? <><InlineLoadStatus label="document" pending={fileLoading} error={fileError} onRetry={() => setFileAttempt(n => n + 1)} />{fileLoading && <LoadingRows count={3} />}</> : selected && !selectedVehicle && !loading ? <div role="alert">Vehicle unavailable. <NavLink to="/garage">All vehicles</NavLink></div> : selectedFile && filesOwner && !editPath ? <div role="alert">Document unavailable. <NavLink to={vehicleUrl}>Vehicle files</NavLink></div> : !selectedVehicle ? (
+          {!fleet.data ? null : selected && !selectedVehicle && !loading ? <div role="alert">Vehicle unavailable. <NavLink to="/garage">All vehicles</NavLink></div> : !selectedVehicle ? (
             <div className="garage-empty-hint" style={{ margin: 'auto' }}>
-              Select a vehicle to manage its context files
+              {wantedKey && !wanted ? <>No {wantedKey} has sessions in your garage.</> : <>Select a vehicle to choose its 3D model and manage its context files</>}
             </div>
           ) : (
-            <ProfileDetail
-              vehicle={selectedVehicle!}
-              files={files}
-              editPath={editPath}
-              content={content}
-              dirty={dirty}
-              saving={saving}
-              saveError={saveError}
-              dropping={dropping}
-              onSelectFile={(p) => {
-                const file = files.find(f => f.path === p)
-                if (file) go(`${vehicleUrl}/files/${fileId(file.name)}`)
-              }}
-              onDelete={onDelete}
-              onContentChange={setContent}
-              onSave={onSave}
-              onClose={() => go(vehicleUrl)}
-              onDrop={onDrop}
-              onDragOver={(e) => { e.preventDefault(); setDropping(true) }}
-              onDragLeave={() => setDropping(false)}
-              onCreateProfile={() => ensureProfile(selectedVehicle!)}
-            />
+            <div className="garage-car-detail">
+              <nav className="garage-tabs" aria-label={vehicleLabel(selectedVehicle)}>
+                <span className="garage-tabs-car">{vehicleLabel(selectedVehicle)}</span>
+                <NavLink to={vehicleUrl} className={tab === 'model' ? 'on' : ''} aria-current={tab === 'model' ? 'page' : undefined}>3D model</NavLink>
+                <NavLink to={filesUrl} className={tab === 'files' ? 'on' : ''} aria-current={tab === 'files' ? 'page' : undefined}>Context files</NavLink>
+              </nav>
+              {tab === 'model' ? (models.data ? (
+                <CarModelPanel
+                  key={selectedVehicle.vehicleGuid}
+                  vehicleKey={vehicleKey(selectedVehicle.make, selectedVehicle.model)}
+                  vehicleName={vehicleLabel(selectedVehicle)}
+                  models={models.data}
+                  onModels={onModels}
+                  onFitPending={onFitPending}
+                />
+              ) : <><InlineLoadStatus label="3D models" pending={models.pending} error={models.error} onRetry={() => void models.reload()} />{!models.error && <LoadingRows count={3} />}</>
+              ) : selectedVehicle.profile && filesOwner !== selectedVehicle.profile ? <><InlineLoadStatus label="context files" pending={!filesError} error={filesError} onRetry={() => void refreshFiles(selectedVehicle.profile!)} />{!filesError && <LoadingRows />}</> : selectedFile && editPath && (fileLoading || fileError) ? <><InlineLoadStatus label="document" pending={fileLoading} error={fileError} onRetry={() => setFileAttempt(n => n + 1)} />{fileLoading && <LoadingRows count={3} />}</> : selectedFile && filesOwner && !editPath ? <div role="alert">Document unavailable. <NavLink to={filesUrl}>Vehicle files</NavLink></div> : (
+                <ProfileDetail
+                  vehicle={selectedVehicle}
+                  files={files}
+                  editPath={editPath}
+                  content={content}
+                  dirty={dirty}
+                  saving={saving}
+                  saveError={saveError}
+                  dropping={dropping}
+                  onSelectFile={(p) => {
+                    const file = files.find(f => f.path === p)
+                    if (file) go(`${vehicleUrl}/files/${fileId(file.name)}`)
+                  }}
+                  onDelete={onDelete}
+                  onContentChange={setContent}
+                  onSave={onSave}
+                  onClose={() => go(filesUrl)}
+                  onDrop={onDrop}
+                  onDragOver={(e) => { e.preventDefault(); setDropping(true) }}
+                  onDragLeave={() => setDropping(false)}
+                  onCreateProfile={() => ensureProfile(selectedVehicle)}
+                />
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -256,16 +304,19 @@ export function Garage() {
 
 // ─── VehicleCard ─────────────────────────────────────────────────────────────
 
-function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: {
+function VehicleCard({ vehicle, to, profiles, model, selected, onClick, onProfileChange }: {
   vehicle: VehicleSummary
+  to: string
   profiles: CarProfile[]
+  /** The replay's model for it ('none': the placeholder shape); null while loading. */
+  model: CarModel | 'none' | null
   selected: boolean
   onClick: () => void
   onProfileChange: (name: string | null) => Promise<void>
 }) {
   return (
     <div className={`garage-vehicle-card ${selected ? 'selected' : ''}`} onClick={onClick}>
-      <NavLink className="garage-vehicle-name" to={`/garage/${segment(vehicle.vehicleGuid)}`} onClick={e => e.stopPropagation()}>{vehicleLabel(vehicle)}</NavLink>
+      <NavLink className="garage-vehicle-name" to={to} onClick={e => e.stopPropagation()}>{vehicleLabel(vehicle)}</NavLink>
       <div className="garage-vehicle-meta">
         <span className="muted text-mono" style={{ fontSize: 10 }}>
           {vehicle.sessionCount} session{vehicle.sessionCount !== 1 ? 's' : ''}
@@ -280,6 +331,11 @@ function VehicleCard({ vehicle, profiles, selected, onClick, onProfileChange }: 
           </span>
         )}
       </div>
+      {model && (
+        <div className="garage-vehicle-model" title={model === 'none' ? 'The replay draws a placeholder shape' : model.name}>
+          3D · {model === 'none' ? 'placeholder shape' : model.name}
+        </div>
+      )}
 
       {/* Profile picker */}
       {selected && (
@@ -509,182 +565,5 @@ function AiContextFiles({ profile, filesKey }: { profile: string; filesKey: stri
         </div>
       ))}
     </section>
-  )
-}
-
-// ─── 3D models ───────────────────────────────────────────────────────────────
-
-// The replay's car models (.glb), shared by every driver on the server, and
-// which vehicles use each. Placing a model in the car is done in the replay.
-function CarModels({ vehicles }: { vehicles: VehicleSummary[] }) {
-  const models = useResource(() => api.listCarModels())
-  const [draft, setDraft] = useState<{ file: File; name: string; attribution: string; matches: string[] } | null>(null)
-  const [progress, setProgress] = useState<number | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState<string | null>(null)
-  const input = useRef<HTMLInputElement>(null)
-
-  // Vehicles seen in sessions, plus any a model already names.
-  const keys = [...new Set([
-    ...vehicles.map(v => vehicleKey(v.make, v.model)).filter((k): k is string => !!k),
-    ...(models.data ?? []).flatMap(m => m.matches),
-  ])].sort()
-
-  // Prefill the name and credit from the file's own asset.extras (Sketchfab
-  // writes title, author, licence and source there).
-  const choose = async (file: File | undefined) => {
-    setError(null)
-    if (!file) return
-    if (!/\.glb$/i.test(file.name)) { setError('Choose a .glb file (glTF binary).'); return }
-    if (file.size > MAX_CAR_MODEL_BYTES) { setError(`That model is larger than ${MAX_CAR_MODEL_BYTES / 1024 ** 2} MB.`); return }
-    const length = glbJsonLength(new Uint8Array(await file.slice(0, 20).arrayBuffer()))
-    if (length == null) { setError('That file is not a glTF 2 binary (.glb).'); return }
-    let credits: { name: string | null; attribution: string | null } = { name: null, attribution: null }
-    try { credits = glbCredits(JSON.parse(await file.slice(20, 20 + length).text())) } catch { /* the server checks it */ }
-    const name = credits.name ?? file.name.replace(/\.glb$/i, '').replace(/_+/g, ' ')
-    setDraft({ file, name, attribution: credits.attribution ?? '', matches: presetKeysIn(name).filter(k => keys.includes(k)) })
-  }
-
-  const upload = async () => {
-    if (!draft) return
-    setError(null)
-    setProgress(0)
-    try {
-      await api.uploadCarModel(draft.file, {
-        name: draft.name.trim(), attribution: draft.attribution.trim() || null, matches: draft.matches,
-      }, (sent, total) => setProgress(total ? sent / total : 1))
-      setDraft(null)
-      await models.reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setProgress(null)
-    }
-  }
-
-  const change = async (model: CarModel, patch: Partial<Pick<CarModel, 'name' | 'attribution' | 'matches'>>) => {
-    setBusy(model.id)
-    setError(null)
-    try {
-      const updated = await api.updateCarModel(model.id, patch)
-      models.setData(list => list?.map(m => (m.id === updated.id ? updated : m)))
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const remove = async (model: CarModel) => {
-    if (!window.confirm(`Delete the 3D model “${model.name}” for every driver?`)) return
-    setBusy(model.id)
-    setError(null)
-    try {
-      await api.deleteCarModel(model.id)
-      await models.reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  return (
-    <section className="garage-models" aria-label="3D models">
-      <div className="garage-models-header">
-        <span className="garage-models-title">3D models</span>
-        <InlineLoadStatus label="3D models" pending={models.pending} error={models.error} hasData={!!models.data} onRetry={() => void models.reload()} />
-      </div>
-      <p className="garage-models-note">
-        Car models for the 3D replay (.glb), shared with every driver on this server. Credit the author as their licence asks.
-      </p>
-      {error && <div className="garage-models-error" role="alert">{error}</div>}
-      {models.data?.length === 0 && !draft && <div className="garage-models-empty">No models yet: the replay draws a plain car.</div>}
-      {models.data?.map(model => (
-        <div key={model.id} className="garage-model-card" aria-busy={busy === model.id}>
-          <input
-            className="garage-model-name"
-            aria-label="Model name"
-            defaultValue={model.name}
-            key={`${model.id}:${model.name}`}
-            disabled={busy === model.id}
-            onBlur={e => { const name = e.target.value.trim(); if (name && name !== model.name) void change(model, { name }) }}
-          />
-          <div className="garage-model-meta">{model.fileName} · {humaniseBytes(model.sizeBytes)}</div>
-          <textarea
-            className="garage-model-credit"
-            aria-label="Credit"
-            placeholder="Credit: “Title” by author (licence)"
-            rows={2}
-            defaultValue={model.attribution ?? ''}
-            key={`${model.id}:${model.attribution ?? ''}`}
-            disabled={busy === model.id}
-            onBlur={e => { const attribution = e.target.value.trim() || null; if (attribution !== model.attribution) void change(model, { attribution }) }}
-          />
-          <VehicleChoice keys={keys} chosen={model.matches} disabled={busy === model.id}
-            onChange={matches => void change(model, { matches })} />
-          <div className="garage-model-actions">
-            <button className="btn tiny ghost garage-model-delete" disabled={busy === model.id} onClick={() => void remove(model)}>Delete</button>
-          </div>
-        </div>
-      ))}
-
-      {draft ? (
-        <div className="garage-model-card draft">
-          <label className="garage-model-field">
-            <span>Name</span>
-            <input value={draft.name} disabled={progress != null} onChange={e => setDraft({ ...draft, name: e.target.value })} />
-          </label>
-          <label className="garage-model-field">
-            <span>Credit</span>
-            <textarea rows={3} value={draft.attribution} disabled={progress != null} placeholder="“Title” by author (licence) · source"
-              onChange={e => setDraft({ ...draft, attribution: e.target.value })} />
-          </label>
-          <VehicleChoice keys={keys} chosen={draft.matches} disabled={progress != null}
-            onChange={matches => setDraft({ ...draft, matches })} />
-          <div className="garage-model-meta">{draft.file.name} · {humaniseBytes(draft.file.size)}</div>
-          {progress != null && (
-            <div className="garage-model-progress" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-valuemin={0} aria-valuemax={100}>
-              <div style={{ width: `${Math.round(progress * 100)}%` }} />
-            </div>
-          )}
-          <div className="garage-model-actions">
-            <button className="btn tiny ghost" disabled={progress != null} onClick={() => setDraft(null)}>Cancel</button>
-            <button className="btn tiny primary" disabled={progress != null || !draft.name.trim()} onClick={() => void upload()}>
-              {progress != null ? `Uploading ${Math.round(progress * 100)}%` : 'Upload'}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button className="garage-model-add" onClick={() => input.current?.click()}
-          onDragOver={e => e.preventDefault()}
-          onDrop={e => { e.preventDefault(); void choose(e.dataTransfer.files[0]) }}>
-          + Add a .glb model
-        </button>
-      )}
-      <input ref={input} type="file" accept=".glb,model/gltf-binary" hidden
-        onChange={e => { void choose(e.target.files?.[0]); e.target.value = '' }} />
-    </section>
-  )
-}
-
-function VehicleChoice({ keys, chosen, disabled, onChange }: {
-  keys: string[]
-  chosen: string[]
-  disabled: boolean
-  onChange: (matches: string[]) => void
-}) {
-  if (!keys.length) return <div className="garage-model-meta">No vehicles yet: sync sessions first.</div>
-  return (
-    <fieldset className="garage-model-vehicles" disabled={disabled}>
-      <legend>Used for</legend>
-      {keys.map(key => (
-        <label key={key}>
-          <input type="checkbox" checked={chosen.includes(key)}
-            onChange={e => onChange(e.target.checked ? [...chosen, key] : chosen.filter(k => k !== key))} />
-          {key}
-        </label>
-      ))}
-    </fieldset>
   )
 }

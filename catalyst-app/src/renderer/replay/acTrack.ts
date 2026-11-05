@@ -13,6 +13,8 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { TerrainInfo, TrackModel, TrackModelFootprint, TrackModelGeoref, TrackModelLayout } from '../../shared/replay'
 import type { LocalFrame } from './geo'
+import { patchWorldMaterial, type SurfaceKind } from './surfaces'
+import { patchCutoutMaterial } from './foliage'
 
 const R_EARTH = 6_378_137
 const DEG = Math.PI / 180
@@ -210,6 +212,8 @@ export async function loadAcTrack(options: AcTrackOptions): Promise<AcTrack> {
   group.matrixAutoUpdate = false
   const loader = new GLTFLoader()
   const textures = new Set<THREE.Texture>()
+  // One world material per glTF material (they are shared between meshes).
+  const converted = new Map<THREE.Material, THREE.Material>()
   let triangles = 0
   // Fetch every file at once; parse in order.
   const buffers = layout.files.map(file => getFile(model.id, file))
@@ -221,11 +225,16 @@ export async function loadAcTrack(options: AcTrackOptions): Promise<AcTrack> {
       gltf.scene.traverse(object => {
         const mesh = object as THREE.Mesh
         if (!mesh.isMesh) return
-        mesh.material = Array.isArray(mesh.material) ? mesh.material.map(m => worldMaterial(m, maxAnisotropy, textures)) : worldMaterial(mesh.material, maxAnisotropy, textures)
+        mesh.material = Array.isArray(mesh.material) ? mesh.material.map(m => worldMaterial(m, maxAnisotropy, textures, converted)) : worldMaterial(mesh.material, maxAnisotropy, textures, converted)
         const index = mesh.geometry.getIndex()
         triangles += (index ? index.count : mesh.geometry.getAttribute('position').count) / 3
+        const material = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.Material
         // Blended overlays (racing groove, skid marks) draw after the opaque world.
-        if ((mesh.material as THREE.Material).transparent) mesh.renderOrder = 1
+        if (material.transparent) mesh.renderOrder = 1
+        // Everything takes the sun's shadow; solid things above the ground cast it.
+        const kind = material.userData.surfaceKind as SurfaceKind
+        mesh.receiveShadow = true
+        mesh.castShadow = (kind === 'object' || kind === 'foliage') && !material.transparent && !mesh.userData?.drivable && !mesh.userData?.ground
       })
       gltf.scene.name = file
       group.add(gltf.scene)
@@ -263,46 +272,61 @@ function safeRegExp(source: string): RegExp | null {
   try { return new RegExp(source, 'i') } catch { return null }
 }
 
-// Leaves without shimmer (three's own alpha to coverage fades the edge from
-// the cut-off up, and smaller mips average a leaf's alpha away, so foliage
-// thins and sparkles as it moves). The alpha is scaled back up by the mip
-// level, then cut to a one-pixel edge that multisampling smooths (after
-// Ben Golus, "Anti-aliased Alpha Test", 2017).
-const FOLIAGE_ALPHA = /* glsl */`
-#ifdef USE_ALPHATEST
-  #ifdef USE_MAP
-    vec2 texel = vMapUv * vec2( textureSize( map, 0 ) );
-    float mipLevel = max( 0.0, 0.5 * log2( max( dot( dFdx( texel ), dFdx( texel ) ), dot( dFdy( texel ), dFdy( texel ) ) ) ) );
-    diffuseColor.a *= 1.0 + mipLevel * 0.25;
-  #endif
-  #ifdef ALPHA_TO_COVERAGE
-    diffuseColor.a = clamp( ( diffuseColor.a - alphaTest ) / max( fwidth( diffuseColor.a ), 0.0001 ) + 0.5, 0.0, 1.0 );
-    if ( diffuseColor.a == 0.0 ) discard;
-  #else
-    if ( diffuseColor.a < alphaTest ) discard;
-  #endif
-#endif
-`
+// What each of the track's materials is, by its Assetto Corsa name and shader.
+// Tarmac (ASPHALT-GREEN is the green-painted run-off: tarmac under paint).
+const ROAD_RE = /^(ROAD|ASPHALT|SKIDPAN|PADDOCK MAIN)/i
+const KERB_RE = /^(KERB|FIA Kurb|23 - Default)/i
+// Lines, decals and plain concrete keep their own texture.
+const PAINT_RE = /^(WHITE-LINE|PIT MARKINGS|GROOVE|SKIDMARK|PADDOCK DECALS|CONCRETE BEIGE|CONCRETE-LIGHT)/i
+// Turf: the aerial photo (TERRAIN) and the verge strip along every road edge
+// (EDGING1). EARTH (bare dirt) and walls are 'object': their own colour.
+const GROUND_RE = /^(TERRAIN|EDGING1)$/i
 
-// The world's look: Lambert, not tone-mapped (as world.ts draws the
-// terrain), alpha-tested foliage with alpha to coverage, decals offset
-// towards the camera so they never fight the road under them.
-function worldMaterial(material: THREE.Material, maxAnisotropy: number, textures: Set<THREE.Texture>): THREE.Material {
+export function surfaceKindOf(material: THREE.Material): SurfaceKind {
+  const name = material.name, shader = String(material.userData?.acShader ?? '')
+  if (shader === 'ksTree') return 'foliage'
+  if (/^WATER$/i.test(name)) return 'water'
+  if (GROUND_RE.test(name)) return 'ground'
+  if (KERB_RE.test(name)) return 'kerb'
+  if (PAINT_RE.test(name)) return 'paint'
+  if (ROAD_RE.test(name)) return 'road'
+  return 'object'
+}
+
+const GROUND_ALBEDO_SCALE = 0.62
+const GREEN_PAINT = new THREE.Color(0.55, 0.62, 0.5)
+// Roughness by kind (dry): open-graded tarmac, painted kerbs and lines, turf.
+const ROUGHNESS: Record<SurfaceKind, number> = { road: 0.86, kerb: 0.62, paint: 0.7, ground: 0.95, foliage: 0.9, object: 0.8, water: 0.06, far: 1 }
+
+// The world's look: physically based and tone-mapped like the car, lit by
+// the sun and the sky's environment (atmosphere.ts) and shaded by
+// surfaces.ts (detail, wet, haze, far shadows). Foliage is Lambert (no
+// highlights, less work for the many layered leaves) and alpha-tested with
+// alpha to coverage; decals are offset towards the camera so they never
+// fight the road under them.
+function worldMaterial(material: THREE.Material, maxAnisotropy: number, textures: Set<THREE.Texture>, converted: Map<THREE.Material, THREE.Material>): THREE.Material {
+  const done = converted.get(material)
+  if (done) return done
   const m = material as THREE.MeshStandardMaterial
-  const out = new THREE.MeshLambertMaterial({
+  const userData = { ...m.userData }
+  const kind = surfaceKindOf(m)
+  const common = {
     name: m.name, color: m.color?.clone() ?? new THREE.Color(1, 1, 1), map: m.map ?? null, normalMap: m.normalMap ?? null,
     side: m.side, transparent: m.transparent, opacity: m.opacity, alphaTest: m.alphaTest, depthWrite: m.depthWrite,
-  })
-  if (m.normalScale && out.normalMap) out.normalScale.copy(m.normalScale)
-  out.toneMapped = false
-  out.userData = { ...m.userData }
-  if (out.alphaTest > 0) {
-    out.alphaToCoverage = true
-    out.onBeforeCompile = shader => {
-      shader.fragmentShader = shader.fragmentShader.replace('#include <alphatest_fragment>', FOLIAGE_ALPHA)
-    }
-    out.customProgramCacheKey = () => 'foliage-alpha'
   }
+  const out: THREE.MeshStandardMaterial | THREE.MeshLambertMaterial = kind === 'foliage'
+    ? new THREE.MeshLambertMaterial(common)
+    : new THREE.MeshStandardMaterial({ ...common, roughness: ROUGHNESS[kind], metalness: 0 })
+  if (m.normalScale && out.normalMap) out.normalScale.copy(m.normalScale)
+  // The ground's photo texture is about twice as bright as turf (albedo ~0.15).
+  if (kind === 'ground') out.color.multiplyScalar(GROUND_ALBEDO_SCALE)
+  // The green-painted run-off tarmac: weathered, duller paint that sits with the grass.
+  if (/^ASPHALT-GREEN/i.test(m.name)) out.color.multiply(GREEN_PAINT)
+  out.userData = userData
+  // Leaves and fences: sides, edges and the foliage's light (foliage.ts).
+  if (out.alphaTest > 0) patchCutoutMaterial(out, kind)
+  // Painted run-off keeps the tarmac's aggregate, softened by the paint.
+  else patchWorldMaterial(out, kind, undefined, '', { detail: /^ASPHALT-GREEN/i.test(m.name) ? 0.5 : 1 })
   if (m.userData?.decal) {
     out.polygonOffset = true
     out.polygonOffsetFactor = -2
@@ -315,6 +339,7 @@ function worldMaterial(material: THREE.Material, maxAnisotropy: number, textures
     textures.add(texture)
   }
   m.dispose()
+  converted.set(material, out)
   return out
 }
 
@@ -425,13 +450,14 @@ export function buildFarField(info: TerrainInfo, grid: Float32Array, frame: Loca
   geometry.setIndex(new THREE.BufferAttribute(index.slice(0, k), 1))
   geometry.computeVertexNormals()
   const material = new THREE.MeshLambertMaterial({ color: texture ? 0xffffff : 0x56653f, map: texture })
-  material.toneMapped = false
+  patchWorldMaterial(material, 'far')
   // Behind the model's ground wherever they meet.
   material.polygonOffset = true
   material.polygonOffsetFactor = 2
   material.polygonOffsetUnits = 4
   const mesh = new THREE.Mesh(geometry, material)
   mesh.name = 'far-field'
+  mesh.receiveShadow = true
   return mesh
 }
 

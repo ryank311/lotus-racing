@@ -549,6 +549,10 @@ export interface CatalystBridge {
     onProgress?: (sent: number, total: number) => void,
   ): Promise<CarModel>
   updateCarModel(id: string, patch: Partial<Pick<CarModel, 'name' | 'attribution' | 'matches' | 'fit'>>): Promise<CarModel>
+  // Makes a model THE one for a vehicle key ("LOTUS EXIGE"), or none (null:
+  // the placeholder): the key joins its matches and leaves every other
+  // model's, in one change. Returns the whole library.
+  assignCarModel(vehicleKey: string, modelId: string | null): Promise<CarModel[]>
   deleteCarModel(id: string): Promise<void>
   // Track models (3D tracks copied into the shared track-models folder).
   listTrackModels(): Promise<TrackModel[]>

@@ -74,6 +74,63 @@ export interface ReplayScene {
   laps: ReplayLapInfo[]
   /** Laps to race as a ghost: the driver's other sessions on the same layout, fastest first (≤ 40). */
   ghostCandidates: ReplayLapInfo[]
+  /** The weather and light the session ran in (the replay's sky, sun and surface); absent from older servers. */
+  conditions?: ReplayConditions
+}
+
+/** A session's conditions as Garmin recorded them, with its time on the clock and in UTC. */
+export interface ReplayConditions {
+  /** Garmin's weather text ("Mostly Cloudy", "Light Rain"), or null. */
+  description: string | null
+  temperatureC: number | null
+  humidityPct: number | null
+  windMps: number | null
+  /** Where the wind blows from, degrees clockwise from north. */
+  windFromDeg: number | null
+  /** The track's surface: the driver's correction in Session Review, else read from the description. */
+  surface: 'dry' | 'damp' | 'wet' | 'mixed' | 'unknown'
+  /** The session's start on the track's clock, "YYYY-MM-DD HH:MM:SS", or null. */
+  localStart: string | null
+  /** The same instant in UTC (ISO 8601), or null without a start. */
+  utcStart: string | null
+  /** Local time minus UTC, minutes. */
+  utcOffsetMin: number | null
+  /** The offset is reckoned from the track's longitude and its region's daylight-saving rules (Garmin's own offset is not stored). */
+  utcOffsetEstimated: boolean
+}
+
+/**
+ * Local time minus UTC (minutes) at a place and local wall-clock time, from
+ * its longitude (the nearest whole hour) and, in North America and Europe,
+ * their daylight-saving rules. A fallback for when the device's own offset
+ * is unknown; good to the hour where a time zone follows its meridian.
+ */
+export function estimateUtcOffsetMin(lat: number, lon: number, localStart: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(localStart)
+  if (!m || !Number.isFinite(lat) || !Number.isFinite(lon)) return null
+  const [year, month, day, hour, minute] = m.slice(1).map(Number)
+  const standard = Math.round(lon / 15) * 60
+  // Wall-clock minutes since the epoch (as if UTC), to compare with the switch instants.
+  const wall = Date.UTC(year, month - 1, day, hour, minute) / 60000
+  // The n-th (or last, n < 0) Sunday of a month, as a UTC day number × minutes.
+  const sunday = (mon: number, n: number) => {
+    if (n > 0) {
+      const first = new Date(Date.UTC(year, mon - 1, 1)).getUTCDay()
+      return Date.UTC(year, mon - 1, 1 + ((7 - first) % 7) + 7 * (n - 1)) / 60000
+    }
+    const last = new Date(Date.UTC(year, mon, 0))
+    return Date.UTC(year, mon - 1, last.getUTCDate() - last.getUTCDay()) / 60000
+  }
+  let summer = false
+  if (lat > 20 && lon < -50 && lon > -170) {
+    // US and Canada: 2:00 local on the second Sunday of March to 2:00 on the first Sunday of November.
+    summer = wall >= sunday(3, 2) + 120 && wall < sunday(11, 1) + 120
+  } else if (lat > 34 && lon > -25 && lon < 45) {
+    // Europe: 01:00 UTC on the last Sunday of March to 01:00 UTC on the last Sunday of October.
+    const utc = wall - standard
+    summer = utc >= sunday(3, -1) + 60 && utc < sunday(10, -1) + 60
+  }
+  return standard + (summer ? 60 : 0)
 }
 
 /**
@@ -150,6 +207,14 @@ export interface CarModelFit {
   dashcamM?: [number, number, number]
   dashcamFovDeg?: number
   dashcamPitchDeg?: number
+  /**
+   * Wheel hints, for a model whose wheels are not found (or found wrongly)
+   * by name and shape: a regular expression (any case) for the node or
+   * material names of the parts that roll (tyres, rims, discs), and true to
+   * keep its wheels still and its body level.
+   */
+  wheelPartsPattern?: string
+  staticWheels?: boolean
 }
 
 export interface CarModel {
@@ -173,6 +238,21 @@ export interface CarPreset {
   wheelbaseM: number
   /** Default fit for an uploaded model of this car. */
   fit: CarModelFit
+  dynamics: CarDynamics
+}
+
+/** How the replay moves the car (semi-realistic): its steering and its body on the springs. */
+export interface CarDynamics {
+  /** Steering-wheel degrees per degree at the front wheels. */
+  steeringRatio: number
+  /** Body roll toward the outside of a turn, degrees per g of lateral acceleration. */
+  rollDegPerG: number
+  /** Nose down under braking and up under acceleration, degrees per g. */
+  diveDegPerG: number
+  squatDegPerG: number
+  /** The body's natural frequency on its springs (Hz) and damping ratio. */
+  rideHz: number
+  damping: number
 }
 
 // Real dimensions; the placeholder car is drawn from these, and an uploaded
@@ -186,10 +266,12 @@ export const CAR_PRESETS: Record<string, CarPreset> = {
   'LOTUS EXIGE': {
     name: 'Lotus Exige S (S2)', lengthM: 3.80, widthM: 1.73, heightM: 1.16, wheelbaseM: 2.30,
     fit: { yawDeg: 0, lengthM: 3.80, offsetM: [0, 0, 0], eyeM: [0.31, 0.86, -0.36], dashcamM: [0, 1.06, 0.21], dashcamFovDeg: 120, dashcamPitchDeg: -6.5 },
+    dynamics: { steeringRatio: 14, rollDegPerG: 1.0, diveDegPerG: 0.8, squatDegPerG: 0.5, rideHz: 1.9, damping: 0.65 },
   },
   'CHEVROLET CORVETTE': {
     name: 'Chevrolet Corvette C8 Z51', lengthM: 4.63, widthM: 1.93, heightM: 1.23, wheelbaseM: 2.72,
     fit: { yawDeg: 180, lengthM: 4.63, offsetM: [0, 0, 0], eyeM: [0.37, 0.98, -0.26], dashcamM: [0, 1.07, 0.36], dashcamFovDeg: 120, dashcamPitchDeg: -5 },
+    dynamics: { steeringRatio: 15.7, rollDegPerG: 1.3, diveDegPerG: 0.8, squatDegPerG: 0.5, rideHz: 1.6, damping: 0.65 },
   },
 }
 export const DEFAULT_PRESET = 'LOTUS EXIGE'
@@ -205,6 +287,15 @@ export function presetFor(key: string | null): CarPreset {
   if (key && CAR_PRESETS[key]) return CAR_PRESETS[key]
   const hit = key ? Object.entries(CAR_PRESETS).find(([k]) => key.includes(k.split(' ').slice(1).join(' '))) : undefined
   return (hit ?? [DEFAULT_PRESET, CAR_PRESETS[DEFAULT_PRESET]])[1]
+}
+
+/**
+ * The model a vehicle uses: the one whose matches name its key (the Garage
+ * keeps one per key; of several, the newest), or null for the placeholder.
+ */
+export function carModelFor<T extends Pick<CarModel, 'matches' | 'uploadedAt'>>(models: readonly T[], key: string | null): T | null {
+  if (!key) return null
+  return models.filter(m => m.matches.includes(key)).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))[0] ?? null
 }
 
 export const MAX_CAR_MODEL_BYTES = 300 * 1024 ** 2

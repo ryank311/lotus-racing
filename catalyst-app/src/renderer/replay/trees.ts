@@ -113,6 +113,7 @@ export function buildTrees(road: RoadModel, pixels: ImageData, info: TerrainInfo
     for (const [geometry, matrices, colors] of [[broadleaf, tile.broadleaf, tile.colors], [conifer, tile.conifer, tile.coniferColors]] as const) {
       if (!matrices.length) continue
       const mesh = new THREE.InstancedMesh(geometry, material, matrices.length)
+      mesh.name = 'tree'
       matrices.forEach((m, i) => { mesh.setMatrixAt(i, m); mesh.setColorAt(i, colors[i]) })
       mesh.computeBoundingSphere()
       group.add(mesh)

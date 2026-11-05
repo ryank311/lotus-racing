@@ -90,16 +90,26 @@ export function cleanFit(value: unknown): CarModelFit {
     || (f.dashcamPitchDeg != null && !n(f.dashcamPitchDeg, 45))) {
     throw new Error('Invalid model fit')
   }
+  // So are the wheel hints: a regular expression and a flag.
+  if (f.wheelPartsPattern != null && (typeof f.wheelPartsPattern !== 'string' || f.wheelPartsPattern.length > 200 || !validPattern(f.wheelPartsPattern))) throw new Error('Invalid model fit')
+  if (f.staticWheels != null && typeof f.staticWheels !== 'boolean') throw new Error('Invalid model fit')
   return {
     yawDeg: f.yawDeg, lengthM: f.lengthM, offsetM: [...f.offsetM], eyeM: [...f.eyeM],
     ...(f.dashcamM != null ? { dashcamM: [...f.dashcamM] as [number, number, number] } : {}),
     ...(f.dashcamFovDeg != null ? { dashcamFovDeg: f.dashcamFovDeg } : {}),
     ...(f.dashcamPitchDeg != null ? { dashcamPitchDeg: f.dashcamPitchDeg } : {}),
+    ...(f.wheelPartsPattern ? { wheelPartsPattern: f.wheelPartsPattern } : {}),
+    ...(f.staticWheels ? { staticWheels: true } : {}),
   }
+}
+
+function validPattern(pattern: string): boolean {
+  try { new RegExp(pattern, 'i'); return true } catch { return false }
 }
 
 const fitFor = (matches: string[]): CarModelFit => structuredClone(presetFor(matches[0] ?? null).fit)
 const publicModel = ({ file: _file, ...model }: Entry): CarModel => model
+const publicList = (models: Entry[]): CarModel[] => models.map(publicModel).sort((a, b) => a.name.localeCompare(b.name))
 const fileTitle = (fileName: string) => path.basename(fileName).replace(/\.glb$/i, '').replace(/[_]+/g, ' ').trim()
 
 // ─── Library ────────────────────────────────────────────────────────────────
@@ -141,7 +151,7 @@ export class CarModelLibrary {
         }
       }
       if (changed) await this.save(index)
-      return index.models.map(publicModel).sort((a, b) => a.name.localeCompare(b.name))
+      return publicList(index.models)
     })
   }
 
@@ -209,6 +219,32 @@ export class CarModelLibrary {
       if ('fit' in p) entry.fit = cleanFit(p.fit)
       await this.save(index)
       return publicModel(entry)
+    })
+  }
+
+  /**
+   * Makes one model THE model for a vehicle (the Garage's choice): the key
+   * joins that model's matches and leaves every other model's, in one write.
+   * A null id leaves no model for it (the replay draws the placeholder).
+   * Returns the whole library.
+   */
+  assign(vehicleKey: unknown, id: unknown): Promise<CarModel[]> {
+    return this.serial(async () => {
+      if (typeof vehicleKey !== 'string') throw new Error('Invalid vehicle')
+      const [key] = cleanMatches([vehicleKey])
+      if (!key) throw new Error('Invalid vehicle')
+      if (id != null && typeof id !== 'string') throw new Error('Invalid car model')
+      const index = await this.load()
+      const chosen = id == null ? null : index.models.find(m => m.id === id)
+      if (chosen === undefined) throw new Error('That car model is no longer in the library.')
+      if (chosen && !chosen.matches.includes(key) && chosen.matches.length >= 50) throw new Error('That model is used for too many vehicles.')
+      for (const entry of index.models) {
+        const has = entry.matches.includes(key)
+        if (entry === chosen && !has) entry.matches = [...entry.matches, key]
+        else if (entry !== chosen && has) entry.matches = entry.matches.filter(k => k !== key)
+      }
+      await this.save(index)
+      return publicList(index.models)
     })
   }
 

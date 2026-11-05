@@ -398,14 +398,36 @@ never holds one open):
   float32 heights out (NaN outside the area), at most 250,000 points a request.
 
 **Car models** (`src/garmin/carModels.ts`) are `.glb` files (glTF 2 binary,
-at most 300 MB) that drivers add in Garage → 3D models, shared by every
-driver. Each has a name, a credit line, the vehicles that use it
+at most 300 MB) that drivers add in the Garage, shared by every driver. Each
+has a name, a credit line (kept, never shown), the vehicles that use it
 (`LOTUS EXIGE`, from Garmin's make and model) and its fit in the car (set in
-the replay; a new model starts from its vehicle's preset). Sketchfab writes the
+the Garage; a new model starts from its vehicle's preset). Sketchfab writes the
 title, author, licence and source into the file's `asset.extras`; an empty name
 or credit is filled from them (“2006 Lotus Exige S” by Ddiaz Design
 (CC-BY-NC-SA-4.0) · https://sketchfab.com/…). Uploads use the same 32 MB
 chunks as videos; the server checks the glTF header and JSON chunk.
+
+**Garage → a car → 3D model** (`pages/GarageCarModel.tsx`, the default tab of
+`/garage/<vehicle>`; `?tab=files` is the car's context files) picks the model
+the replay draws for that vehicle: any model of the library, or none (the
+placeholder shape at the car's real size). Choosing one makes it the
+vehicle's only model: `assign` adds the key to its `matches` and removes it
+from every other model's, in one write (several matching models, as hand-
+copied files can leave, resolve to the newest; `carModelFor` in
+`shared/replay.ts`). The same panel uploads a model (straight away the car's
+own, unless unticked), renames or deletes one, and fits the chosen one: nose
+direction (yaw), length, position, the driver's eye and the Garmin camera's
+mount, tilt and lens, previewed live and saved with **Save fit** (leaving
+with an unsaved fit asks first). The viewer (`components/CarModelViewer.tsx`,
+`carStudio.ts`; three.js loads only when it opens) draws the model exactly as
+the replay fits it (`replay/car.ts`) on a plain floor in neutral studio light
+with a studio environment map. Drag orbits, the wheel or a pinch zooms,
+double-click resets; markers show the eye (cyan) and the Garmin camera
+(amber, with its field of view), and **Driver's eye** / **Garmin camera** look
+through them (the Garmin view through the replay's lens, framed 16:9 like its
+video) to check the fit; dragging there turns the head. Each vehicle card
+names its model. `/garage?vehicle=<MAKE MODEL>` opens the driver's car of
+that make and model.
 
 A `.glb` copied into the folder by hand is registered at startup and whenever
 the library is listed: checked the same way, named and credited from its
@@ -422,7 +444,10 @@ sudo chown 1000:1000 /volume1/docker/catalyst-coach/media/shared/car-models/*.gl
 
 Routes: `GET /api/car-models`; `POST /api/car-models/uploads`, then
 `PUT …/uploads/<id>?offset=` and `POST …/uploads/<id>/finish`;
-`GET /api/car-models/<id>.glb`; `PATCH` and `DELETE /api/car-models/<id>`.
+`GET /api/car-models/<id>.glb`; `PATCH` and `DELETE /api/car-models/<id>`;
+`POST /api/car-models/assign {vehicleKey, modelId | null}` (the Garage's
+choice; returns `{models}`, the whole library). Desktop: IPC `carModels:*`,
+`carModels:assign` for the choice.
 
 **Track models** (`src/garmin/trackModels.ts`) are 3D tracks, such as a
 converted Assetto Corsa track, that replace the generated road and terrain
@@ -498,7 +523,7 @@ Lap indices are the app's own (L3 is `lap=2`). Without a session it opens the
 latest session with laps; without a lap, the session's best; without a ghost,
 the best lap when you watch another (`ghost=none` turns it off). Session
 Review links each lap and the video panel's lap here ("Watch in 3D").
-three.js loads with this page only (lazy route).
+three.js loads with this page (lazy route) and the Garage's 3D viewer only.
 
 What you see: the car on the road with the speed-coloured racing line, an
 optional ghost (translucent cyan, its own line, and the live gap at the same
@@ -510,8 +535,21 @@ picture in picture at the 3D car's distance (`car.videoT`): while playing it
 runs at the replay's rate and closes small drift by running up to 25 % fast
 or slow, seeking only beyond 0.6 s; paused or scrubbed it seeks directly.
 Space plays and pauses, ← → step a second (⇧ five), C cycles the cameras:
-chase, the driver's seat, and the Garmin camera. Playback runs at 0.25–2×;
-the scrub bar marks each corner's apex.
+chase, the driver's seat, and the Garmin camera. Playback runs in real
+time; scrub to any point (the scrub bar marks each corner's apex). The view fills the window's height,
+with the transport (play, scrub bar, time, the Chase / Driver / Garmin
+switch and full screen) over its bottom edge like a video player's; it
+fades while the lap plays and the pointer rests, and comes back on any
+movement. On phones it sits just below the view instead. The full-screen
+button (or F) uses the browser's own full screen, on desktop and iPad;
+Escape or F leaves. Where a page element cannot go full screen (Safari on
+iPhone) the player fills the window instead.
+
+While the replay loads, a loading screen covers the view: a ring that fills
+as the session and lap, the track, the car and the GPU preparation finish,
+with what each step is doing (only the current step on phones). The view
+fades in once everything is placed and compiled (`engine.prepare()`), and a
+new lap on the same track and car does not bring the loader back.
 
 Drag the view to look around (mouse or one finger; the world follows the
 pointer). From the driver's seat and the Garmin camera the head turns up to
@@ -524,15 +562,13 @@ own offset when you switch. Drags start on the 3D view only (the HUD, the
 scrub bar and the video are not part of it), never select text, and on a
 phone the page still scrolls from outside the view.
 
-**Track: Public data | Assetto Corsa** appears when a track model matches
-the session's layout (see track models above): public data is the lidar,
-the aerial photo and the road along Garmin's line; the model is drawn in its
-place, with the lidar and photo as the far field around it. The car and
-ghost sit on the model's surface wheel by wheel (kerbs too), and the racing
-and ghost lines follow it. The choice is remembered in this browser; the
-model's files stay in memory while the app is open, so switching back is
-quick. If the model cannot be loaded the replay falls back to public data
-with a note.
+**The track:** when a track model matches the session's layout (see track
+models above) it is always used, with the lidar and aerial photo as the far
+field around it. The car and ghost sit on the model's surface wheel by wheel
+(kerbs too), and the racing and ghost lines follow it; its files stay in
+memory while the app is open. Public data (the lidar, the aerial photo and
+the road along Garmin's line) is only the fallback: for a layout without a
+model, or when the model cannot be loaded (with a note).
 
 The **Garmin camera** matches what the Catalyst's windscreen camera records,
 so the 3D view and the onboard video compare frame for frame: the camera sits
@@ -572,13 +608,14 @@ How the world is built (`src/renderer/replay/`, framework-free; the page is
   on a tall phone screen).
   Resolution adapts to hold 50–60 fps; the WebGL context is restored after
   a loss; everything is disposed when you leave.
-- `car.ts`: the model for the session's car is the newest one whose matches
-  include the vehicle key (or the one picked in the Car panel, remembered per
-  car in this browser), else a low-poly car at the real dimensions. A model
-  is centred, turned (yaw), scaled to its length and nudged (offset); the
-  Car panel edits the fit live and saves it, including the Garmin camera's
-  mount, tilt and lens (`dashcamM`, `dashcamPitchDeg`, `dashcamFovDeg`;
-  absent, the car's preset). Glass is drawn as plain tinted transparency
+- `car.ts`: the model for the session's car is the one chosen for its
+  vehicle key in the Garage (`carModelFor`: of several matching, the newest),
+  else a low-poly car at the real dimensions. A model is centred, turned
+  (yaw), scaled to its length and nudged (offset) by its fit, including the
+  Garmin camera's mount, tilt and lens (`dashcamM`, `dashcamPitchDeg`,
+  `dashcamFovDeg`; absent, the car's preset). The page's Car panel only names
+  the model, with **Change in Garage** (`/garage/<vehicle>`); choosing and
+  fitting happen there. Glass is drawn as plain tinted transparency
   (transmission would render the scene twice). The car reflects a neutral
   studio environment (three's RoomEnvironment), not the sky, so paint reads
   true: silver stays silver, gloss black black.

@@ -25,7 +25,7 @@ childProcess.fork = (file, args, options) => {
 const { startCatalystServer } = require('../dist-main/main/server.js')
 const { decodeGrid, TerrainService } = require('../dist-main/garmin/terrain.js')
 const { readFloatTiff } = require('../dist-main/garmin/geoTiff.js')
-const { CAR_PRESETS, MAX_CAR_MODEL_BYTES } = require('../dist-main/shared/replay.js')
+const { CAR_PRESETS, MAX_CAR_MODEL_BYTES, estimateUtcOffsetMin } = require('../dist-main/shared/replay.js')
 
 // Retries and the wait after a failed build, in milliseconds (×1, ×3, ×10; ×20).
 process.env.CATALYST_TERRAIN_RETRY_MS = '20'
@@ -46,6 +46,7 @@ function seedExtras(dbPath) {
     const { lapRows } = require(${JSON.stringify(path.join(__dirname, 'fixtures/compareFixture.cjs'))})
     withDb(async con => {
       const optimal = lapRows(0.9)
+      await con.run("UPDATE sessions SET weather_description = 'Light Rain', temperature_c = 13.9, humidity_pct = 93, wind_speed_mps = 4.1, wind_direction_deg = 220 WHERE session_guid = '${SCENE.sg}'")
       await con.run('INSERT INTO optimal_laps VALUES (?, ?, ?)', ['${SCENE.sg}', optimal.durationMs, optimal.rows.length])
       await con.run('INSERT INTO optimal_lap_samples (session_guid, distance_m, time_ms, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2, lateral_position) VALUES '
         + optimal.rows.map(r => \`('${SCENE.sg}', \${r.d}, \${r.t}, \${r.lat}, \${r.lon}, \${r.v}, \${r.ax}, \${r.ay}, 0.5)\`).join(','))
@@ -127,6 +128,18 @@ test('replay: a session’s scene and laps, with ghosts from other mean lines', 
   assert.deepEqual(ghosts.map(g => g.isBest), [true, true, false])
   assert.ok(ghosts.every((g, i) => i === 0 || g.durationMs >= ghosts[i - 1].durationMs))
   assert.equal(ghosts[0].label, 'Oct 31 09:00 · L2')
+
+  // The session's weather and time for the replay's light: 10:00 on the
+  // track's clock is 14:00 UTC (US daylight time at 79° W until November 1).
+  assert.deepEqual(scene.conditions, {
+    description: 'Light Rain', temperatureC: 13.9, humidityPct: 93, windMps: 4.1, windFromDeg: 220, surface: 'wet',
+    localStart: '2026-10-30 10:00:00', utcStart: '2026-10-30T14:00:00.000Z', utcOffsetMin: -240, utcOffsetEstimated: true,
+  })
+  assert.equal((await rpc('replay:scene', OTHER.sg)).conditions.surface, 'unknown', 'no weather recorded')
+  assert.equal(estimateUtcOffsetMin(37, -79, '2026-01-15 12:00:00'), -300, 'standard time in winter')
+  assert.equal(estimateUtcOffsetMin(37, -79, '2026-03-08 03:00:00'), -240, 'after the March switch')
+  assert.equal(estimateUtcOffsetMin(51.5, -0.1, '2026-07-01 12:00:00'), 60, 'British summer time')
+  assert.equal(estimateUtcOffsetMin(-33.9, 151.2, '2026-07-01 12:00:00'), 600, 'no daylight rules elsewhere')
 
   // One of the scene's laps, in time order, with its video's car data.
   const lap = await rpc('replay:lap', SCENE.sg, { sessionGuid: SCENE.sg, lap: 1 })
@@ -392,4 +405,63 @@ test('car models: a shared library of .glb files', { timeout: 120000 }, async t 
   assert.ok(!fs.existsSync(path.join(modelsDir, `${model.id}.glb`)))
   assert.equal((await call(`/api/car-models/${dropped.id}`, { method: 'DELETE' }, cookie)).status, 200)
   assert.deepEqual((await list()).map(m => m.name).sort(), ['Exige Track', 'My Exige'])
+})
+
+test('car models: the Garage gives each vehicle one model', { timeout: 120000 }, async t => {
+  const exige = glbFile({ title: '2006 Lotus Exige S', author: 'Someone', license: 'CC-BY-4.0' })
+  const repaint = glbFile({ title: '2006 Lotus Exige S #313', author: 'Someone', license: 'CC-BY-4.0' })
+  const corvette = glbFile({ title: '2020 Chevrolet Corvette C8', author: 'Someone', license: 'CC-BY-4.0' })
+  const { call, sendJson, cookie, modelsDir } = await serverFor(t, {
+    models: [['exige.glb', exige], ['exige_313.glb', repaint], ['corvette.glb', corvette]],
+  })
+  const list = async () => (await (await call('/api/car-models', {}, cookie)).json()).models
+  const matches = models => Object.fromEntries(models.map(m => [m.id, m.matches]))
+  const assign = (vehicleKey, modelId, who = cookie) => sendJson('POST', '/api/car-models/assign', { vehicleKey, modelId }, who)
+
+  // Copied in by hand: both Exige models match the Exige (the newest wins in the replay).
+  assert.deepEqual(matches(await list()), { corvette: ['CHEVROLET CORVETTE'], exige: ['LOTUS EXIGE'], exige_313: ['LOTUS EXIGE'] })
+
+  // Choosing one makes it the only model for that vehicle; other vehicles keep theirs.
+  let reply = await assign('LOTUS EXIGE', 'exige_313')
+  assert.equal(reply.status, 200)
+  let models = (await reply.json()).models
+  assert.deepEqual(models.map(m => m.name), ['2006 Lotus Exige S', '2006 Lotus Exige S #313', '2020 Chevrolet Corvette C8'], 'the whole library, by name')
+  assert.deepEqual(matches(models), { corvette: ['CHEVROLET CORVETTE'], exige: [], exige_313: ['LOTUS EXIGE'] })
+  assert.deepEqual(matches(await list()), matches(models))
+  const stored = JSON.parse(fs.readFileSync(path.join(modelsDir, 'models.json'), 'utf8'))
+  assert.deepEqual(Object.fromEntries(stored.models.map(m => [m.id, m.matches])), matches(models), 'saved')
+
+  // Any model of the library, keys normalised: the Corvette's keeps its own car too.
+  reply = await assign(' lotus  exige ', 'corvette')
+  assert.equal(reply.status, 200)
+  assert.deepEqual(matches((await reply.json()).models), { corvette: ['CHEVROLET CORVETTE', 'LOTUS EXIGE'], exige: [], exige_313: [] })
+  // Choosing it again changes nothing.
+  assert.deepEqual(matches((await (await assign('LOTUS EXIGE', 'corvette')).json()).models), { corvette: ['CHEVROLET CORVETTE', 'LOTUS EXIGE'], exige: [], exige_313: [] })
+
+  // None: the placeholder shape.
+  reply = await assign('LOTUS EXIGE', null)
+  assert.equal(reply.status, 200)
+  assert.deepEqual(matches((await reply.json()).models), { corvette: ['CHEVROLET CORVETTE'], exige: [], exige_313: [] })
+
+  // Shared: another driver's choice is everyone's.
+  const mitch = (await sendJson('POST', '/api/login', { username: 'Mitch' })).headers.get('set-cookie').split(';')[0]
+  assert.equal((await assign('LOTUS EXIGE', 'exige', mitch)).status, 200)
+  assert.deepEqual(matches(await list()), { corvette: ['CHEVROLET CORVETTE'], exige: ['LOTUS EXIGE'], exige_313: [] })
+
+  // Choices at the same moment never leave two models for one vehicle.
+  const replies = await Promise.all(['exige', 'exige_313', 'corvette', 'exige_313'].map(id => assign('LOTUS EXIGE', id)))
+  assert.deepEqual(replies.map(r => r.status), [200, 200, 200, 200])
+  const final = await list()
+  assert.equal(final.filter(m => m.matches.includes('LOTUS EXIGE')).length, 1)
+  assert.deepEqual(final.find(m => m.matches.includes('LOTUS EXIGE')).id, 'exige_313', 'the last one wins')
+
+  // Refused: signed out, an unknown model, a missing or bad vehicle key.
+  assert.equal((await sendJson('POST', '/api/car-models/assign', { vehicleKey: 'LOTUS EXIGE', modelId: 'exige' })).status, 401)
+  const missing = await assign('LOTUS EXIGE', 'missing')
+  assert.equal(missing.status, 404)
+  assert.match((await missing.json()).error, /no longer in the library/)
+  for (const bad of ['', '   ', null, 42, ['LOTUS EXIGE']]) assert.equal((await assign(bad, 'exige')).status, 400, JSON.stringify(bad))
+  assert.equal((await assign('LOTUS EXIGE', 7)).status, 400)
+  assert.equal(final.find(m => m.id === 'exige_313').matches.length, 1, 'nothing changed by refusals')
+  assert.deepEqual(matches(await list()), matches(final))
 })

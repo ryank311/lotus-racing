@@ -169,6 +169,7 @@ const bridge: CatalystBridge = {
     return model
   },
   updateCarModel: (id, patch) => ipcRenderer.invoke('carModels:update', id, patch),
+  assignCarModel: (vehicleKey, modelId) => ipcRenderer.invoke('carModels:assign', vehicleKey, modelId),
   deleteCarModel: async id => { await ipcRenderer.invoke('carModels:delete', id) },
   listTrackModels: () => ipcRenderer.invoke('trackModels:list'),
   getTrackModelFile: async (id, file) => ownBuffer(await ipcRenderer.invoke('trackModels:get', id, file)),

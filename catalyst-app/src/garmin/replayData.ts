@@ -9,10 +9,11 @@ import { buildTrackGeometry } from './trackGeometry.js'
 import { fetchOptimalLapTimes, fetchValidLaps, lapLabel, shortSessionLabel, validLapPredicate } from './lapData.js'
 import { mapPosition, mapToOwnLine, ownLine, readMeanLineTrace, type DistanceMap } from './meanLineAlign.js'
 import { carDataForLaps } from './videoStore.js'
+import { inferSurface } from './reviewMetrics.js'
 import { sameCourse } from '../shared/trackLayout.js'
 import { DEFAULT_UNIT_SYSTEM, type UnitSystem } from '../shared/units.js'
 import type { CarTrace } from '../shared/pdr.js'
-import { vehicleKey, type GeoBox, type ReplayCorner, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../shared/replay.js'
+import { estimateUtcOffsetMin, vehicleKey, type GeoBox, type ReplayConditions, type ReplayCorner, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../shared/replay.js'
 
 const MAX_GHOSTS = 40
 // Terrain reaches this far past the track on every side.
@@ -101,6 +102,45 @@ async function videoLaps(con: DuckDBConnection, sessionGuids: string[]): Promise
     if (Array.isArray(laps)) for (const lap of laps) out.add(`${row.session_guid}:${lap}`)
   }
   return out
+}
+
+// ─── Conditions ─────────────────────────────────────────────────────────────
+
+const SURFACES = new Set(['dry', 'damp', 'wet', 'mixed', 'unknown'])
+
+/**
+ * The session's weather and time for the replay's light: Garmin's weather,
+ * the surface (the driver's correction in Session Review first), and the
+ * start in UTC. Session starts are stored as the track's wall-clock time
+ * (loadToDb localSessionStart), so the offset is estimated from the place.
+ */
+async function sessionConditions(con: DuckDBConnection, meta: SessionMeta, at: { lat: number; lon: number }): Promise<ReplayConditions> {
+  let corrected: string | null = null
+  if (await hasTable(con, 'review_conditions')) {
+    const row = (await rows(con, 'SELECT surface FROM review_conditions WHERE session_guid = ?', [meta.session_guid]))[0]
+    if (row?.surface != null && SURFACES.has(String(row.surface))) corrected = String(row.surface)
+  }
+  const description = meta.weather_description?.trim() || null
+  const localStart = meta.start ? meta.start.replace('T', ' ').slice(0, 19) : null
+  const offset = localStart ? estimateUtcOffsetMin(at.lat, at.lon, localStart) : null
+  let utcStart: string | null = null
+  if (localStart && offset != null) {
+    const wall = Date.parse(`${localStart.replace(' ', 'T')}Z`)
+    if (Number.isFinite(wall)) utcStart = new Date(wall - offset * 60000).toISOString()
+  }
+  const value = (v: unknown) => { const n = num(v); return n == null ? null : round(n, 2) }
+  return {
+    description,
+    temperatureC: value(meta.temperature_c),
+    humidityPct: value(meta.humidity_pct),
+    windMps: value(meta.wind_speed_mps),
+    windFromDeg: value(meta.wind_direction_deg),
+    surface: (corrected ?? inferSurface(description)) as ReplayConditions['surface'],
+    localStart,
+    utcStart,
+    utcOffsetMin: offset,
+    utcOffsetEstimated: offset != null,
+  }
 }
 
 // ─── Scene ──────────────────────────────────────────────────────────────────
@@ -197,6 +237,7 @@ export async function replayScene(con: DuckDBConnection, sessionGuid: string, un
     units,
     laps,
     ghostCandidates,
+    conditions: await sessionConditions(con, meta, { lat: (own.south + own.north) / 2, lon: (own.west + own.east) / 2 }),
   }
 }
 

@@ -353,6 +353,9 @@ const remoteBridge: CatalystBridge = {
   updateCarModel: async (id, patch) => (await requestJson(`/api/car-models/${encodeURIComponent(id)}`, {
     method: 'PATCH', body: JSON.stringify(patch),
   })).model,
+  assignCarModel: async (vehicleKey, modelId) => (await requestJson('/api/car-models/assign', {
+    method: 'POST', body: JSON.stringify({ vehicleKey, modelId }),
+  })).models ?? [],
   deleteCarModel: async id => { await requestJson(`/api/car-models/${encodeURIComponent(id)}`, { method: 'DELETE' }) },
   listTrackModels: () => remoteTrackModels(),
   getTrackModelFile: (id, file) => remoteTrackModelFile(id, file),

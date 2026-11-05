@@ -73,6 +73,7 @@ function registerReplayIpc(): void {
     })
   })
   ipcMain.handle('carModels:update', (_e, id: string, patch: unknown) => carModels.update(id, patch))
+  ipcMain.handle('carModels:assign', (_e, vehicleKey: unknown, modelId: unknown) => carModels.assign(vehicleKey, modelId ?? null))
   ipcMain.handle('carModels:delete', async (_e, id: string) => { await carModels.remove(id) })
 
   // Track models: folders copied into <data>/track-models by hand.

@@ -5,6 +5,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { CarModelFit, CarPreset } from '../../shared/replay'
+import { rigFrame } from './wheels'
 
 export async function parseGlb(buffer: ArrayBuffer): Promise<THREE.Group> {
   const gltf = await new GLTFLoader().parseAsync(buffer, '')
@@ -112,8 +113,43 @@ export function buildPlaceholder(preset: CarPreset, paint: THREE.ColorRepresenta
     group.add(mesh)
     return mesh
   }
-  profile([[-0.49, 0.2], [0.46, 0.15], [0.49, 0.27], [0.44, 0.4], [0.17, 0.52], [-0.3, 0.58], [-0.49, 0.56]], W, body)
+  const radius = 0.27 * H, track = W - 0.24, tyreWidth = 0.23
+  const axles = [WB / 2 + 0.06, -WB / 2 + 0.06]
+  // The body's outline with an arch over each axle: a circle a little
+  // bigger than the tyre, kept under the bonnet and the deck.
+  const top: Array<[number, number]> = [[0.49, 0.27], [0.44, 0.4], [0.17, 0.52], [-0.3, 0.58], [-0.49, 0.56]]
+  const bottomAt = (z: number) => (0.2 + (0.15 - 0.2) * (z / L + 0.49) / 0.95) * H
+  const topAt = (z: number) => {
+    for (let i = 1; i < top.length; i++) {
+      const [z0, y0] = top[i - 1], [z1, y1] = top[i]
+      if (z / L <= z0 && z / L >= z1) return (y0 + (y1 - y0) * (z / L - z0) / (z1 - z0)) * H
+    }
+    return 0.4 * H
+  }
+  // (The extrusion's bevel grows the outline, so the arch is cut that much wider.)
+  const archRadius = radius + 0.04 + bevel
+  const arch = (z: number): Array<[number, number]> => {
+    const from = Math.asin(Math.max(-1, Math.min(1, (bottomAt(z) - radius) / archRadius)))
+    return Array.from({ length: 15 }, (_, i) => {
+      const a = Math.PI - from - (Math.PI - 2 * from) * i / 14, at = z + archRadius * Math.cos(a)
+      return [at / L, Math.min(radius + archRadius * Math.sin(a), topAt(at) - 0.07) / H] as [number, number]
+    })
+  }
+  profile([[-0.49, 0.2], ...arch(axles[1]), ...arch(axles[0]), [0.46, 0.15], ...top], W, body)
   profile([[0.17, 0.5], [-0.3, 0.56], [-0.26, 0.98], [-0.04, 0.98]], W * 0.76, glass)
+  for (const z of axles) {
+    // Dark wheel wells between the arches, so they do not show through.
+    const before = z - archRadius, after = z + archRadius
+    const low = bottomAt(z), high = Math.min(radius + archRadius, topAt(before), topAt(z), topAt(after)) - 0.06
+    const well = new THREE.Mesh(new THREE.BoxGeometry(track - tyreWidth - 0.06, high - low, 2 * archRadius), dark)
+    well.position.set(0, (low + high) / 2, z)
+    group.add(well)
+    // A wing over a tyre that stands taller than the bonnet.
+    const base = Math.min(topAt(before), topAt(z), topAt(after)) - 0.06, peak = 2 * radius + 0.04
+    if (peak < base + 0.08) continue
+    const hump = Array.from({ length: 11 }, (_, i) => [(z - 0.85 * archRadius * Math.cos(Math.PI * i / 10)) / L, (base + (peak - base) * Math.sin(Math.PI * i / 10)) / H] as [number, number])
+    for (const side of [-1, 1]) profile(hump, tyreWidth + 0.08, body).position.x = side * track / 2
+  }
   // A rear wing on posts.
   const wing = new THREE.Mesh(new THREE.BoxGeometry(W * 0.86, 0.03, 0.26), dark)
   wing.position.set(0, 0.8 * H, -0.45 * L)
@@ -123,19 +159,27 @@ export function buildPlaceholder(preset: CarPreset, paint: THREE.ColorRepresenta
     post.position.set(side * W * 0.25, 0.7 * H, -0.45 * L)
     group.add(post)
   }
-  // Wheels.
-  const radius = 0.27 * H, track = W - 0.24
-  const tyre = new THREE.CylinderGeometry(radius, radius, 0.23, 20)
+  // Wheels on the rig (wheels.ts), the body on its springs: a tyre and a
+  // five-hole rim on the outer face, so the roll shows.
+  const tyre = new THREE.CylinderGeometry(radius, radius, tyreWidth, 24)
   tyre.rotateZ(Math.PI / 2)
-  const hub = new THREE.CylinderGeometry(radius * 0.62, radius * 0.62, 0.235, 12)
-  hub.rotateZ(Math.PI / 2)
-  for (const axle of [WB / 2 + 0.06, -WB / 2 + 0.06]) for (const side of [-1, 1]) {
-    const wheel = new THREE.Mesh(tyre, dark)
-    wheel.position.set(side * track / 2, radius, axle)
-    const disc = new THREE.Mesh(hub, rim)
-    disc.position.copy(wheel.position)
-    group.add(wheel, disc)
+  const rimShape = new THREE.Shape().absarc(0, 0, radius * 0.66, 0, Math.PI * 2, false)
+  for (let i = 0; i < 5; i++) {
+    const a = i * Math.PI * 2 / 5
+    rimShape.holes.push(new THREE.Path().absarc(Math.cos(a) * radius * 0.38, Math.sin(a) * radius * 0.38, radius * 0.15, 0, Math.PI * 2, true))
   }
+  const rimDepth = 0.015
+  const rimDisc = new THREE.ExtrudeGeometry(rimShape, { depth: rimDepth, bevelEnabled: false, curveSegments: 12 })
+  // Its face in the car's y–z plane, its thickness along +x.
+  rimDisc.rotateY(Math.PI / 2)
+  const corners = [[0, 1], [0, -1], [1, 1], [1, -1]] as const
+  const wheels = rigFrame(group, corners.map(([axle, side]) => ({ centre: new THREE.Vector3(side * track / 2, radius, axles[axle]), radius })))
+  wheels.forEach(({ spin }, i) => {
+    const side = corners[i][1]
+    const face = new THREE.Mesh(rimDisc, rim)
+    face.position.x = side > 0 ? tyreWidth / 2 + 0.002 : -tyreWidth / 2 - 0.002 - rimDepth
+    spin.add(new THREE.Mesh(tyre, dark), face)
+  })
   group.traverse(o => { if ((o as THREE.Mesh).isMesh && ghost) (o as THREE.Mesh).renderOrder = 3 })
   return group
 }

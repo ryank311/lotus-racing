@@ -6,6 +6,8 @@
 
 import * as THREE from 'three'
 
+const OVERSIZE = 1.15
+
 export interface LensSettings {
   /** Output field of view across the frame, degrees. */
   horizontalFovDeg: number
@@ -93,8 +95,9 @@ export class LensPass {
 
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2())
-    // A little over the screen's resolution: the lens magnifies the middle.
-    const w = Math.round(size.x * 1.25), h = Math.round(size.y * 1.25)
+    // A little over the screen's resolution: the lens magnifies the middle
+    // (by about 1.6 at 120°, so 1.15 × leaves it 1.4: soft, as the camera is).
+    const w = Math.round(size.x * OVERSIZE), h = Math.round(size.y * OVERSIZE)
     if (this.target.width !== w || this.target.height !== h) this.target.setSize(w, h)
     renderer.setRenderTarget(this.target)
     renderer.render(scene, this.inner)
