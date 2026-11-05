@@ -2,8 +2,8 @@ import type { CoachingSession } from '../shared/types'
 import { coachingLapFilter } from '../shared/coachingScope'
 import { compareParams, isCompareParam } from '../shared/comparison'
 
-export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'import' | 'account' | 'logs' | 'sign-in' | 'not-found'
-export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', coach: '/coach', garage: '/garage', tracks: '/tracks', import: '/import', account: '/account', logs: '/logs' } as const
+export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'replay' | 'coach' | 'garage' | 'tracks' | 'import' | 'account' | 'logs' | 'sign-in' | 'not-found'
+export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', replay: '/replay', coach: '/coach', garage: '/garage', tracks: '/tracks', import: '/import', account: '/account', logs: '/logs' } as const
 export const MAX_ROUTE_LENGTH = 16000
 export const segment = (value: string) => encodeURIComponent(value)
 export function matchRoute(pathname: string): { page: Page; id?: string; fileId?: string } {
@@ -15,7 +15,7 @@ export function matchRoute(pathname: string): { page: Page; id?: string; fileId?
     if (parts[0] === 'sign-in' && parts.length === 1) return { page: 'sign-in' }
     if (!page) return { page: 'not-found' }
     if (parts.length === 1) return { page }
-    if (['coach', 'garage', 'tracks', 'review'].includes(page) && parts.length === 2) return { page, id: parts[1] }
+    if (['coach', 'garage', 'tracks', 'review', 'replay'].includes(page) && parts.length === 2) return { page, id: parts[1] }
     if (page === 'garage' && parts.length === 4 && parts[2] === 'files') return { page, id: parts[1], fileId: parts[3] }
     return { page: 'not-found' }
   } catch { return { page: 'not-found' } }
@@ -55,6 +55,13 @@ const enums: Record<string, [string[], string]> = {
   dir: [['asc', 'desc'], 'desc'], laps: [['top10', 'top5', 'top3', 'session-best', 'top3-session'], 'top10'],
   view: [['charts', 'map'], 'charts'], follow: [['0', '1'], '1'],
 }
+// Pages that give a shared param name other values.
+const pageEnums: Partial<Record<Page, Record<string, [string[], string]>>> = {
+  replay: { view: [['chase', 'driver', 'garmin'], 'chase'] },
+}
+// A lap index or Garmin's optimal lap; a ghost is <session guid>:<lap>, or none.
+const REPLAY_LAP = /^(\d{1,4}|optimal)$/
+const REPLAY_GHOST = /^(none|[A-Za-z0-9_-]{1,128}:(\d{1,4}|optimal))$/
 export function normalizeRoute(pathname: string, search: string): { url: string; error?: string } {
   const route = matchRoute(pathname)
   const path = pathname === '/' ? '/overview' : pathname.replace(/\/$/, '')
@@ -62,7 +69,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
   const allowed: Partial<Record<Page, string[]>> = {
     progress: ['anchor', 'surface', 'temp'],
     sessions: ['q', 'vehicle', 'track', 'sort', 'dir', 'selected'], analysis: ['session', 'laps', 'view', 'report', 'focus', 'compare'],
-    coach: ['session'], tracks: ['track', 'turn'], logs: ['q', 'level', 'follow'], 'sign-in': ['returnTo'],
+    coach: ['session'], tracks: ['track', 'turn'], replay: ['lap', 'ghost', 'view'], logs: ['q', 'level', 'follow'], 'sign-in': ['returnTo'],
   }
   const input = new URLSearchParams(search), output = new URLSearchParams()
   let error: string | undefined
@@ -79,9 +86,12 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
       if (key === 'compare' && !isCompareParam(value)) { error = 'Invalid driver comparison.'; continue }
       if (key === 'temp' && (!Number.isFinite(Number(value)) || Number(value) < -60 || Number(value) > 70)) { error = 'Invalid temperature.'; continue }
       if (key === 'anchor' && !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) { error = 'Invalid session identifier.'; continue }
-      if (enums[key]) {
-        if (!enums[key][0].includes(value)) { error = `Invalid ${key} value.`; continue }
-        if (value === enums[key][1]) continue
+      if (key === 'lap' && !REPLAY_LAP.test(value)) { error = 'Invalid lap.'; continue }
+      if (key === 'ghost' && !REPLAY_GHOST.test(value)) { error = 'Invalid ghost lap.'; continue }
+      const choices = pageEnums[route.page]?.[key] ?? enums[key]
+      if (choices) {
+        if (!choices[0].includes(value)) { error = `Invalid ${key} value.`; continue }
+        if (value === choices[1]) continue
       }
       if (key === 'level' && !['log', 'info', 'warn', 'error', 'none'].includes(value)) { error = 'Invalid log level.'; continue }
       // Sessions filters by layout key; the Tracks page uses circuit names, which contain spaces.

@@ -3,7 +3,7 @@ import { ServerUserSwitcher } from './ServerGate'
 import { NavLink, useOverlay } from '../navigation'
 import { paths } from '../routes'
 
-export type NavKey = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'coach' | 'garage' | 'tracks' | 'import' | 'logs' | 'account'
+export type NavKey = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'replay' | 'coach' | 'garage' | 'tracks' | 'import' | 'logs' | 'account'
 
 interface NavSpec {
   key: NavKey
@@ -50,6 +50,13 @@ const TracksIcon = () => (
   </svg>
 )
 
+const ReplayIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
+    <path d="M12 3L20 7.5V16.5L12 21L4 16.5V7.5L12 3Z" />
+    <path d="M4 7.5L12 12L20 7.5" /><path d="M12 12V21" />
+  </svg>
+)
+
 const ImportIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="nav-icon">
     <path d="M12 4V15" /><path d="M7 10L12 15L17 10" />
@@ -57,13 +64,14 @@ const ImportIcon = () => (
   </svg>
 )
 
-// ⌘1–⌘9 follow this order.
+// ⌘1–⌘9 and then ⌘0 follow this order.
 const NAV: NavSpec[] = [
   { key: 'home',     label: 'Overview',       icon: <HomeIcon /> },
   { key: 'sessions', label: 'Sessions',       icon: <SessionsIcon /> },
   { key: 'review',   label: 'Session Review', icon: <SessionsIcon /> },
   { key: 'progress', label: 'Progress',       icon: <AnalysisIcon /> },
   { key: 'analysis', label: 'Analysis',       icon: <AnalysisIcon /> },
+  { key: 'replay',   label: '3D Replay',      icon: <ReplayIcon /> },
   { key: 'coach',    label: 'AI Coach',       icon: <CoachIcon /> },
   { key: 'garage',   label: 'Garage',         icon: <GarageIcon /> },
   { key: 'tracks',   label: 'Tracks',         icon: <TracksIcon /> },
@@ -157,9 +165,9 @@ export function Sidebar({ active, onChange, connected, authUnknown = false, auth
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+      if ((e.metaKey || e.ctrlKey) && /^[0-9]$/.test(e.key)) {
         e.preventDefault()
-        const destination = NAV[Number(e.key) - 1]
+        const destination = NAV[(Number(e.key) + 9) % 10]
         if (destination) onChange(destination.key)
       }
     }
@@ -214,7 +222,7 @@ export function Sidebar({ active, onChange, connected, authUnknown = false, auth
                 {selectionCount}
               </span>
             )}
-            <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{index + 1}</span>
+            <span className="nav-key" style={n.key === 'analysis' && selectionCount > 0 ? { marginLeft: 0 } : {}}>⌘{(index + 1) % 10}</span>
           </NavLink>
         ))}
       </nav>

@@ -322,6 +322,276 @@ server: through the Cloudflare domain, files travel over your internet
 upload; through the Tailscale HTTPS URL on the same network, they usually go
 directly over the LAN.
 
+## 3D replay: track, terrain and car models
+
+The Replay page drives a lap over real ground. Its data comes from three
+places; all of it is built on the server and shared where it can be.
+
+**The scene and the laps** come from the driver's own workspace (RPC
+`replay:scene` and `replay:lap`, `src/garmin/replayData.ts`). The track is the
+session's Garmin mean line (one point a metre), its width, the course's
+corners from the shared track library, Garmin's primary sectors, and the area
+to load terrain for: every mean line of that facility in the workspace (so
+Full, Grand West and North share one terrain) plus 400 m. Ghost candidates
+are the driver's 40 fastest valid laps from other sessions on the same
+course, matched by Garmin's course ID. A lap comes back in time order with
+GPS, speed, accelerations, GNSS altitude and heading; a lap measured along
+another mean line (another device's, or one Garmin rebuilt) is moved onto
+the scene's line (`meanLineAlign.ts`), and a lap a synced video covers carries
+the same car data as Session Review. GNSS altitude is height above the WGS84
+ellipsoid: at VIR it sits about 30 m below the terrain's heights, so place the
+car on the terrain (`sampleTerrain`) and use altitude only for its shape.
+
+**Terrain** (`src/garmin/terrain.ts`) is downloaded once per area from two
+public-domain USGS services and kept for every driver:
+
+- Elevation: [USGS 3D Elevation Program](https://www.usgs.gov/3d-elevation-program)
+  bare-earth lidar, `3DEPElevation/ImageServer` (`exportImage`, float32
+  GeoTIFF in WGS84).
+- Imagery: [USDA NAIP](https://naip-usdaonline.hub.arcgis.com/) aerial photos
+  via The National Map, `USGSNAIPPlus/ImageServer` (JPEG).
+- Both are public domain; each build records their credit in
+  `TerrainInfo.attribution` (“Elevation: USGS 3D Elevation Program (3DEP).
+  Imagery: USDA NAIP via USGS The National Map. Public domain.”). The replay
+  page does not show it.
+
+An area is rounded outward to a 0.005° grid (at most 0.1° a side); the box is
+the key (`t1_p36.545_m79.220_p36.575_m79.195`: south, west, north, east) and
+exactly the area every product covers. Heights are fetched at about 1 m in
+tiles of at most 1,500 px (USGS's gateway gives up on larger exports after
+90 s), two at a time with retries, read by a small pure-JavaScript TIFF reader
+(uncompressed float32 strips or tiles only), and resampled through each
+tile's own GeoTIFF placement. The build keeps three products:
+
+- `fine.f32`: heights at about 1 m, for `sampleTerrain` (the track surface);
+- `grid.f32` / `grid.ctg.gz`: the renderer's mesh, at most 1,400 vertices on
+  the long side; browsers get 16-bit steps between the lowest and highest
+  point (a few millimetres), gzipped;
+- `image.jpg`: the photo, at most 4,096 px on the long side (a phone's WebGL
+  texture limit; NAIP serves up to 4,000), in one request so it never needs
+  stitching. It is requested in exactly the area's proportions so the service
+  keeps the box.
+
+Both height grids are vertex grids: the first and last rows and columns lie
+on the area's edges, so a mesh stretched edge to edge over the area puts each
+height where it was measured. The photo's outer pixel edges are the area's
+edges, the way a texture spans 0…1. VIR (Full Course area, 0.025° × 0.030°)
+took 135 s to build from USGS: 2,786 × 3,343 heights in 6 tiles (39 MB
+downloaded), a 937 × 1,400 mesh and a 3,330 × 3,996 photo (2.8 MB). Its heights
+run 103–158 m.
+
+Builds run one at a time and once per key; files land in a temporary folder
+renamed into place. Downloaded tiles are kept until the build succeeds, so a
+retry fetches only what failed. A failure is reported (with USGS's answer)
+for a minute, then the next request tries again. Override the services with
+`CATALYST_USGS_ELEVATION_URL` and `CATALYST_USGS_IMAGERY_URL` (each the
+`…/ImageServer` URL; the tests point them at a local fake).
+
+Server routes (signed in; Cloudflare cuts requests at about 100 s, so a build
+never holds one open):
+
+- `POST /api/terrain {area}`: 200 `{terrain}` when built, 202 while building
+  (poll again), 502 with the error after a failed build;
+- `GET /api/terrain/<key>/grid` and `/image.jpg`: cached for a year
+  (`immutable`; the key changes with the build version);
+- `POST /api/terrain/<key>/sample`: little-endian float64 `[lat, lon, …]` in,
+  float32 heights out (NaN outside the area), at most 250,000 points a request.
+
+**Car models** (`src/garmin/carModels.ts`) are `.glb` files (glTF 2 binary,
+at most 300 MB) that drivers add in Garage → 3D models, shared by every
+driver. Each has a name, a credit line, the vehicles that use it
+(`LOTUS EXIGE`, from Garmin's make and model) and its fit in the car (set in
+the replay; a new model starts from its vehicle's preset). Sketchfab writes the
+title, author, licence and source into the file's `asset.extras`; an empty name
+or credit is filled from them (“2006 Lotus Exige S” by Ddiaz Design
+(CC-BY-NC-SA-4.0) · https://sketchfab.com/…). Uploads use the same 32 MB
+chunks as videos; the server checks the glTF header and JSON chunk.
+
+A `.glb` copied into the folder by hand is registered at startup and whenever
+the library is listed: checked the same way, named and credited from its
+`asset.extras`, matched to the vehicles whose model word its title names
+(“Exige”, “Corvette”), and left where it is. On the Synology install that
+folder is `/media/shared/car-models` in the container, which is
+`/volume1/docker/catalyst-coach/media/shared/car-models` on the NAS (the
+server creates it; the container runs as uid 1000):
+
+```bash
+sudo cp 2006_lotus_exige_s.glb /volume1/docker/catalyst-coach/media/shared/car-models/
+sudo chown 1000:1000 /volume1/docker/catalyst-coach/media/shared/car-models/*.glb
+```
+
+Routes: `GET /api/car-models`; `POST /api/car-models/uploads`, then
+`PUT …/uploads/<id>?offset=` and `POST …/uploads/<id>/finish`;
+`GET /api/car-models/<id>.glb`; `PATCH` and `DELETE /api/car-models/<id>`.
+
+**Track models** (`src/garmin/trackModels.ts`) are 3D tracks, such as a
+converted Assetto Corsa track, that replace the generated road and terrain
+when a session's facility and layout match. Each is a folder copied in by
+hand (there is no upload) under `shared/track-models/<id>/`, holding its
+`.glb` files and a `track.json`:
+
+```json
+{
+  "name": "VIR (Assetto Corsa)",
+  "trackName": "Virginia International Raceway",
+  "attribution": "…credits, kept for the record (not shown in the replay)…",
+  "layouts": {
+    "Full Course": { "files": ["vir-base.glb", "vir-full.glb"] },
+    "North Course": { "files": ["vir-base.glb", "vir-trackday.glb", "vir-north.glb"] }
+  },
+  "georef": { "originLat": 36.56196, "originLon": -79.20697, "rotationDeg": -1.099342,
+              "scale": 1.002667, "offsetM": [-60.819, -3.546, 161.681], "flips": { "x": false, "z": false } },
+  "footprint": { "file": "footprint.png", "x0": -820, "z0": -1204, "cellM": 4, "width": 420, "height": 605 },
+  "drivablePattern": null
+}
+```
+
+`trackName` and the layout keys match Garmin's facility and configuration
+names (case and punctuation aside). The georef places glTF coordinates on
+the earth: `world = offsetM + rotY(rotationDeg) · (scale · glb)` in the
+equirectangular frame around the origin (x east, y metres above sea level,
+z south), the same projection as the replay's own frame. glTF nodes whose
+`extras` say `drivable: true` (roads, kerbs, pits) or `ground: true` (grass,
+earth) are the surface the cars sit on; `drivablePattern` (a regular
+expression on node names) can add more. The footprint is a PNG mask (255 =
+the model has ground) in glTF x/z; the public lidar terrain and photo are
+drawn around the model as far field and sunk under it inside the mask.
+
+A folder is registered at startup and whenever the library is listed, once
+its `track.json` parses and every file it names is present (`.glb` files are
+checked to be glTF 2 binaries); a broken folder is logged once and retried
+when it changes. The folder is only read. On the NAS:
+
+```bash
+sudo cp -r vir /volume1/docker/catalyst-coach/media/shared/track-models/
+sudo chown -R 1000:1000 /volume1/docker/catalyst-coach/media/shared/track-models/vir
+```
+
+Routes: `GET /api/track-models` (each model with its files' versions) and
+`GET /api/track-models/<id>/<file>`, only for files `track.json` names.
+`.glb` files are served gzipped when the browser accepts it, from a copy made
+on first use (registration starts it) in `track-models/.cache/<id>/`; with
+`?v=<version>` the response is cached for a year (`immutable`), without it
+the browser revalidates (`ETag`). Desktop: `<data dir>/track-models/`, over IPC.
+Draco, meshopt and KTX2 compression are not supported (the renderer's CSP
+blocks their WebAssembly decoders); `KHR_mesh_quantization` and WebP
+textures are.
+
+Models are third-party work under their own licences: never commit them, and
+keep their credit lines. Terrain and models live with the media, not in the
+database:
+
+| | Server | Desktop (IPC) |
+|---|---|---|
+| Terrain | `<media dir or data dir>/shared/terrain/<key>/` | `<data dir>/terrain/<key>/` |
+| Car models | `<media dir or data dir>/shared/car-models/` (`*.glb`, `models.json`) | `<data dir>/car-models/` |
+| Track models | `<media dir or data dir>/shared/track-models/<id>/` (`*.glb`, `track.json`) | `<data dir>/track-models/<id>/` |
+
+Both can be deleted at any time: terrain is downloaded again on the next
+replay, and models must be added again.
+
+## 3D replay: the page
+
+**3D Replay** (sidebar, ⌘6) drives one lap on the track in three.js:
+`/replay/<session>?lap=<index|optimal>&ghost=<session>:<lap|optimal>|none&view=chase|driver|garmin`.
+Lap indices are the app's own (L3 is `lap=2`). Without a session it opens the
+latest session with laps; without a lap, the session's best; without a ghost,
+the best lap when you watch another (`ghost=none` turns it off). Session
+Review links each lap and the video panel's lap here ("Watch in 3D").
+three.js loads with this page only (lazy route).
+
+What you see: the car on the road with the speed-coloured racing line, an
+optional ghost (translucent cyan, its own line, and the live gap at the same
+distance: red when behind), the lap timer, speed, a g-meter oriented like
+Analysis's G-G chart (the force the driver feels: braking up, a right-hander
+to the left; with a 1.5 s trail), and with a
+PDR video gear, RPM, throttle, brake and steering. The onboard video plays
+picture in picture at the 3D car's distance (`car.videoT`): while playing it
+runs at the replay's rate and closes small drift by running up to 25 % fast
+or slow, seeking only beyond 0.6 s; paused or scrubbed it seeks directly.
+Space plays and pauses, ← → step a second (⇧ five), C cycles the cameras:
+chase, the driver's seat, and the Garmin camera. Playback runs at 0.25–2×;
+the scrub bar marks each corner's apex.
+
+Drag the view to look around (mouse or one finger; the world follows the
+pointer). From the driver's seat and the Garmin camera the head turns up to
+±160° and tilts ±70°, relative to the car, so it stays turned through
+corners. Chasing, the camera orbits the car (any direction, 5–80° above it)
+and the wheel or a two-finger pinch sets its distance (3–40 m). A press
+that moves under 5 px is a click, not a drag. Double-click (double-tap)
+or **Reset view** goes back to the default camera; each camera keeps its
+own offset when you switch. Drags start on the 3D view only (the HUD, the
+scrub bar and the video are not part of it), never select text, and on a
+phone the page still scrolls from outside the view.
+
+**Track: Public data | Assetto Corsa** appears when a track model matches
+the session's layout (see track models above): public data is the lidar,
+the aerial photo and the road along Garmin's line; the model is drawn in its
+place, with the lidar and photo as the far field around it. The car and
+ghost sit on the model's surface wheel by wheel (kerbs too), and the racing
+and ghost lines follow it. The choice is remembered in this browser; the
+model's files stay in memory while the app is open, so switching back is
+quick. If the model cannot be loaded the replay falls back to public data
+with a note.
+
+The **Garmin camera** matches what the Catalyst's windscreen camera records,
+so the 3D view and the onboard video compare frame for frame: the camera sits
+at the top centre of the screen (per car), tilted slightly up, and the scene
+is drawn through a 120° lens with barrel distortion (`replay/lens.ts`: drawn
+wider into a texture, then remapped between rectilinear and fisheye), framed
+16:9 like the video. The Exige's mount was tuned against a Catalyst frame on
+VIR's front straight (horizon 58% down, the clam's humps 21% from the bottom).
+
+How the world is built (`src/renderer/replay/`, framework-free; the page is
+`pages/Replay.tsx`):
+
+- `geo.ts`: local metres around the track (x east, y up, z south). The height
+  grid is a vertex grid over the terrain box; the photo's UVs are linear in
+  lat/lon.
+- `road.ts`, `edges.ts`, `roadMesh.ts`: stations every metre along the mean
+  line. Garmin's mean line is the average driven line, not the middle of the
+  tarmac, so each station's edges are found in the aerial photo: along the
+  normal, the run of grey tarmac (as grey as the tarmac under the line, not
+  much darker; dry grass is nearly as light but never as grey), smoothed
+  over ±12 m, with ±width/2 where the photo is unclear. At VIR the tarmac is
+  found on about half the lap; its centre sits a median 0.4 m from Garmin's
+  line and up to 3 m. Heights across the road come from `sampleTerrain`
+  (the 1 m lidar), a running median (drops spikes such as a bridge deck)
+  and smoothing. Edge lines, kerbs on the inside of each corner's apex and
+  a chequered start/finish line sit on top.
+- `terrain.ts`: the 1,400 px grid as one vertex buffer drawn in culled tiles,
+  the photo draped on it, pressed just under the road and its verges and
+  eased back to the lidar over a few metres, a skirt down to a wide ground
+  plane, sky and fog. `trees.ts` scatters low-poly trees where the photo is
+  forest, at least 15 m off the tarmac.
+- `lapPath.ts`, `engine.ts`: the lap by lap time, positions lightly smoothed,
+  heading from the path over ±3 m. The car's height, pitch and roll come from
+  the road surface under its four wheels. The chase camera follows the car's
+  position exactly and eases only its heading and height; the driver's camera
+  sits at the model's eye point looking 4° down at the road (FOV 70°, wider
+  on a tall phone screen).
+  Resolution adapts to hold 50–60 fps; the WebGL context is restored after
+  a loss; everything is disposed when you leave.
+- `car.ts`: the model for the session's car is the newest one whose matches
+  include the vehicle key (or the one picked in the Car panel, remembered per
+  car in this browser), else a low-poly car at the real dimensions. A model
+  is centred, turned (yaw), scaled to its length and nudged (offset); the
+  Car panel edits the fit live and saves it, including the Garmin camera's
+  mount, tilt and lens (`dashcamM`, `dashcamPitchDeg`, `dashcamFovDeg`;
+  absent, the car's preset). Glass is drawn as plain tinted transparency
+  (transmission would render the scene twice). The car reflects a neutral
+  studio environment (three's RoomEnvironment), not the sky, so paint reads
+  true: silver stays silver, gloss black black.
+
+Without terrain (offline, or USGS failed) the road follows the lap's GPS
+altitude over flat ground, with a note. The first visit to a circuit waits
+for the server's terrain build ("Building VIR terrain from USGS elevation
+data…", about 2 minutes); later visits load in a second or two.
+
+Debugging: in `vite` dev, or after `localStorage['catalyst:replay-debug'] = '1'`,
+the timer shows the frame rate, O toggles an orbit camera, and
+`window.replay` is the engine.
+
 ## CLI scripts (run individually without the GUI)
 
 ```bash

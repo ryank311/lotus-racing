@@ -10,6 +10,15 @@ import type {
 } from '../shared/types.js'
 import type { UnitSystem } from '../shared/units.js'
 import type { LapFilter } from '../shared/coachingScope.js'
+import type { TerrainInfo } from '../shared/replay.js'
+
+// Binary IPC replies arrive as an ArrayBuffer or a view (a Node Buffer
+// becomes a Uint8Array): a standalone copy of the bytes either way.
+function ownBuffer(value: unknown): ArrayBuffer {
+  if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer
+  if (value instanceof ArrayBuffer) return value
+  return new Uint8Array(value as ArrayBuffer).slice().buffer
+}
 
 const bridge: CatalystBridge = {
   getSessionReview: guid => ipcRenderer.invoke('review:get', guid),
@@ -135,6 +144,34 @@ const bridge: CatalystBridge = {
     ? `catalyst-video://driver/${encodeURIComponent(driver)}/${encodeURIComponent(id)}.mp4`
     : `catalyst-video://video/${encodeURIComponent(id)}.mp4`,
   planCatalystImport: entries => ipcRenderer.invoke('videos:catalystPlan', entries),
+
+  // 3D replay. Terrain builds in the main process; this polls like the web.
+  getReplayScene: guid => ipcRenderer.invoke('replay:scene', guid),
+  getReplayLap: (sceneGuid, ref) => ipcRenderer.invoke('replay:lap', sceneGuid, ref),
+  getTerrain: async (area, onState) => {
+    let reported = false
+    for (;;) {
+      const status = await ipcRenderer.invoke('terrain:get', area) as { state: 'building' | 'ready'; terrain?: TerrainInfo }
+      if (status.state === 'ready' && status.terrain) { onState?.('ready'); return status.terrain }
+      if (!reported) { onState?.('building'); reported = true }
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+  },
+  getTerrainGrid: async key => new Float32Array(ownBuffer(await ipcRenderer.invoke('terrain:grid', key))),
+  getTerrainImage: async key => new Blob([ownBuffer(await ipcRenderer.invoke('terrain:image', key))], { type: 'image/jpeg' }),
+  sampleTerrain: async (key, latLon) => new Float32Array(ownBuffer(await ipcRenderer.invoke('terrain:sample', key, latLon.slice().buffer))),
+  listCarModels: () => ipcRenderer.invoke('carModels:list'),
+  getCarModel: async id => ownBuffer(await ipcRenderer.invoke('carModels:get', id)),
+  uploadCarModel: async (file, meta, onProgress) => {
+    onProgress?.(0, file.size)
+    const model = await ipcRenderer.invoke('carModels:importPath', webUtils.getPathForFile(file), file.name, meta)
+    onProgress?.(file.size, file.size)
+    return model
+  },
+  updateCarModel: (id, patch) => ipcRenderer.invoke('carModels:update', id, patch),
+  deleteCarModel: async id => { await ipcRenderer.invoke('carModels:delete', id) },
+  listTrackModels: () => ipcRenderer.invoke('trackModels:list'),
+  getTrackModelFile: async (id, file) => ownBuffer(await ipcRenderer.invoke('trackModels:get', id, file)),
 }
 
 contextBridge.exposeInMainWorld('catalyst', bridge)

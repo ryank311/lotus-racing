@@ -6,6 +6,7 @@ import type { ComparisonRequest, DriverAccount } from './comparison.js'
 import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
 import type { SessionCarData, SessionVideo, VideoImportResult } from './pdr.js'
 import type { CatalystPlan, CatalystPlanEntry } from './catalystVideo.js'
+import type { CarModel, GeoBox, ReplayLap, ReplayLapRef, ReplayScene, TerrainInfo, TrackModel } from './replay.js'
 
 export interface VideoImportOptions {
   // Attach to this session only; otherwise the best match is found.
@@ -525,6 +526,34 @@ export interface CatalystBridge {
   // Garmin Catalyst: the session each RaceData folder belongs to, and which
   // of the listed videos are already imported.
   planCatalystImport(entries: CatalystPlanEntry[]): Promise<CatalystPlan>
+
+  // 3D replay: a session's track and laps, one lap's samples (its distance
+  // on the scene's mean line), terrain and the shared car-model library.
+  getReplayScene(sessionGuid: string): Promise<ReplayScene>
+  getReplayLap(sceneSessionGuid: string, ref: ReplayLapRef): Promise<ReplayLap>
+  // Resolves once the terrain is built (the first call downloads from USGS
+  // and can take a while); onState reports 'building' while it waits.
+  getTerrain(area: GeoBox, onState?: (state: 'building' | 'ready') => void): Promise<TerrainInfo>
+  // TerrainInfo.grid: metres, row-major, north row first.
+  getTerrainGrid(key: string): Promise<Float32Array>
+  // The aerial image (JPEG). A Blob, not a URL, so the renderer's CSP allows it.
+  getTerrainImage(key: string): Promise<Blob>
+  // [lat, lon, lat, lon…] → heights from the fine (~1 m) DEM; NaN outside it.
+  sampleTerrain(key: string, latLon: Float64Array): Promise<Float32Array>
+  listCarModels(): Promise<CarModel[]>
+  // The .glb bytes.
+  getCarModel(id: string): Promise<ArrayBuffer>
+  uploadCarModel(
+    file: File,
+    meta: { name: string; attribution: string | null; matches: string[] },
+    onProgress?: (sent: number, total: number) => void,
+  ): Promise<CarModel>
+  updateCarModel(id: string, patch: Partial<Pick<CarModel, 'name' | 'attribution' | 'matches' | 'fit'>>): Promise<CarModel>
+  deleteCarModel(id: string): Promise<void>
+  // Track models (3D tracks copied into the shared track-models folder).
+  listTrackModels(): Promise<TrackModel[]>
+  // One of a model's files (a .glb, its footprint .png).
+  getTrackModelFile(id: string, file: string): Promise<ArrayBuffer>
 }
 
 declare global {

@@ -167,7 +167,7 @@ function LapControls({ snapshot, onSave, disabled }: { snapshot: ReviewSnapshot;
     <ReviewLapScatter laps={snapshot.current.laps} />
     <div className="review-lap-list">{snapshot.current.laps.map(l => <div className="review-lap-row" key={l.index}>
       <label><input type="checkbox" checked={!l.excluded} disabled={disabled} onChange={e => void onSave(() => api.setReviewLapExcluded(snapshot.current.summary.sessionGuid, l.index, !e.target.checked, reasons[l.index]))} />Lap {l.index + 1} · {msToLap(l.durationMs)}{l.selected && <span className="chip signal">Fast sample</span>}</label>
-      <small>{l.reasons.join(' · ') || (l.representative ? 'Representative lap' : 'Outside 5% representative window')}</small>
+      <small>{l.reasons.join(' · ') || (l.representative ? 'Representative lap' : 'Outside 5% representative window')} · <NavLink to={routeUrl(`/replay/${segment(snapshot.current.summary.sessionGuid)}`, { lap: String(l.index) })}>Watch in 3D</NavLink></small>
       <input aria-label={`Exclusion reason for lap ${l.index + 1}`} placeholder="Optional exclusion reason" maxLength={500} value={reasons[l.index] ?? l.exclusionReason ?? ''} onChange={e => setReasons(r => ({ ...r, [l.index]: e.target.value }))} onBlur={() => { if (l.excluded && reasons[l.index] !== undefined && reasons[l.index] !== (l.exclusionReason ?? '')) void onSave(() => api.setReviewLapExcluded(snapshot.current.summary.sessionGuid, l.index, true, reasons[l.index])) }} />
     </div>)}</div>
   </details>

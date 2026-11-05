@@ -7,12 +7,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Transform } from 'node:stream'
+import { gunzipSync } from 'node:zlib'
 import { accountKey, defaultServerDataDir, moveVideosToMedia, userDirectory, USER_RE, workspaceVideoDir, workspaceVideoFile } from './serverStorage.js'
 import { MAX_VIDEO_BYTES, VIDEO_ID_RE, VIDEO_UPLOAD_CHUNK } from '../shared/pdr.js'
 import { createDriverDirectory, type DriverDirectory } from './driverDirectory.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
 import { localTrackLibrary, serveTrackLibrary, type TrackLibrary } from '../garmin/trackLibrary.js'
 import { serveStaticAsset } from './staticAssets.js'
+import { MAX_SAMPLE_POINTS, TerrainService } from '../garmin/terrain.js'
+import { CAR_MODEL_ID_RE, CarModelLibrary, cleanMatches, type CarModelMeta } from '../garmin/carModels.js'
+import { TRACK_MODEL_ID_RE, TrackModelLibrary } from '../garmin/trackModels.js'
+import { MAX_CAR_MODEL_BYTES } from '../shared/replay.js'
 
 export interface CatalystServerOptions {
   host?: string
@@ -88,6 +93,19 @@ interface VideoUpload {
   touched: number
 }
 const UPLOAD_IDLE_MS = 60 * 60 * 1000
+// A car model arriving in chunks, the same way, into the shared library's
+// incoming folder; checked and added when the last chunk is in.
+interface ModelUpload {
+  id: string
+  owner: string
+  partPath: string
+  size: number
+  received: number
+  fileName: string
+  meta: CarModelMeta
+  busy: boolean
+  touched: number
+}
 interface VideoImport { owner: string; state: 'importing' | 'done' | 'failed'; result?: unknown; error?: string; touched: number }
 
 // Serve a file with HTTP range support (video seeking).
@@ -153,6 +171,50 @@ async function readJson(req: IncomingMessage): Promise<any> {
   }
   if (!chunks.length) return {}
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new Error('Invalid JSON body') }
+}
+
+// A binary body, or null when it is larger than `max` (read to the end
+// either way, so the reply reaches the client).
+async function readBody(req: IncomingMessage, max: number): Promise<Buffer | null> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += buf.length
+    if (size <= max) chunks.push(buf)
+  }
+  return size > max ? null : Buffer.concat(chunks)
+}
+
+// Terrain never changes for its key: browsers keep it.
+const IMMUTABLE = 'private, max-age=31536000, immutable'
+
+function serveFile(req: IncomingMessage, res: ServerResponse, file: string, headers: Record<string, string>): void {
+  const { size } = fs.statSync(file)
+  res.writeHead(200, { ...headers, 'Content-Length': size })
+  if (req.method === 'HEAD') { res.end(); return }
+  const stream = fs.createReadStream(file)
+  stream.on('error', () => res.destroy())
+  res.on('close', () => stream.destroy())
+  stream.pipe(res)
+}
+
+// Appends one upload chunk at `offset` to a part file (at most `limit` bytes).
+async function appendChunk(req: IncomingMessage, partPath: string, offset: number, limit: number): Promise<number> {
+  let bytes = 0
+  try {
+    await pipeline(req, new Transform({
+      transform(chunk: Buffer, _enc, done) {
+        bytes += chunk.length
+        done(bytes > limit ? new Error('Chunk too large') : null, chunk)
+      },
+    }), fs.createWriteStream(partPath, { flags: 'r+', start: offset }))
+  } catch (error) {
+    // Drop whatever part of the chunk landed; the client resends it.
+    fs.truncateSync(partPath, offset)
+    throw error
+  }
+  return bytes
 }
 
 class UserBackend {
@@ -352,6 +414,20 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
     tracksChanged: from => { for (const backend of backends.values()) if (backend !== from) backend.notifyTracksChanged() },
   }
 
+  // The 3D replay's terrain and car models are shared by every driver and
+  // kept with the media (large, rebuilt or re-uploaded rather than backed up).
+  const sharedDir = path.join(mediaDir ?? dataDir, 'shared')
+  const terrain = new TerrainService(path.join(sharedDir, 'terrain'))
+  const carModels = new CarModelLibrary(path.join(sharedDir, 'car-models'))
+  // The server makes the folder, so it owns it; models copied into it by
+  // hand are registered now.
+  try { fs.mkdirSync(carModels.dir, { recursive: true }) } catch (error) { console.error('[car models] could not create the folder:', error) }
+  void carModels.list().catch(error => console.error('[car models] could not read the library:', error))
+  // Track models are folders copied in by hand (see trackModels.ts).
+  const trackModels = new TrackModelLibrary(path.join(sharedDir, 'track-models'))
+  try { fs.mkdirSync(trackModels.dir, { recursive: true }) } catch (error) { console.error('[track models] could not create the folder:', error) }
+  void trackModels.list().catch(error => console.error('[track models] could not read the library:', error))
+
   const secretPath = path.join(dataDir, '.session-secret')
   if (!fs.existsSync(secretPath)) {
     fs.writeFileSync(secretPath, randomBytes(32), { mode: 0o600, flag: 'wx' })
@@ -363,6 +439,7 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
   let closing = false
   const uploads = new Map<string, VideoUpload>()
   const imports = new Map<string, VideoImport>()
+  const modelUploads = new Map<string, ModelUpload>()
   // Abandoned uploads (closed tab, lost connection) are removed after an hour.
   const sweepUploads = () => {
     for (const upload of uploads.values()) {
@@ -371,6 +448,11 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
       fs.rmSync(upload.partPath, { force: true })
     }
     for (const [id, job] of imports) if (job.state !== 'importing' && Date.now() - job.touched > UPLOAD_IDLE_MS) imports.delete(id)
+    for (const upload of modelUploads.values()) {
+      if (upload.busy || Date.now() - upload.touched < UPLOAD_IDLE_MS) continue
+      modelUploads.delete(upload.id)
+      fs.rmSync(upload.partPath, { force: true })
+    }
   }
   const sweepTimer = setInterval(sweepUploads, 10 * 60 * 1000)
   sweepTimer.unref()
@@ -435,7 +517,7 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         'Access-Control-Allow-Origin': origin ?? '*',
         'Access-Control-Allow-Credentials': 'true',
         'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
         'Vary': 'Origin',
       })
       res.end()
@@ -636,6 +718,188 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         return
       }
 
+      // ---- 3D replay: terrain (USGS, built once per area) ----
+      // Never held open for a build (proxies cut requests at ~100 s): 202
+      // while it builds in the background, and the client polls.
+      if (url.pathname === '/api/terrain' && req.method === 'POST') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const body = await readJson(req)
+        let status: ReturnType<TerrainService['status']>
+        try { status = terrain.status(body?.area) } catch (error) {
+          json(res, 400, { error: error instanceof Error ? error.message : 'Invalid terrain area' }, origin)
+          return
+        }
+        if (status.state === 'ready') json(res, 200, { terrain: status.terrain }, origin)
+        else if (status.state === 'building') json(res, 202, { state: 'building' }, origin)
+        else json(res, 502, { error: `The terrain could not be downloaded from USGS: ${status.error}` }, origin)
+        return
+      }
+      const terrainMatch = /^\/api\/terrain\/([a-z0-9._]{1,80})\/(grid|image\.jpg|sample)$/.exec(url.pathname)
+      if (terrainMatch) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const [, key, product] = terrainMatch
+        if (product === 'sample') {
+          if (req.method !== 'POST') { json(res, 405, { error: 'Method not allowed' }, origin); return }
+          if (!terrain.info(key)) { json(res, 404, { error: 'That terrain has not been built.' }, origin); return }
+          // [lat, lon, …] as little-endian float64 → heights as float32.
+          const body = await readBody(req, MAX_SAMPLE_POINTS * 16)
+          if (!body) { json(res, 413, { error: `Send at most ${MAX_SAMPLE_POINTS} points at a time.` }, origin); return }
+          if (body.length % 16) { json(res, 400, { error: 'Send latitude and longitude pairs as 64-bit floats.' }, origin); return }
+          const heights = await terrain.sample(key, new Float64Array(new Uint8Array(body).buffer))
+          const out = Buffer.from(heights.buffer, heights.byteOffset, heights.byteLength)
+          res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': out.length, 'Cache-Control': 'no-store' })
+          res.end(out)
+          return
+        }
+        if (req.method !== 'GET' && req.method !== 'HEAD') { json(res, 405, { error: 'Method not allowed' }, origin); return }
+        if (product === 'grid') {
+          const file = terrain.gridFile(key)
+          if (!file) { json(res, 404, { error: 'That terrain has not been built.' }, origin); return }
+          const headers = { 'Content-Type': 'application/octet-stream', 'Cache-Control': IMMUTABLE, 'Vary': 'Accept-Encoding' }
+          if (/\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))) serveFile(req, res, file, { ...headers, 'Content-Encoding': 'gzip' })
+          else {
+            const bytes = gunzipSync(fs.readFileSync(file))
+            res.writeHead(200, { ...headers, 'Content-Length': bytes.length })
+            res.end(req.method === 'HEAD' ? undefined : bytes)
+          }
+          return
+        }
+        const file = terrain.imageFile(key)
+        if (!file) { json(res, 404, { error: 'This terrain has no aerial photo.' }, origin); return }
+        serveFile(req, res, file, { 'Content-Type': 'image/jpeg', 'Cache-Control': IMMUTABLE })
+        return
+      }
+
+      // ---- 3D replay: car models, a library shared by every driver ----
+      if (url.pathname === '/api/car-models' && req.method === 'GET') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        json(res, 200, { models: await carModels.list() }, origin)
+        return
+      }
+      if (url.pathname === '/api/car-models/uploads' && req.method === 'POST') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const body = await readJson(req)
+        const size = Number(body?.size)
+        const fileName = path.basename(String(body?.fileName ?? '')).slice(0, 200)
+        if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_CAR_MODEL_BYTES) {
+          json(res, 400, { error: `Choose a model under ${MAX_CAR_MODEL_BYTES / 1024 ** 2} MB.` }, origin)
+          return
+        }
+        if (!/\.glb$/i.test(fileName)) { json(res, 400, { error: 'Car models must be .glb files.' }, origin); return }
+        let meta: CarModelMeta
+        try {
+          const text = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+          meta = { name: text(body?.name, 120), attribution: text(body?.attribution, 500) || null, matches: cleanMatches(body?.matches) }
+        } catch (error) {
+          json(res, 400, { error: error instanceof Error ? error.message : 'Invalid model details' }, origin)
+          return
+        }
+        sweepUploads()
+        fs.mkdirSync(carModels.incomingDir, { recursive: true })
+        const id = randomUUID()
+        const upload: ModelUpload = {
+          id, owner: accountKey(username), partPath: path.join(carModels.incomingDir, `${id}.part`),
+          size, received: 0, fileName, meta, busy: false, touched: Date.now(),
+        }
+        fs.writeFileSync(upload.partPath, '')
+        modelUploads.set(id, upload)
+        json(res, 200, { uploadId: id, chunkSize: VIDEO_UPLOAD_CHUNK }, origin)
+        return
+      }
+      const modelUploadMatch = /^\/api\/car-models\/uploads\/([0-9a-f-]{36})(\/finish)?$/.exec(url.pathname)
+      if (modelUploadMatch) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const upload = modelUploads.get(modelUploadMatch[1])
+        if (!upload || upload.owner !== accountKey(username)) { json(res, 404, { error: 'This upload is no longer open. Start it again.' }, origin); return }
+        if (upload.busy) { json(res, 409, { error: 'This upload is busy', received: upload.received }, origin); return }
+        upload.touched = Date.now()
+        const finish = !!modelUploadMatch[2]
+        if (!finish && req.method === 'GET') { json(res, 200, { state: 'uploading', received: upload.received }, origin); return }
+        if (!finish && req.method === 'PUT') {
+          if (Number(url.searchParams.get('offset')) !== upload.received) { json(res, 409, { error: 'Upload out of order', received: upload.received }, origin); return }
+          upload.busy = true
+          try {
+            upload.received += await appendChunk(req, upload.partPath, upload.received, Math.min(VIDEO_UPLOAD_CHUNK * 2, upload.size - upload.received))
+          } finally { upload.busy = false }
+          json(res, 200, { received: upload.received }, origin)
+          return
+        }
+        if (!finish && req.method === 'DELETE') {
+          modelUploads.delete(upload.id)
+          fs.rmSync(upload.partPath, { force: true })
+          json(res, 200, { ok: true }, origin)
+          return
+        }
+        if (finish && req.method === 'POST') {
+          if (upload.received !== upload.size) { json(res, 409, { error: 'The upload is incomplete', received: upload.received }, origin); return }
+          modelUploads.delete(upload.id)
+          try {
+            json(res, 200, { model: await carModels.add(upload.partPath, upload.fileName, upload.meta) }, origin)
+          } catch (error) {
+            fs.rmSync(upload.partPath, { force: true })
+            json(res, 400, { error: error instanceof Error ? error.message : String(error) }, origin)
+          }
+          return
+        }
+        json(res, 405, { error: 'Method not allowed' }, origin)
+        return
+      }
+      const modelMatch = /^\/api\/car-models\/([a-zA-Z0-9_-]{1,100})(\.glb)?$/.exec(url.pathname)
+      if (modelMatch && CAR_MODEL_ID_RE.test(modelMatch[1])) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const [, id, glb] = modelMatch
+        if (glb && (req.method === 'GET' || req.method === 'HEAD')) {
+          const file = await carModels.file(id)
+          if (!file) { json(res, 404, { error: 'Car model not found' }, origin); return }
+          serveFileRange(req, res, file, 'model/gltf-binary')
+          return
+        }
+        if (!glb && req.method === 'PATCH') {
+          const body = await readJson(req)
+          try {
+            json(res, 200, { model: await carModels.update(id, body) }, origin)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            json(res, /no longer/.test(message) ? 404 : 400, { error: message }, origin)
+          }
+          return
+        }
+        if (!glb && req.method === 'DELETE') {
+          const removed = await carModels.remove(id)
+          json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'Car model not found' }, origin)
+          return
+        }
+        json(res, 405, { error: 'Method not allowed' }, origin)
+        return
+      }
+
+      // ---- 3D replay: track models, folders shared by every driver ----
+      if (url.pathname === '/api/track-models' && req.method === 'GET') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        json(res, 200, { models: await trackModels.listWithVersions() }, origin)
+        return
+      }
+      const trackFileMatch = /^\/api\/track-models\/([^/]{1,100})\/([^/]{1,160})$/.exec(url.pathname)
+      if (trackFileMatch) {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        if (req.method !== 'GET' && req.method !== 'HEAD') { json(res, 405, { error: 'Method not allowed' }, origin); return }
+        let id: string, name: string
+        try { [id, name] = [decodeURIComponent(trackFileMatch[1]), decodeURIComponent(trackFileMatch[2])] } catch { json(res, 400, { error: 'Invalid file name' }, origin); return }
+        const file = TRACK_MODEL_ID_RE.test(id) ? await trackModels.file(id, name) : null
+        if (!file) { json(res, 404, { error: 'Track model file not found' }, origin); return }
+        // A URL naming the file's current version never changes: browsers keep it.
+        const versioned = url.searchParams.get('v') === file.version
+        const headers: Record<string, string> = {
+          'Content-Type': file.type, 'ETag': `"${file.version}"`, 'Vary': 'Accept-Encoding',
+          'Cache-Control': versioned ? IMMUTABLE : 'private, no-cache',
+        }
+        if (req.headers['if-none-match'] === `"${file.version}"`) { res.writeHead(304, headers); res.end(); return }
+        const gzip = /\.glb$/i.test(name) && /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? '')) ? await trackModels.gzipped(id, name) : null
+        if (gzip) serveFile(req, res, gzip, { ...headers, 'Content-Encoding': 'gzip' })
+        else serveFile(req, res, file.path, headers)
+        return
+      }
+
       if (req.method !== 'GET' && req.method !== 'HEAD') { json(res, 405, { error: 'Method not allowed' }); return }
       if (staticDir && fs.existsSync(path.join(staticDir, 'index.html'))) {
         serveStaticAsset(req, res, staticDir, url.pathname)
@@ -683,6 +947,7 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         ])
       } finally { clearTimeout(force) }
       await movingVideos
+      await terrain.close()
     },
   }
 }

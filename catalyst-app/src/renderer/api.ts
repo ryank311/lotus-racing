@@ -101,6 +101,130 @@ async function uploadVideo(file: File, opts: import('../shared/types').VideoImpo
   }
 }
 
+// ─── 3D replay: terrain and car models ─────────────────────────────────────
+
+async function requestBinary(path: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(`${remoteBaseUrl}${path}`, { ...init, credentials: 'include' })
+  if (!response.ok) {
+    let message = `Server request failed (${response.status})`
+    try { message = (await response.json()).error ?? message } catch { /* not JSON */ }
+    throw new Error(message)
+  }
+  return response
+}
+
+// The server builds terrain in the background (a first build downloads from
+// USGS and outlasts a proxied request), so this polls until it is ready.
+async function remoteTerrain(area: import('../shared/replay').GeoBox, onState?: (state: 'building' | 'ready') => void): Promise<import('../shared/replay').TerrainInfo> {
+  let reported = false
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(`${remoteBaseUrl}/api/terrain`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ area }),
+    })
+    let payload: any = {}
+    try { payload = await response.json() } catch { /* not JSON */ }
+    if (response.status === 200) { onState?.('ready'); return payload.terrain }
+    if (response.status !== 202) throw new Error(payload.error ?? `Terrain request failed (${response.status})`)
+    if (!reported) { onState?.('building'); reported = true }
+    await pause(Math.min(4000, 1000 + attempt * 500))
+  }
+}
+
+async function remoteTerrainGrid(key: string): Promise<Float32Array> {
+  const response = await requestBinary(`/api/terrain/${encodeURIComponent(key)}/grid`)
+  return decodeTerrainGrid(await response.arrayBuffer())
+}
+
+// The grid travels as 16-bit steps between its min and max height (half the
+// bytes); NaN marks a hole. Header: 'CTG1', width, height, min, max.
+function decodeTerrainGrid(buffer: ArrayBuffer): Float32Array {
+  const view = new DataView(buffer)
+  const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3))
+  if (magic !== 'CTG1') throw new Error('The terrain grid could not be read.')
+  const width = view.getUint32(4, true), height = view.getUint32(8, true)
+  const min = view.getFloat32(12, true), max = view.getFloat32(16, true)
+  const steps = new Uint16Array(buffer, 20, width * height)
+  const out = new Float32Array(width * height)
+  const scale = (max - min) / 65534
+  for (let i = 0; i < out.length; i++) out[i] = steps[i] === 65535 ? NaN : min + steps[i] * scale
+  return out
+}
+
+async function remoteTerrainImage(key: string): Promise<Blob> {
+  const response = await requestBinary(`/api/terrain/${encodeURIComponent(key)}/image.jpg`)
+  return response.blob()
+}
+
+async function remoteSampleTerrain(key: string, latLon: Float64Array): Promise<Float32Array> {
+  const out = new Float32Array(latLon.length >> 1)
+  // The server caps one request's points; larger asks go in batches.
+  const batch = 2 * 200_000
+  for (let at = 0; at < latLon.length; at += batch) {
+    const part = latLon.subarray(at, Math.min(latLon.length, at + batch))
+    const response = await requestBinary(`/api/terrain/${encodeURIComponent(key)}/sample`, {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+      body: part.slice().buffer,
+    })
+    out.set(new Float32Array(await response.arrayBuffer()), at >> 1)
+  }
+  return out
+}
+
+// Track model files carry their version in the URL (from the last listing),
+// so the browser keeps them until the file changes on the server.
+const trackFileVersions = new Map<string, string>()
+
+async function remoteTrackModels(): Promise<import('../shared/replay').TrackModel[]> {
+  const payload = await requestJson('/api/track-models')
+  const models: Array<import('../shared/replay').TrackModel & { versions?: Record<string, string> }> = payload.models ?? []
+  for (const model of models) for (const [file, version] of Object.entries(model.versions ?? {})) trackFileVersions.set(`${model.id}/${file}`, version)
+  return models
+}
+
+async function remoteTrackModelFile(id: string, file: string): Promise<ArrayBuffer> {
+  const version = trackFileVersions.get(`${id}/${file}`)
+  const response = await requestBinary(`/api/track-models/${encodeURIComponent(id)}/${encodeURIComponent(file)}${version ? `?v=${version}` : ''}`)
+  return response.arrayBuffer()
+}
+
+async function remoteCarModel(id: string): Promise<ArrayBuffer> {
+  const response = await requestBinary(`/api/car-models/${encodeURIComponent(id)}.glb`)
+  return response.arrayBuffer()
+}
+
+// Car models go up in chunks like videos, then the server checks the GLB.
+async function uploadCarModel(
+  file: File,
+  meta: { name: string; attribution: string | null; matches: string[] },
+  onProgress?: (sent: number, total: number) => void,
+): Promise<import('../shared/replay').CarModel> {
+  const started = await requestJson('/api/car-models/uploads', {
+    method: 'POST', body: JSON.stringify({ fileName: file.name, size: file.size, ...meta }),
+  }) as { uploadId: string; chunkSize: number }
+  const base = `/api/car-models/uploads/${started.uploadId}`
+  try {
+    let offset = 0, failures = 0
+    while (offset < file.size) {
+      const at = offset
+      try {
+        const reply = await putChunk(`${remoteBaseUrl}${base}?offset=${at}`, file.slice(at, at + started.chunkSize), loaded => onProgress?.(at + loaded, file.size))
+        offset = reply.received
+        failures = 0
+      } catch (error: any) {
+        if (error?.status === 404 || error?.status === 400 || ++failures > 5) throw error
+        if (typeof error?.received === 'number') offset = error.received
+        await pause(1000 * failures)
+      }
+    }
+    onProgress?.(file.size, file.size)
+    return (await requestJson(`${base}/finish`, { method: 'POST', body: '{}' })).model
+  } catch (error) {
+    void requestJson(base, { method: 'DELETE' }).catch(() => {})
+    throw error
+  }
+}
+
 type EventListener = (payload: any) => void
 const eventListeners = new Map<string, Set<EventListener>>()
 let eventSource: EventSource | null = null
@@ -216,6 +340,22 @@ const remoteBridge: CatalystBridge = {
     ? `${remoteBaseUrl}/api/drivers/${encodeURIComponent(driver)}/videos/${encodeURIComponent(id)}.mp4`
     : `${remoteBaseUrl}/api/videos/${encodeURIComponent(id)}.mp4`,
   planCatalystImport: entries => rpc('videos:catalystPlan', entries),
+
+  getReplayScene: guid => rpc('replay:scene', guid),
+  getReplayLap: (sceneGuid, ref) => rpc('replay:lap', sceneGuid, ref),
+  getTerrain: (area, onState) => remoteTerrain(area, onState),
+  getTerrainGrid: key => remoteTerrainGrid(key),
+  getTerrainImage: key => remoteTerrainImage(key),
+  sampleTerrain: (key, latLon) => remoteSampleTerrain(key, latLon),
+  listCarModels: async () => (await requestJson('/api/car-models')).models ?? [],
+  getCarModel: id => remoteCarModel(id),
+  uploadCarModel: (file, meta, onProgress) => uploadCarModel(file, meta, onProgress),
+  updateCarModel: async (id, patch) => (await requestJson(`/api/car-models/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(patch),
+  })).model,
+  deleteCarModel: async id => { await requestJson(`/api/car-models/${encodeURIComponent(id)}`, { method: 'DELETE' }) },
+  listTrackModels: () => remoteTrackModels(),
+  getTrackModelFile: (id, file) => remoteTrackModelFile(id, file),
 }
 
 export const api: CatalystBridge = isRemote ? remoteBridge : window.catalyst

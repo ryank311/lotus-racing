@@ -17,6 +17,7 @@ import { deleteSessionVideo, getSessionVideo, importVideo, listAllVideos, listSe
 import { importCatalystVideo, planCatalystImport, rematchCatalystVideo } from '../garmin/catalystVideos.js'
 import type { CatalystPlanEntry } from '../shared/catalystVideo.js'
 import { sessionCarData } from '../garmin/sessionCarData.js'
+import { replayLap, replayLapRef, replayScene } from '../garmin/replayData.js'
 import { MAX_VIDEO_BYTES, VIDEO_ID_RE, type VideoImportResult } from '../shared/pdr.js'
 import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
 import { configuredModelFor, DEFAULT_REASONING_EFFORT, maxOutputTokensFor } from '../shared/aiModels.js'
@@ -1119,6 +1120,14 @@ export function registerApiHandlers(
     return withDb(con => setVideoOffset(con, videoId(id), offsetS), DB_PATH)
   })
   register('videos:carData', (_e, guid: string) => withDb(con => sessionCarData(con, sessionId(guid), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
+
+  // ---- 3D replay ---------------------------------------------------------
+  // The session's track and laps, and one lap on the scene's mean line.
+  // Terrain, car models and track models are shared by every driver: the server process
+  // (or the desktop main process) serves them, not this backend.
+  register('replay:scene', (_e, guid: string) => withDb(con => replayScene(con, sessionId(guid), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
+  register('replay:lap', (_e, sceneGuid: string, ref: unknown) =>
+    withDb(con => replayLap(con, sessionId(sceneGuid), replayLapRef(ref), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
 
   // ---- workers ---------------------------------------------------------
 

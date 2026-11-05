@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink } from '../navigation'
+import { routeUrl, segment } from '../routes'
 import { LineChart, type LineSeries } from './Charts'
 import { PALETTE } from './chartTheme'
 import { VideoDeck, type DeckLap } from './VideoDeck'
@@ -105,7 +106,11 @@ export function SessionVideoPanel({ sessionGuid }: { sessionGuid: string }) {
   return <section className="review-panel review-video" id="session-video">
     <div className="review-section-heading">
       <div><span className="review-eyebrow">Video</span><h2>Lap video</h2></div>
-      <VideoPickerButton sessionGuid={sessionGuid} className="btn ghost small">Attach PDR video</VideoPickerButton>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {current && <NavLink className="btn ghost small" title={`Watch ${current.short} driven on the track in 3D, beside this video`}
+          to={routeUrl(`/replay/${segment(sessionGuid)}`, { lap: current.key === OPTIMAL ? 'optimal' : String(current.trace.lapIdx) })}>Watch in 3D</NavLink>}
+        <VideoPickerButton sessionGuid={sessionGuid} className="btn ghost small">Attach PDR video</VideoPickerButton>
+      </div>
     </div>
     {error && <p className="loss" role="alert">{error}</p>}
     {!data && !error && <p className="muted">Loading…</p>}

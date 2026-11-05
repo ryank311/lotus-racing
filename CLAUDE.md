@@ -30,10 +30,11 @@ Navigate by clicking sidebar items or footer buttons:
 | Session Review | Sidebar — "Session Review" (⌘3) |
 | Progress | Sidebar — "Progress" (⌘4) |
 | Analysis | Sidebar — "Analysis" (⌘5) |
-| AI Coach | Sidebar — "AI Coach" (⌘6) |
-| Garage | Sidebar — "Garage" (⌘7) |
-| Tracks | Sidebar — "Tracks" (⌘8) |
-| Import | Sidebar — "Import" (⌘9) — PDR videos and car documents |
+| 3D Replay | Sidebar — "3D Replay" (⌘6), or "Watch in 3D" on a lap in Session Review |
+| AI Coach | Sidebar — "AI Coach" (⌘7) |
+| Garage | Sidebar — "Garage" (⌘8) |
+| Tracks | Sidebar — "Tracks" (⌘9) |
+| Import | Sidebar — "Import" (⌘0) — PDR videos and car documents |
 | Logs | Sidebar footer — bug icon button ("Debug logs") |
 
 To click a sidebar item: take a snapshot, find the `uid` for the button/link, then use `mcp__chrome-devtools__click`.

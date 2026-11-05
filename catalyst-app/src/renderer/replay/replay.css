@@ -1,0 +1,210 @@
+/* 3D Replay: the canvas with instrument overlays, transport and panels. */
+
+.replay-page { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding-bottom: max(32px, env(safe-area-inset-bottom)); }
+.replay-page > * { min-width: 0; flex-shrink: 0; }
+.replay-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.replay-header .page-title { margin: 0; }
+.replay-header-meta { margin: 0; text-align: right; font: 600 15px/1.35 var(--font-body); color: var(--text); }
+.replay-header-meta span { display: block; font: 11px var(--font-mono); color: var(--text-dim); letter-spacing: .04em; }
+
+.replay-pickers { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.3fr) auto; gap: 12px; align-items: end; }
+.replay-pickers label, .replay-car > label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font: 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); }
+.replay-page select, .replay-page input[type=number] {
+  color: var(--text); background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  min-height: 40px; padding: 8px 10px; font: 12px var(--font-mono); min-width: 0; max-width: 100%; letter-spacing: 0; text-transform: none;
+}
+.replay-page :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.replay-view-switch { display: flex; flex-direction: column; gap: 6px; font: 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); }
+.replay-view-switch > div, .replay-rates { display: inline-flex; padding: 3px; gap: 2px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); }
+.replay-view-switch button, .replay-rates button {
+  min-height: 32px; padding: 0 12px; background: none; border: 1px solid transparent; border-radius: 2px;
+  color: var(--text-dim); font: 600 11px var(--font-mono); letter-spacing: .08em; cursor: pointer;
+}
+.replay-view-switch button.on, .replay-rates button.on { color: var(--text); background: var(--signal-soft); border-color: var(--signal); }
+
+/* The stage: the canvas fills it; overlays sit on top. */
+.replay-stage {
+  position: relative; width: 100%; height: clamp(320px, 64vh, 900px); overflow: hidden;
+  background: radial-gradient(ellipse at 50% 30%, #1d242c, #0b0d10 70%);
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  container-type: inline-size;
+}
+/* The Garmin camera's view is framed 16:9, like its video. */
+.replay-stage.garmin { height: auto; aspect-ratio: 16 / 9; width: min(100%, calc(72vh * 16 / 9)); margin-inline: auto; }
+.replay-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+/* Dragging the view looks around: one finger turns it (the page scrolls
+   from outside the stage), and a drag never selects text. */
+.replay-canvas { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.replay-canvas.dragging { cursor: grabbing; }
+.replay-reset-view {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1;
+  min-height: 30px; padding: 0 12px; border-radius: var(--radius); cursor: pointer;
+  background: rgba(10, 10, 12, 0.72); border: 1px solid rgba(255, 255, 255, 0.16); color: var(--text);
+  font: 600 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
+}
+.replay-reset-view:hover { border-color: var(--signal); }
+/* The engine appends its canvas after the overlays: lift them above it. */
+.replay-hud, .replay-note, .replay-loading, .replay-play-overlay { z-index: 1; }
+.replay-hud { position: absolute; inset: 0; pointer-events: none; font-family: var(--font-mono); color: var(--text); }
+.replay-hud > *, .replay-note, .replay-loading { position: absolute; }
+.replay-glass, .replay-hud-timer, .replay-hud-instruments > div, .replay-pip, .replay-note {
+  background: rgba(10, 10, 12, 0.72); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-lg);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+.replay-hud-timer { top: 12px; left: 12px; padding: 9px 13px 10px; display: grid; gap: 1px; min-width: 150px; }
+.replay-hud-label { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); }
+.replay-hud-timer strong { font: 700 30px/1.05 var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.replay-hud-sub { font-size: 10px; color: var(--text-mute); }
+.replay-hud-gap { margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--border); font: 700 19px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.replay-hud-gap small { display: block; font: 400 9px/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-mute); }
+.replay-hud-gap.behind { color: var(--red); }
+.replay-hud-gap.ahead { color: var(--green); }
+.replay-hud-fps { font-size: 9px; color: var(--text-mute); }
+
+.replay-hud-instruments { left: 12px; right: 12px; bottom: 12px; display: flex; align-items: flex-end; gap: 8px; }
+.replay-hud-instruments > div { padding: 8px 11px; }
+.replay-hud-speed { display: grid; justify-items: center; min-width: 74px; }
+.replay-hud-speed strong { font: 700 34px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.replay-hud-speed span, .replay-hud-gear span, .replay-hud-g span, .replay-hud-rpm span { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); }
+.replay-hud-inputs { display: flex; align-items: flex-end; gap: 10px; }
+.replay-hud-gear { display: grid; justify-items: center; min-width: 30px; }
+.replay-hud-gear strong { font: 700 30px/1 var(--font-mono); color: var(--signal); }
+.replay-hud-rpm { display: grid; gap: 5px; width: 110px; }
+.replay-rpm-track { height: 7px; background: #ffffff14; border-radius: 4px; overflow: hidden; }
+.replay-rpm-track i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--amber) 75%, var(--red)); }
+.replay-bar { position: relative; width: 12px; height: 48px; background: #ffffff14; border-radius: 3px; overflow: hidden; }
+.replay-bar i { position: absolute; left: 0; right: 0; bottom: 0; }
+.replay-bar.throttle i { background: var(--green); }
+.replay-bar.brake i { background: var(--red); }
+.replay-bar span { position: absolute; left: 0; right: 0; top: 2px; text-align: center; font-size: 8px; color: #fff9; }
+.replay-hud-wheel { width: 44px; height: 44px; color: var(--text-dim); }
+.replay-hud-g { margin-left: auto; display: grid; justify-items: center; gap: 2px; }
+.replay-hud-g svg { width: 92px; height: 92px; overflow: visible; }
+.replay-hud-g .ring { fill: none; stroke: #ffffff1f; stroke-width: 1; }
+.replay-hud-g .ring.one { stroke: #ffffff40; }
+.replay-hud-g .axis { stroke: #ffffff1a; stroke-width: 1; }
+.replay-hud-g .trail { fill: none; stroke: var(--signal); stroke-opacity: .55; stroke-width: 1.6; stroke-linejoin: round; }
+.replay-hud-g .dot { fill: var(--signal); stroke: #fff; stroke-width: 1; }
+
+.replay-pip { top: 12px; right: 12px; width: min(30%, 340px); overflow: hidden; pointer-events: auto; transition: width .18s ease-out; }
+.replay-pip.large { width: min(52%, 680px); }
+.replay-pip video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #000; }
+.replay-pip.uncovered video { opacity: .3; }
+.replay-pip-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 4px 3px 9px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); }
+.replay-pip-bar button { min-width: 28px; min-height: 26px; background: none; border: 1px solid transparent; border-radius: 2px; color: var(--text); font-size: 15px; cursor: pointer; }
+.replay-pip-bar button:hover { border-color: var(--border-strong); }
+
+.replay-note { left: 50%; top: 12px; transform: translateX(-50%); max-width: min(520px, calc(100% - 24px)); padding: 7px 12px; font: 11px/1.45 var(--font-body); color: var(--amber); }
+.replay-hud-timer ~ .replay-note { top: auto; bottom: 150px; }
+
+.replay-loading {
+  inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px;
+  text-align: center; background: rgba(8, 9, 11, 0.8); color: var(--text-dim); font: 12px/1.6 var(--font-body);
+}
+.replay-loading strong { color: var(--text); font: 600 15px/1.4 var(--font-body); max-width: 520px; }
+.replay-loading span { max-width: 460px; }
+.replay-loading.error strong { color: var(--red); }
+.replay-spinner { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #ffffff22; border-top-color: var(--signal); animation: replay-spin .9s linear infinite; }
+@keyframes replay-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .replay-spinner { animation-duration: 3s; } }
+
+.replay-play-overlay {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 10px;
+  padding: 14px 22px 14px 16px; background: rgba(10, 10, 12, 0.78); border: 1px solid var(--signal); border-radius: 40px;
+  color: var(--text); font: 600 12px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; cursor: pointer;
+}
+.replay-play-overlay svg { width: 26px; height: 26px; color: var(--signal); }
+.replay-play-overlay:hover { background: rgba(255, 94, 58, 0.18); }
+
+/* Transport under the stage. */
+.replay-transport { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.replay-play { flex-shrink: 0; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: var(--signal); border: 0; color: #1a0500; cursor: pointer; }
+.replay-play svg { width: 22px; height: 22px; }
+.replay-scrub { position: relative; flex: 1; min-width: 0; height: 42px; }
+.replay-scrub input { position: absolute; inset: 0 0 auto; width: 100%; height: 22px; margin: 0; opacity: 0; cursor: pointer; z-index: 2; }
+.replay-scrub::before { content: ''; position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: var(--border-strong); }
+.replay-scrub-fill { position: absolute; left: 0; top: 9px; height: 4px; border-radius: 2px; background: var(--signal); pointer-events: none; }
+.replay-scrub-fill::after { content: ''; position: absolute; right: -6px; top: -4px; width: 12px; height: 12px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 3px var(--signal-soft); }
+.replay-scrub input:focus-visible ~ .replay-scrub-fill::after { box-shadow: 0 0 0 3px var(--cyan); }
+.replay-scrub-mark { position: absolute; top: 18px; transform: translateX(-50%); display: grid; justify-items: center; font: 8px var(--font-mono); color: var(--text-mute); cursor: pointer; z-index: 3; }
+.replay-scrub-mark i { width: 1px; height: 5px; background: var(--text-mute); margin-bottom: 1px; }
+.replay-scrub-mark:hover { color: var(--cyan); }
+.replay-time { flex-shrink: 0; font: 600 13px var(--font-mono); font-variant-numeric: tabular-nums; }
+.replay-time small { color: var(--text-mute); font-weight: 400; }
+.replay-rates button { padding: 0 8px; }
+.replay-camera { flex-shrink: 0; }
+.replay-page .btn.small { padding: 6px 10px; font-size: 10px; min-height: 32px; }
+
+.replay-panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.replay-panel { display: grid; gap: 10px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-inset); }
+.replay-panel p { margin: 0; }
+.replay-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.replay-check input { accent-color: var(--signal); }
+.replay-swatch { display: inline-block; width: 18px; height: 4px; border-radius: 2px; }
+.replay-swatch.ghost { background: var(--cyan); }
+.replay-legend { display: grid; gap: 3px; max-width: 320px; padding-left: 24px; }
+.replay-legend[aria-hidden=true] { opacity: .35; }
+.replay-legend-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; }
+.replay-legend-bar i { flex: 1; }
+.replay-legend-labels { display: flex; justify-content: space-between; font: 10px var(--font-mono); color: var(--text-dim); }
+.replay-fit { display: grid; gap: 7px; }
+.replay-fit-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font: 11px var(--font-mono); color: var(--text-dim); }
+.replay-fit-row > span { min-width: 92px; }
+.replay-fit-row output { min-width: 48px; text-align: center; color: var(--text); }
+.replay-fit-row input[type=number] { width: 86px; min-height: 30px; padding: 4px 8px; }
+.replay-fit-row .btn.on { border-color: var(--signal); color: var(--signal); }
+.replay-fit-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.replay-page .small { font-size: 11px; line-height: 1.5; }
+
+@media (max-width: 1100px) {
+  .replay-pickers { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .replay-panels { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Narrow stages (phones): smaller instruments, video and timer. */
+@container (max-width: 640px) {
+  .replay-hud-timer { top: 8px; left: 8px; padding: 6px 9px 7px; min-width: 0; }
+  .replay-hud-sub, .replay-hud-fps { display: none; }
+  .replay-hud-label { font-size: 9px; }
+  .replay-hud-timer strong { font-size: 20px; }
+  .replay-hud-gap { font-size: 14px; margin-top: 3px; padding-top: 4px; }
+  .replay-hud-instruments { left: 8px; right: 8px; bottom: 8px; gap: 5px; }
+  .replay-hud-instruments > div { padding: 5px 7px; }
+  .replay-hud-speed { min-width: 50px; }
+  .replay-hud-speed strong { font-size: 22px; }
+  .replay-hud-inputs { gap: 6px; }
+  .replay-hud-gear strong { font-size: 20px; }
+  .replay-hud-rpm { display: none; }
+  .replay-bar { width: 9px; height: 34px; }
+  .replay-bar span { display: none; }
+  .replay-hud-wheel { width: 30px; height: 30px; }
+  .replay-hud-g svg { width: 58px; height: 58px; }
+  .replay-pip { top: 8px; right: 8px; width: 44%; }
+  .replay-pip.large { width: calc(100% - 16px); }
+  .replay-pip-bar { font-size: 8px; padding: 1px 2px 1px 6px; }
+  .replay-note { font-size: 10px; }
+  .replay-play-overlay { padding: 10px 16px 10px 12px; }
+  /* The Garmin frame is short on a phone: timer, speed and video only. */
+  .replay-stage.garmin .replay-hud-g, .replay-stage.garmin .replay-hud-inputs { display: none; }
+  .replay-stage.garmin .replay-pip { width: 36%; }
+}
+
+@media (max-width: 800px) {
+  .replay-page { gap: 12px; }
+  .replay-header-meta { text-align: left; }
+  .replay-stage { height: clamp(280px, 56vh, 640px); border-radius: var(--radius); }
+  .replay-transport { flex-wrap: wrap; gap: 10px; padding: 8px 10px; }
+  .replay-scrub { order: 5; flex-basis: 100%; }
+  /* Corner numbers collide on a narrow bar; the ticks stay. */
+  .replay-scrub-mark { font-size: 0; }
+  .replay-scrub-mark i { height: 7px; }
+  .replay-time { margin-right: auto; }
+  .replay-page select, .replay-page input[type=number] { min-height: 44px; }
+}
+@media (pointer: coarse) { .replay-keys { display: none; } }
+@media (max-width: 480px) {
+  .replay-pickers { grid-template-columns: minmax(0, 1fr); }
+  .replay-view-switch { flex-direction: row; align-items: center; justify-content: space-between; }
+  .replay-camera { display: none; }
+}

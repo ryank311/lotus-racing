@@ -25,6 +25,8 @@ const Garage = lazy(() => import('./pages/Garage').then(module => ({ default: mo
 const Tracks = lazy(() => import('./pages/Tracks').then(module => ({ default: module.Tracks })))
 const Import = lazy(() => import('./pages/Import').then(module => ({ default: module.Import })))
 const Analysis = lazy(() => import('./pages/Analysis').then(module => ({ default: module.Analysis })))
+// three.js loads with this page only.
+const Replay = lazy(() => import('./pages/Replay').then(module => ({ default: module.Replay })))
 const Account = lazy(() => import('./pages/Account').then(module => ({ default: module.Account })))
 const Logs = lazy(() => import('./pages/Logs').then(module => ({ default: module.Logs })))
 
@@ -270,7 +272,7 @@ export function App() {
     if (authError) void reloadAuth()
     if (statsResource.error) void reloadStats()
   }
-  const pageTitle = ({ home: 'Overview', coach: 'AI Coach', review: 'Session Review', 'sign-in': 'Sign in', 'not-found': 'Page' } as Record<string, string>)[page] ?? page.charAt(0).toUpperCase() + page.slice(1)
+  const pageTitle = ({ home: 'Overview', coach: 'AI Coach', review: 'Session Review', replay: '3D Replay', 'sign-in': 'Sign in', 'not-found': 'Page' } as Record<string, string>)[page] ?? page.charAt(0).toUpperCase() + page.slice(1)
   const [loginOpen, setLoginOpen] = useOverlay('garmin-sign-in')
   const [signOutOpen, setSignOutOpen] = useOverlay('sign-out')
   const openLogin = useCallback(() => setLoginOpen(true), [])
@@ -365,6 +367,7 @@ export function App() {
             )}
             {page === 'review' && (canView ? <SessionReview key={resourceScope} refreshTick={refreshTick} busy={busy} /> : <SignedOutGate feature="Session Review" onSignIn={openLogin} />)}
             {page === 'progress' && (canView ? <Progress key={resourceScope} /> : <SignedOutGate feature="Progress" onSignIn={openLogin} />)}
+            {page === 'replay' && (canView ? <Replay key={resourceScope} refreshTick={refreshTick} /> : <SignedOutGate feature="3D Replay" onSignIn={openLogin} />)}
             {page === 'garage' && (canView ? <Garage key={resourceScope} /> : <SignedOutGate feature="Garage" onSignIn={openLogin} />)}
             {page === 'tracks' && <Tracks />}
             {page === 'import' && (canView ? <Import key={resourceScope} /> : <SignedOutGate feature="Import" onSignIn={openLogin} />)}

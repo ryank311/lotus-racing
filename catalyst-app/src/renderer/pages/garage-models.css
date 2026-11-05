@@ -1,0 +1,85 @@
+/* ── Garage: 3D models for the replay ────────────────────────────────── */
+
+.garage-models { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.garage-models-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.garage-models-title {
+  font: 9px var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.garage-models-note { margin: 0 0 4px; font-size: 11px; line-height: 1.5; color: var(--text-mute); }
+.garage-models-error { font-size: 11px; color: var(--red); overflow-wrap: anywhere; }
+.garage-models-empty { font: 10px var(--font-mono); color: var(--text-mute); padding: 4px 0; }
+
+.garage-model-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.garage-model-card.draft { border-color: var(--signal); background: var(--signal-soft); }
+.garage-model-card[aria-busy="true"] { opacity: 0.6; }
+
+.garage-model-name, .garage-model-credit, .garage-model-field input, .garage-model-field textarea {
+  width: 100%;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 3px 5px;
+  margin: 0 -6px;
+  color: var(--text);
+  font: 11.5px var(--font-mono);
+  resize: vertical;
+}
+.garage-model-name { font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.garage-model-credit { color: var(--text-dim); font-size: 10.5px; line-height: 1.45; field-sizing: content; min-height: 3em; overflow-wrap: anywhere; }
+.garage-model-name:hover, .garage-model-credit:hover { border-color: var(--border); }
+.garage-model-name:focus, .garage-model-credit:focus, .garage-model-field input:focus, .garage-model-field textarea:focus {
+  outline: none;
+  border-color: var(--signal);
+  background: var(--bg-elev);
+}
+.garage-model-field { display: flex; flex-direction: column; gap: 3px; }
+.garage-model-field span, .garage-model-vehicles legend {
+  font: 9px var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.garage-model-field input, .garage-model-field textarea { margin: 0; border-color: var(--border-strong); background: var(--bg-elev); }
+.garage-model-field textarea { field-sizing: content; min-height: 4.5em; overflow-wrap: anywhere; }
+
+.garage-model-meta { font: 10px var(--font-mono); color: var(--text-mute); overflow-wrap: anywhere; }
+
+.garage-model-vehicles { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.garage-model-vehicles label { display: flex; align-items: center; gap: 6px; font: 10px var(--font-mono); color: var(--text-dim); cursor: pointer; }
+.garage-model-vehicles input { accent-color: var(--signal); }
+
+.garage-model-progress { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.garage-model-progress div { height: 100%; background: var(--signal); transition: width 0.2s; }
+
+.garage-model-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.garage-model-delete:hover { color: var(--red); border-color: var(--red); }
+.garage-model-add {
+  width: 100%;
+  padding: 12px;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.garage-model-add:hover { border-color: var(--cyan); background: rgba(125,211,252,0.05); color: var(--text-dim); }
+
+@media (max-width: 760px) {
+  .garage-model-vehicles label { min-height: 44px; }
+  .garage-model-actions .btn { min-height: 44px; }
+}
