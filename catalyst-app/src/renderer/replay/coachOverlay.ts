@@ -160,8 +160,10 @@ class Tris {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3))
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 4))
+    // Flat on the ground, so one pass draws what three's two for a see-through
+    // double-sided material would (back faces, then front), without a program lookup each.
     const material = new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+      vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, forceSinglePass: true,
       polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     })
     const mesh = new THREE.Mesh(geometry, material)
@@ -634,8 +636,9 @@ export class CoachingOverlay {
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
     geometry.setIndex(index)
+    // A flat ribbon: one pass, as the marks (Tris.mesh).
     const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+      vertexColors: true, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, forceSinglePass: true,
       polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
     }))
     mesh.name = 'coaching-line'
