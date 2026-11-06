@@ -406,8 +406,18 @@ async function resizeRgba(rgba, width, height, toWidth, toHeight) {
   for (let i = 0; i < n; i++) {
     rgb[i * 3] = rgba[i * 4]; rgb[i * 3 + 1] = rgba[i * 4 + 1]; rgb[i * 3 + 2] = rgba[i * 4 + 2]; alpha[i] = rgba[i * 4 + 3]
   }
-  const resize = (raw, channels) => sharpFn(raw, { raw: { width, height, channels } })
-    .resize(toWidth, toHeight, { fit: 'fill', kernel: 'lanczos3' }).raw().toBuffer()
+  // sharp writes a one-channel raw input back out as three (grey as sRGB):
+  // the alpha is asked for as one channel, and each result is checked, or
+  // reading it as one channel scrambles the alpha across the image.
+  const resize = async (raw, channels) => {
+    let image = sharpFn(raw, { raw: { width, height, channels } }).resize(toWidth, toHeight, { fit: 'fill', kernel: 'lanczos3' })
+    if (channels === 1) image = image.extractChannel(0)
+    const { data, info } = await image.raw().toBuffer({ resolveWithObject: true })
+    if (info.channels !== channels || info.width !== toWidth || info.height !== toHeight) {
+      throw new Error(`resizing gave ${info.width}×${info.height}×${info.channels}, expected ${toWidth}×${toHeight}×${channels}`)
+    }
+    return data
+  }
   const [rgb2, alpha2] = await Promise.all([resize(rgb, 3), resize(alpha, 1)])
   const out = new Uint8Array(toWidth * toHeight * 4)
   for (let i = 0; i < toWidth * toHeight; i++) {
