@@ -10,7 +10,9 @@
 //
 // - textures capped as they load (the track's at 1024 px on the long side,
 //   decoded straight to that size a few at a time; the car's at 2048; the
-//   aerial photo at 2048: acTrack.ts, car.ts parseGlb, terrain.ts);
+//   aerial photo at 2048: acTrack.ts, car.ts parseGlb, terrain.ts). A
+//   model's KTX2 textures (ktx2.ts) are capped by leaving out their top mip
+//   levels once transcoded, before they are uploaded;
 // - the CPU copies of textures (and of the track's geometry) dropped once
 //   they are on the GPU, and the downloaded model files once parsed (a lost
 //   context then rebuilds the scene: engine.needsRebuild);
@@ -181,7 +183,8 @@ function limiter(concurrency: number) {
 /**
  * A GLTFLoader plugin that decodes the file's images no larger than `max`
  * (glTF textures from their own sources; extension sources such as
- * EXT_texture_webp's are left to their plugins). Register with
+ * EXT_texture_webp's, and KTX2 images (KHR_texture_basisu: capped by
+ * capCompressedTexture instead), are left to their plugins). Register with
  * loader.register(parser => fittedTextures(parser, max, concurrency)).
  */
 export function fittedTextures(parser: GLTFParser, max: number, concurrency = 3): GLTFLoaderPlugin {
@@ -196,14 +199,69 @@ export function fittedTextures(parser: GLTFParser, max: number, concurrency = 3)
   return {
     name: 'catalyst_fitted_textures',
     loadTexture(textureIndex: number) {
-      const json = parser.json as { textures: Array<{ source?: number; extensions?: Record<string, unknown> }>; images: Array<{ uri?: string; bufferView?: number }> }
+      const json = parser.json as { textures: Array<{ source?: number; extensions?: Record<string, unknown> }>; images: Array<{ uri?: string; bufferView?: number; mimeType?: string }> }
       const def = json.textures[textureIndex]
       if (def.source == null || (def.extensions && Object.keys(def.extensions).length) || typeof createImageBitmap === 'undefined') return null
       const image = json.images[def.source]
       if (image.bufferView == null && !image.uri) return null
+      if (image.mimeType === 'image/ktx2' || /\.ktx2$/i.test(image.uri ?? '')) return null
       return (parser as unknown as { loadTextureImage: (t: number, s: number, l: unknown) => Promise<THREE.Texture | null> }).loadTextureImage(textureIndex, def.source, loader)
     },
   } as GLTFLoaderPlugin
+}
+
+// ─── Compressed textures (KTX2) ─────────────────────────────────────────────
+
+export interface MipSize { width: number; height: number }
+
+/**
+ * How many of a texture's top mip levels to leave out so that what is left
+ * fits within `max` on its long side: up to the first level that fits (with
+ * `blockAligned`, the first that fits and is whole 4×4 blocks, as S3TC and
+ * BPTC need of the largest level). 0 when the texture already fits, has no
+ * smaller levels, or no level qualifies (then it stays as authored).
+ */
+export function mipLevelsToSkip(levels: readonly MipSize[], max: number, blockAligned = false): number {
+  if (levels.length < 2 || !Number.isFinite(max)) return 0
+  for (let k = 0; k < levels.length; k++) {
+    const { width, height } = levels[k]
+    if (Math.max(width, height) > max) continue
+    if (k === 0) return 0
+    if (blockAligned && (width % 4 || height % 4)) continue
+    return k
+  }
+  return 0
+}
+
+// Formats whose largest level must be whole 4×4 blocks in WebGL.
+const BLOCK_ALIGNED = new Set<number>([
+  THREE.RGB_S3TC_DXT1_Format, THREE.RGBA_S3TC_DXT1_Format, THREE.RGBA_S3TC_DXT3_Format, THREE.RGBA_S3TC_DXT5_Format,
+  THREE.RGBA_BPTC_Format, THREE.RGB_BPTC_SIGNED_Format, THREE.RGB_BPTC_UNSIGNED_Format,
+  THREE.RED_RGTC1_Format, THREE.SIGNED_RED_RGTC1_Format, THREE.RED_GREEN_RGTC2_Format, THREE.SIGNED_RED_GREEN_RGTC2_Format,
+])
+
+const isCompressed2D = (texture: THREE.Texture): texture is THREE.CompressedTexture =>
+  (texture as THREE.CompressedTexture).isCompressedTexture === true && !Array.isArray(texture.image) &&
+  !(texture as THREE.Texture & { isCompressedArrayTexture?: boolean }).isCompressedArrayTexture
+
+/**
+ * Caps a transcoded KTX2 texture (a CompressedTexture with its mip levels)
+ * at `max` px on its long side before its first upload by leaving out its
+ * top levels: no image to decode smaller, and the levels below are the
+ * same picture already filtered down. Anything else is returned as it is.
+ */
+export function capCompressedTexture<T extends THREE.Texture>(texture: T, max: number): T {
+  if (!Number.isFinite(max) || !isCompressed2D(texture)) return texture
+  const t: THREE.CompressedTexture = texture
+  const mipmaps = t.mipmaps ?? []
+  const skip = mipLevelsToSkip(mipmaps, max, BLOCK_ALIGNED.has(t.format))
+  if (!skip) return texture
+  t.mipmaps = mipmaps.slice(skip)
+  const image = t.image as { width: number; height: number }
+  image.width = t.mipmaps[0].width
+  image.height = t.mipmaps[0].height
+  t.needsUpdate = true
+  return texture
 }
 
 /** Every texture of the materials under `root`, by its image source. */
@@ -232,9 +290,10 @@ const pendingSources = new Map<THREE.Texture["source"], Set<THREE.Texture>>()
 let releasedCount = 0
 
 /**
- * Drop the CPU copies under `root` once they are on the GPU: each image
- * when every texture using it has been uploaded (releaseUploaded, after
- * each frame), and with `geometry` each vertex and index buffer as it is
+ * Drop the CPU copies under `root` once they are on the GPU: each image (a
+ * compressed texture's mip levels) when every texture using it has been
+ * uploaded (releaseUploaded, after each frame), and with `geometry` each
+ * vertex and index buffer as it is
  * uploaded. Nothing under `root` can be uploaded again afterwards (a lost
  * context means building it again), and its geometry cannot be measured or
  * read: only for what is never changed or queried once drawn.
@@ -286,7 +345,14 @@ export function releaseUploaded(renderer: THREE.WebGLRenderer) {
     pendingSources.delete(source)
     const image = source.data as ImageBitmap | { width?: number; height?: number } | null
     if (!image) continue
-    for (const texture of textures) texture.userData.gpuSize = [image.width ?? 0, image.height ?? 0]
+    for (const texture of textures) {
+      texture.userData.gpuSize = [image.width ?? 0, image.height ?? 0]
+      // A compressed (KTX2) texture's pixels are its mip levels (each copy
+      // has its own list of the same levels); its image is only its size,
+      // dropped too so that an upload after this one is skipped, not tried
+      // without the levels.
+      if (isCompressed2D(texture)) texture.mipmaps = []
+    }
     source.data = null
     if (typeof (image as ImageBitmap).close === 'function') (image as ImageBitmap).close()
     releasedCount++

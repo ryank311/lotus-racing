@@ -22,6 +22,7 @@ import { GrassField, GRASS_QUALITY } from './grass'
 import type { Look as WeatherLook } from './weather'
 import { fitToRoad, type RoadFit, type TrackEdges } from './align'
 import { anyReleased, releaseUploaded, releaseWhenUploaded, replayProfile } from './budget'
+import { configureKtx2 } from './ktx2'
 
 /** 'both' keeps your car and the compared car in frame (chase when there is none). */
 export type ReplayView = 'driver' | 'garmin' | 'chase' | 'both' | 'orbit'
@@ -278,6 +279,7 @@ export class ReplayEngine {
   constructor(private container: HTMLElement) {
     const reversedDepthBuffer = supportsReversedDepth()
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', reversedDepthBuffer, logarithmicDepthBuffer: !reversedDepthBuffer })
+    configureKtx2(this.renderer)
     this.renderer.setPixelRatio(this.pixelRatio)
     installToneMapping()
     this.renderer.toneMapping = THREE.CustomToneMapping

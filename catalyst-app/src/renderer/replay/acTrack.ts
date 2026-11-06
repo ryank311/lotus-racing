@@ -16,6 +16,7 @@ import type { LocalFrame } from './geo'
 import { patchWorldMaterial, type SurfaceKind } from './surfaces'
 import { patchCutoutMaterial } from './foliage'
 import { fittedTextures, replayProfile } from './budget'
+import { parseGltf } from './ktx2'
 
 const R_EARTH = 6_378_137
 const DEG = Math.PI / 180
@@ -212,7 +213,8 @@ export async function loadAcTrack(options: AcTrackOptions): Promise<AcTrack> {
   group.name = `track-model:${model.id}`
   group.matrixAutoUpdate = false
   const loader = new GLTFLoader()
-  // On a constrained device the images decode at most this size, a few at a time (budget.ts).
+  // On a constrained device the images decode at most this size, a few at a time (budget.ts);
+  // KTX2 textures are capped the same, by their mip levels (ktx2.ts).
   const { textureMax, decodeConcurrency } = replayProfile()
   if (Number.isFinite(textureMax.track)) loader.register(parser => fittedTextures(parser, textureMax.track, decodeConcurrency))
   const textures = new Set<THREE.Texture>()
@@ -225,7 +227,7 @@ export async function loadAcTrack(options: AcTrackOptions): Promise<AcTrack> {
   try {
     for (const [i, file] of layout.files.entries()) {
       onStep?.(`Loading the track model (${i + 1}/${layout.files.length})`)
-      const gltf = await loader.parseAsync(await buffers[i], '')
+      const gltf = await parseGltf(loader, await buffers[i], textureMax.track)
       gltf.scene.traverse(object => {
         const mesh = object as THREE.Mesh
         if (!mesh.isMesh) return

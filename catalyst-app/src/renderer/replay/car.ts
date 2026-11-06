@@ -7,13 +7,15 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { CarModelFit, CarPreset } from '../../shared/replay'
 import { rigFrame } from './wheels'
 import { fittedTextures, replayProfile } from './budget'
+import { parseGltf } from './ktx2'
 
 export async function parseGlb(buffer: ArrayBuffer): Promise<THREE.Group> {
   const loader = new GLTFLoader()
   // On a constrained device the images decode at most this size (budget.ts): a 4096² livery is 85 MB on the GPU.
+  // KTX2 textures are capped the same, by their mip levels (ktx2.ts).
   const { textureMax, decodeConcurrency } = replayProfile()
   if (Number.isFinite(textureMax.car)) loader.register(parser => fittedTextures(parser, textureMax.car, decodeConcurrency))
-  const gltf = await loader.parseAsync(buffer, '')
+  const gltf = await parseGltf(loader, buffer, textureMax.car)
   const root = gltf.scene
   root.traverse(object => {
     const mesh = object as THREE.Mesh

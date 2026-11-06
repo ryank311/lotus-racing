@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import type { CarModelFit, CarPreset } from '../../shared/replay'
 import { parseGlb } from '../replay/car'
+import { configureKtx2 } from '../replay/ktx2'
 import { CarStudio, type StudioView } from './carStudio'
 import './carModelViewer.css'
 
@@ -60,6 +61,8 @@ export default function CarModelViewer({ model, preset, presetIsCar, fit, view, 
       setFailure(`3D graphics are unavailable in this browser (${error instanceof Error ? error.message : String(error)}).`)
       return
     }
+    // Car models with KTX2 textures transcode for this GPU (replay/ktx2.ts).
+    configureKtx2(created.renderer)
     created.onSize = setSize
     setStudio(created)
     return () => { created.dispose(); setStudio(null) }
