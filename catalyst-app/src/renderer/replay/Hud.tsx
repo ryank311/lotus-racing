@@ -262,6 +262,15 @@ function PipVideo({ engine, lap }: { engine: FrameSource; lap: LapPath }) {
   const car = lap.car!
   const src = api.videoUrl(car.videoId, car.driver)
   const steady = replayProfile().webkitMobile
+  // Unmounted, the element lets its media go (a video kept by the browser
+  // holds its decoder and buffered data). Development's StrictMode remounts:
+  // the source goes back (before the sync below starts it).
+  useEffect(() => {
+    const el = video.current
+    if (!el) return
+    if (!el.getAttribute('src')) el.setAttribute('src', src)
+    return () => { el.pause(); el.removeAttribute('src'); el.load() }
+  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const el = video.current
     if (!el) return
@@ -293,7 +302,8 @@ function PipVideo({ engine, lap }: { engine: FrameSource; lap: LapPath }) {
       const isCovered = target != null
       if (isCovered !== lastCovered) { lastCovered = isCovered; setCovered(isCovered) }
       if (target == null) { if (!el.paused) el.pause(); return }
-      if (state.playing) { if (el.paused) play() } else if (!el.paused) el.pause()
+      // A hidden page's video waits; visibilitychange brings it back in step.
+      if (state.playing && !document.hidden) { if (el.paused) play() } else if (!el.paused) el.pause()
       const plan = sync.plan(state, target, el, performance.now())
       if (plan.seekTo != null) { sync.seeking(performance.now()); el.currentTime = plan.seekTo }
       if (plan.rate != null && plan.rate !== el.playbackRate) el.playbackRate = plan.rate
@@ -301,15 +311,18 @@ function PipVideo({ engine, lap }: { engine: FrameSource; lap: LapPath }) {
     // A seek that finishes after the replay stopped publishing catches up here.
     const onSeeked = () => { sync.seeked(performance.now(), !!latest?.playing); if (latest) apply(latest) }
     const resync = () => { if (latest) apply(latest) }
+    const onVisibility = () => { if (document.hidden) el.pause(); else resync() }
     el.addEventListener('seeked', onSeeked)
     el.addEventListener('loadedmetadata', resync)
     el.addEventListener('canplay', resync)
+    document.addEventListener('visibilitychange', onVisibility)
     const unsubscribe = engine.subscribe(apply)
     return () => {
       unsubscribe()
       el.removeEventListener('seeked', onSeeked)
       el.removeEventListener('loadedmetadata', resync)
       el.removeEventListener('canplay', resync)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [engine, lap, steady])
   // A tap on the video starts it where the browser refused to.
