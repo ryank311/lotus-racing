@@ -8,7 +8,7 @@ const outputDir = fileURLToPath(new URL('../dist-renderer/', import.meta.url))
 const brotliAsync = promisify(brotliCompress)
 const gzipAsync = promisify(gzip)
 for (const name of await readdir(outputDir, { recursive: true })) {
-  if (!/\.(js|css)$/.test(name)) continue
+  if (!/\.(js|css|wasm)$/.test(name)) continue
   const file = path.join(outputDir, name)
   const source = await readFile(file)
   const [br, gz] = await Promise.all([

@@ -12,6 +12,7 @@ function mimeType(filePath: string): string {
     case '.png': return 'image/png'
     case '.ico': return 'image/x-icon'
     case '.woff2': return 'font/woff2'
+    case '.wasm': return 'application/wasm'
     default: return 'application/octet-stream'
   }
 }
@@ -59,7 +60,7 @@ export function serveStaticAsset(req: IncomingMessage, res: ServerResponse, stat
   }
 
   const quality = encodingQuality(req.headers['accept-encoding'])
-  const compressible = /\.(js|css)$/.test(filePath)
+  const compressible = /\.(js|css|wasm)$/.test(filePath)
   const candidates = [
     ...(compressible ? [{ encoding: 'br', file: filePath + '.br' }, { encoding: 'gzip', file: filePath + '.gz' }] : []),
     { encoding: 'identity', file: filePath },
