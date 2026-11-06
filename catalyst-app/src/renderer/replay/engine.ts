@@ -23,6 +23,8 @@ import type { Look as WeatherLook } from './weather'
 import { fitToRoad, type RoadFit, type TrackEdges } from './align'
 import { anyReleased, releaseUploaded, releaseWhenUploaded, replayProfile } from './budget'
 import { configureKtx2 } from './ktx2'
+import { adapt, FrameWindow, type Ladder } from './resolution'
+import { removeFrontHalves, splitDoubleSided, transparentSort } from './twoSided'
 
 /** 'both' keeps your car and the compared car in frame (chase when there is none). */
 export type ReplayView = 'driver' | 'garmin' | 'chase' | 'both' | 'orbit'
@@ -110,8 +112,8 @@ const DEG = Math.PI / 180
 export type GraphicsLevel = 'high' | 'medium' | 'low'
 // The Garmin lens's drawn size (× the screen) and multisampling, by graphics level.
 const LENS_QUALITY: Record<GraphicsLevel, [number, number]> = { high: [1.1, 4], medium: [1, 2], low: [1, 0] }
-// Auto graphics step down to medium only at or below this pixel ratio.
-const AUTO_QUALITY_RATIO = 1.25
+// A new car body waits this long at most for its shaders before it shows (prewarmBody).
+const BODY_WARM_MAX_MS = 500
 // The inside cameras ride a steady mount, not the car's every bump: its
 // height, pitch and roll come from the ground this far ahead of and behind
 // the car, then a light spring (with lead, so it never lags on a climb).
@@ -169,6 +171,17 @@ interface CarRig {
   fit: CarModelFit | null
   /** Its resting height on the ground at a lap time, for its springs. */
   ground: GroundAt
+  /** A new body kept hidden while its shaders compile (prewarmBody). */
+  warming: THREE.Object3D | null
+}
+
+// A car body's see-through double-sided parts drawn as two meshes, back and
+// front faces (twoSided.ts): the same draws as three's two passes, without
+// its program lookups each frame. Before freeing a body the front halves
+// come out (they share their parents' geometry) and their materials go.
+function freeBody(root: THREE.Object3D) {
+  for (const material of removeFrontHalves(root)) material.dispose()
+  disposeObject(root)
 }
 
 // Finds a fitted model's wheels and rigs them (wheels.ts); without them they stay still and the body level.
@@ -178,13 +191,26 @@ function rigWheels(fitted: THREE.Group, fit: CarModelFit, which: string) {
   else if (REPLAY_DEBUG) console.info(`[replay] ${which} wheels by ${wheels.method}: ${wheels.wheels.map(w => `${w.corner} r ${w.radiusM.toFixed(3)} m at [${w.centreM.join(', ')}] ← ${w.parts.join(', ')}`).join(' · ')}`)
 }
 
-function supportsReversedDepth(): boolean {
+/**
+ * The canvas and its WebGL 2 context, made here so the reversed depth
+ * buffer's extension is checked on the context the renderer uses (not on a
+ * throwaway one). The attributes are those WebGLRenderer asks for itself:
+ * alpha on (its own `alpha` option, off, only sets the clear alpha, which
+ * the constructor sets to match), and our antialias and power preference.
+ */
+function createContext(): { canvas: HTMLCanvasElement; context: WebGL2RenderingContext | null; reversedDepth: boolean } {
+  const canvas = document.createElement('canvas')
+  canvas.style.display = 'block'
+  let context: WebGL2RenderingContext | null = null
   try {
-    const gl = document.createElement('canvas').getContext('webgl2')
-    const ok = !!gl?.getExtension('EXT_clip_control')
-    gl?.getExtension('WEBGL_lose_context')?.loseContext()
-    return ok
-  } catch { return false }
+    context = canvas.getContext('webgl2', {
+      alpha: true, depth: true, stencil: false, antialias: true, premultipliedAlpha: true,
+      preserveDrawingBuffer: false, powerPreference: 'high-performance', failIfMajorPerformanceCaveat: false,
+    })
+  } catch { context = null }
+  let reversedDepth = false
+  try { reversedDepth = !!context?.getExtension('EXT_clip_control') } catch { /* without it */ }
+  return { canvas, context, reversedDepth }
 }
 
 export class ReplayEngine {
@@ -250,6 +276,9 @@ export class ReplayEngine {
   private mount = { ready: false, y: 0, target: 0, vel: 0, quat: new THREE.Quaternion() }
   // The highest resolution that held the frame rate in this world.
   private ceiling = 2
+  // No more steps down in this world (a step that did not help), and the step being judged (resolution.ts).
+  private capped = false
+  private trial: Ladder['trial'] = null
   private lost = false
   private disposed = false
   private looks: Record<LookView, { target: Look; now: Look }> = {
@@ -264,8 +293,7 @@ export class ReplayEngine {
   private lastTap = { t: 0, x: 0, y: 0 }
   // Resolution adapts to hold the frame rate on slower GPUs.
   private pixelRatio = Math.min(replayProfile().maxPixelRatio, window.devicePixelRatio || 1)
-  private perfStart = 0
-  private perfFrames = 0
+  private frameWindow = new FrameWindow()
   private raiseAfter = 0
   onContextLost?: (lost: boolean) => void
   /**
@@ -277,10 +305,14 @@ export class ReplayEngine {
   onEnded?: () => void
 
   constructor(private container: HTMLElement) {
-    const reversedDepthBuffer = supportsReversedDepth()
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', reversedDepthBuffer, logarithmicDepthBuffer: !reversedDepthBuffer })
+    const { canvas: element, context, reversedDepth: reversedDepthBuffer } = createContext()
+    this.renderer = new THREE.WebGLRenderer({ canvas: element, ...(context ? { context: context as unknown as WebGLRenderingContext } : {}), antialias: true, powerPreference: 'high-performance', reversedDepthBuffer, logarithmicDepthBuffer: !reversedDepthBuffer })
     configureKtx2(this.renderer)
     this.renderer.setPixelRatio(this.pixelRatio)
+    // Cleared opaque, as with a context of three's own (its alpha option off; createContext). Its
+    // transparent sort, keeping a split mesh's halves together (twoSided.ts).
+    this.renderer.setClearAlpha(1)
+    this.renderer.setTransparentSort(transparentSort)
     installToneMapping()
     this.renderer.toneMapping = THREE.CustomToneMapping
     this.renderer.toneMappingExposure = 0.7
@@ -310,17 +342,28 @@ export class ReplayEngine {
       root.add(shadow)
       root.visible = false
       this.scene.add(root)
-      const rig: CarRig = { root, body: null, shadow, hint: 0, pose: {} as LapPose, motion: null, preset: null, fit: null, ground: (lap, timeMs) => this.restingHeight(rig, lap, timeMs) }
+      const rig: CarRig = { root, body: null, shadow, hint: 0, pose: {} as LapPose, motion: null, preset: null, fit: null, ground: (lap, timeMs) => this.restingHeight(rig, lap, timeMs), warming: null }
       return rig
     }
     this.car = rig()
     this.ghostCar = rig()
     this.ghostCar.shadow.visible = false
 
-    this.resizeObserver = new ResizeObserver(() => this.resize())
+    this.resizeObserver = new ResizeObserver(() => { this.measureAfresh(); this.resize() })
     this.resizeObserver.observe(container)
+    document.addEventListener('visibilitychange', this.onVisibility)
     this.resize()
     this.frameHandle = requestAnimationFrame(this.frame)
+  }
+
+  // A tab or app switch is not a slow frame: the frame rate is measured afresh.
+  private onVisibility = () => { this.frameWindow.reset() }
+
+  // Another stage size or view costs differently: no window spans the change,
+  // and a step down being judged is kept (the frame rates either side do not compare).
+  private measureAfresh() {
+    this.frameWindow.reset()
+    this.trial = null
   }
 
   /** The session's weather and light (weather.ts lookFor). */
@@ -344,7 +387,10 @@ export class ReplayEngine {
   setGraphics(choice: 'auto' | GraphicsLevel) {
     this.graphics = choice
     this.setQuality(choice === 'auto' ? replayProfile().autoGraphics : choice)
-    if (choice === 'auto') this.ceiling = 2
+    if (choice === 'auto') { this.ceiling = 2; this.capped = false }
+    this.measureAfresh()
+    // Below 1 × resolution only on Auto (resolution.ts).
+    if (choice !== 'auto' && this.pixelRatio < 1) { this.pixelRatio = 1; this.resize() }
   }
 
   private setQuality(quality: GraphicsLevel) {
@@ -354,6 +400,62 @@ export class ReplayEngine {
     this.lens?.setQuality(...LENS_QUALITY[quality])
     this.invalidate()
     this.publish()
+  }
+
+  // The Garmin lens draws the scene into a target of its own (lens.ts), made when first wanted.
+  private ensureLens(): LensPass {
+    if (!this.lens) {
+      this.lens = new LensPass()
+      this.lens.setQuality(...LENS_QUALITY[this.quality])
+    }
+    return this.lens
+  }
+
+  /**
+   * Compile the scene's shaders without drawing, in parallel where the
+   * browser can (compileAsync, KHR_parallel_shader_compile), for the screen
+   * or for the Garmin lens: its linear target keys a second program for
+   * every material (lens.ts), which its first frame would otherwise compile
+   * while the page waits.
+   */
+  private compileScene(target: 'screen' | 'lens'): Promise<unknown> {
+    if (this.disposed || this.lost) return Promise.resolve()
+    try {
+      return target === 'lens' ? this.ensureLens().compile(this.renderer, this.scene) : this.renderer.compileAsync(this.scene, this.camera)
+    } catch (error) { return Promise.reject(error) }
+  }
+
+  // When the page is idle (no sooner than after the frame being drawn).
+  private whenIdle(task: () => void) {
+    const idle = (window as Window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number }).requestIdleCallback
+    if (idle) idle(task, { timeout: 2000 })
+    else setTimeout(task, 200)
+  }
+
+  /**
+   * A new car body after the scene was prepared: hidden (placeCars) while its
+   * shaders compile in parallel, so no frame waits on them; shown when they
+   * are ready, after BODY_WARM_MAX_MS at the latest. Where the browser cannot
+   * compile in parallel there is nothing to wait for: it shows at once.
+   */
+  private prewarmBody(rig: CarRig) {
+    const body = rig.body
+    rig.warming = null
+    if (!body || this.disposed || this.lost) return
+    let pending: Promise<unknown>
+    try {
+      // For the view it is first drawn in.
+      pending = this.view === 'garmin' ? this.ensureLens().compile(this.renderer, this.scene, body) : this.renderer.compileAsync(body, this.camera, this.scene)
+    } catch { return }
+    if (!this.renderer.extensions.has('KHR_parallel_shader_compile')) return
+    rig.warming = body
+    const show = () => {
+      if (rig.warming !== body) return
+      rig.warming = null
+      this.invalidate()
+    }
+    pending.then(show, show)
+    setTimeout(show, BODY_WARM_MAX_MS)
   }
 
   // Grass on a track model's turf at a level that has it (none on Low).
@@ -396,6 +498,8 @@ export class ReplayEngine {
   }
 
   private contextRestored = () => {
+    // three (its handler runs first) set its clear alpha again from the context's attributes (createContext).
+    this.renderer.setClearAlpha(1)
     // Textures or geometry without their CPU copy cannot be uploaded again (budget.ts).
     if (anyReleased()) {
       this.needsRebuild = true
@@ -437,9 +541,16 @@ export class ReplayEngine {
     this.placeCamera(0)
     // The sky's environment and the shadows first: the materials compile with them.
     this.prepareLight(performance.now())
-    try { await this.renderer.compileAsync(this.scene, this.camera) } catch { /* drawing compiles what is left */ }
+    // For the view it opens on: the Garmin lens's programs, or the screen's.
+    const first = this.view === 'garmin' ? 'lens' : 'screen'
+    const bodies = [this.car.body, this.ghostCar.body]
+    try { await this.compileScene(first) } catch { /* drawing compiles what is left */ }
+    // The bodies in the scene were compiled with it: they show in the frames that upload their textures.
+    for (const rig of [this.car, this.ghostCar]) if (rig.warming && bodies.includes(rig.warming)) rig.warming = null
     this.invalidate(3)
     await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    // Once shown, the other set when idle, so a switch to or from the Garmin view does not stall.
+    this.whenIdle(() => { void this.compileScene(first === 'lens' ? 'screen' : 'lens').catch(() => {}) })
   }
 
   subscribe(listener: (state: FrameState) => void): () => void {
@@ -463,7 +574,10 @@ export class ReplayEngine {
     this.applyAlignment()
     this.rebuildLines()
     this.chaseReady = this.mount.ready = false
+    // A new world: the resolution ladder starts afresh (resolution.ts).
     this.ceiling = 2
+    this.capped = false
+    this.measureAfresh()
     this.invalidate()
   }
 
@@ -561,6 +675,9 @@ export class ReplayEngine {
     if (this.ghost) {
       // Another driver's line in their colour, a touch wider; a ghost's in cyan.
       this.ghostLine = buildLapLine(this.ghost, road, this.rival ? this.rival.color.clone() : new THREE.Color(GHOST_COLOR), [0, 1], this.rival ? 0.2 : 0.16, this.world?.surface)
+      // A see-through ribbon on the ground, double-sided: one pass draws the
+      // same as three's two (back faces, then front), without a program lookup each.
+      ;(this.ghostLine.material as THREE.Material).forceSinglePass = true
       this.ghostLine.visible = this.showGhostLine
       this.scene.add(this.ghostLine)
     }
@@ -582,6 +699,8 @@ export class ReplayEngine {
       const fitted = fittedModel(model, fit)
       // Before the ghost's copy, which takes the rig along.
       if (!fit.staticWheels) rigWheels(fitted, fit, 'car')
+      // After the rig (which moves and cuts meshes), before the ghost's copy (which drops the halves).
+      splitDoubleSided(fitted)
       this.car.body = fitted
     } else {
       this.car.body = buildPlaceholder(preset, paint, null)
@@ -593,6 +712,7 @@ export class ReplayEngine {
     this.reflectEnvironment(this.car.body)
     this.car.shadow.scale.set(preset.widthM / 1.8, 1, preset.lengthM / 4)
     this.applyView()
+    this.prewarmBody(this.car)
     this.invalidate()
   }
 
@@ -601,19 +721,21 @@ export class ReplayEngine {
   private clearCars(nextModel: THREE.Object3D | null = null) {
     if (!this.rival) this.clearGhostBody()
     if (this.car.body) this.car.root.remove(this.car.body)
-    if (this.model) { if (this.model !== nextModel) disposeObject(this.model) }
-    else if (this.car.body) disposeObject(this.car.body)
+    if (this.model) { if (this.model !== nextModel) freeBody(this.model) }
+    else if (this.car.body) freeBody(this.car.body)
     this.car.body = null
     this.car.motion = null
+    this.car.warming = null
   }
 
   private clearGhostBody() {
     const body = this.ghostCar.body
     if (body) {
       this.ghostCar.root.remove(body)
-      if (this.ghostOwns === 'all') disposeObject(body)
+      if (this.ghostOwns === 'all') freeBody(body)
       else if (this.ghostOwns === 'geometry') disposeGeometry(body)
     }
+    this.ghostCar.warming = null
     if (this.rivalTag) {
       this.rivalTag.removeFromParent()
       this.rivalTag.material.map?.dispose()
@@ -639,7 +761,10 @@ export class ReplayEngine {
       } else body = buildPlaceholder(preset, rival.color, null)
       tintCar(body, rival.color, this.rivalMarked ? RIVAL_TINT : 0)
       this.reflectEnvironment(body)
-      this.rivalMaterials = seeThrough(body)
+      const solid = seeThrough(body)
+      // Its double-sided parts are see-through now too: split, both halves fading together.
+      const fronts = splitDoubleSided(body)
+      this.rivalMaterials = solid.flatMap(m => (fronts.has(m) ? [m, fronts.get(m)!] : [m]))
       this.shadowedBodies.add(body)
       this.rivalFade = 1
       rig.body = body
@@ -653,12 +778,15 @@ export class ReplayEngine {
       rig.fit = this.car.fit
       if (!this.car.body || !this.preset) return
       rig.body = this.model ? ghostCopy(this.car.body, this.ghostShape) : buildPlaceholder(this.preset, this.paint, this.ghostShape)
+      // One translucent single-sided material over the whole copy: the split's front halves would draw twice.
+      if (this.model) removeFrontHalves(rig.body)
       this.ghostOwns = this.model ? 'none' : 'geometry'
     }
     rig.root.add(rig.body)
     const preset = rig.preset!
     rig.shadow.scale.set(preset.widthM / 1.8, 1, preset.lengthM / 4)
     rig.shadow.visible = !!rival
+    this.prewarmBody(rig)
   }
 
   /**
@@ -822,6 +950,9 @@ export class ReplayEngine {
   }
 
   setView(view: ReplayView) {
+    // The lens's programs (prepare compiles them when idle; started here if not yet), without waiting on them.
+    if (view === 'garmin' && this.view !== 'garmin') void this.compileScene('lens').catch(() => {})
+    if (view !== this.view) this.measureAfresh()
     this.view = view
     this.chaseReady = this.mount.ready = this.both.ready = false
     this.applyView()
@@ -904,12 +1035,9 @@ export class ReplayEngine {
     this.placeCamera(dt)
     this.prepareLight(now)
     if (this.view === 'garmin') {
-      if (!this.lens) {
-        this.lens = new LensPass()
-        this.lens.setQuality(...LENS_QUALITY[this.quality])
-      }
-      this.lens.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
-      this.lens.render(this.renderer, this.scene)
+      const lens = this.ensureLens()
+      lens.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
+      lens.render(this.renderer, this.scene)
     } else this.renderer.render(this.scene, this.camera)
     // A constrained device drops the CPU copies of what is now on the GPU (budget.ts).
     releaseUploaded(this.renderer)
@@ -940,27 +1068,27 @@ export class ReplayEngine {
 
   // Every change of resolution is a visible jump (fine detail such as leaves
   // most of all), so it must not hunt: a level that could not hold the frame
-  // rate is not tried again in this world, and changes wait for 3 s of frames.
+  // rate is not tried again in this world, a step that did not help is
+  // undone, and changes wait for 3 s of frames (resolution.ts). Only while
+  // playing and in view: paused, hidden or just back, nothing is measured.
   private adaptResolution(now: number) {
-    if (!this.playing) { this.perfStart = 0; return }
-    if (!this.perfStart) { this.perfStart = now; this.perfFrames = 0; return }
-    this.perfFrames++
-    if (now - this.perfStart < 3000) return
-    const fps = this.perfFrames * 1000 / (now - this.perfStart)
-    this.perfStart = 0
-    const max = Math.min(this.ceiling, replayProfile().maxPixelRatio, window.devicePixelRatio || 1)
-    let next = this.pixelRatio
-    // Auto graphics: down to 1.25 × resolution first, then medium graphics, then lower.
-    if (fps < 45 && this.graphics === 'auto' && this.quality === 'high' && this.pixelRatio <= AUTO_QUALITY_RATIO) {
-      this.setQuality('medium')
-    } else if (fps < 45 && this.pixelRatio > 1) {
-      next = Math.max(1, this.pixelRatio - 0.25)
-      this.ceiling = next
-    } else if (fps > 58 && this.pixelRatio < max && now > this.raiseAfter) {
-      next = Math.min(max, this.pixelRatio + 0.25)
-      this.raiseAfter = now + 10_000
-    }
-    if (next !== this.pixelRatio) { this.pixelRatio = next; this.resize() }
+    if (!this.playing || document.hidden) { this.frameWindow.reset(); return }
+    const fps = this.frameWindow.add(now)
+    if (fps === null) return
+    const limit = Math.min(replayProfile().maxPixelRatio, window.devicePixelRatio || 1)
+    const next = adapt(
+      { ratio: this.pixelRatio, quality: this.quality, ceiling: this.ceiling, capped: this.capped, trial: this.trial, raiseAfter: this.raiseAfter },
+      fps, { auto: this.graphics === 'auto', limit, now },
+    )
+    this.ceiling = next.ceiling
+    this.capped = next.capped
+    this.trial = next.trial
+    this.raiseAfter = next.raiseAfter
+    if (next.quality === this.quality && next.ratio === this.pixelRatio) return
+    if (next.quality !== this.quality) this.setQuality(next.quality)
+    if (next.ratio !== this.pixelRatio) { this.pixelRatio = next.ratio; this.resize() }
+    // The frames of the change itself are not the new level's.
+    this.frameWindow.reset()
   }
 
   private placeCars() {
@@ -977,7 +1105,9 @@ export class ReplayEngine {
     if (this.rival) this.fadeRival()
     // The driver's own body is in the way of the view from inside, but the
     // dashboard of a real model is the point: only the placeholder hides.
-    if (this.car.body) this.car.body.visible = !(this.view === 'driver' && !this.model)
+    // A new body waits for its shaders (prewarmBody).
+    if (this.car.body) this.car.body.visible = !(this.view === 'driver' && !this.model) && this.car.warming !== this.car.body
+    if (this.ghostCar.body) this.ghostCar.body.visible = this.ghostCar.warming !== this.ghostCar.body
     this.car.shadow.visible = this.view !== 'driver' && this.view !== 'garmin'
   }
 
@@ -1367,6 +1497,7 @@ export class ReplayEngine {
     this.disposed = true
     cancelAnimationFrame(this.frameHandle)
     this.resizeObserver.disconnect()
+    document.removeEventListener('visibilitychange', this.onVisibility)
     this.orbit?.dispose()
     this.lens?.dispose()
     this.listeners.clear()

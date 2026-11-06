@@ -100,6 +100,22 @@ export class LensPass {
     inner.updateMatrixWorld()
   }
 
+  /**
+   * Compile the programs of `object` (default: the whole scene) in `scene`
+   * for this pass without drawing (and the pass's own), in parallel where the
+   * browser can. three keys a material's program on the colour space of the
+   * target it draws into, and this one's is linear: the screen's programs do
+   * not serve it, so the first frame through the lens would compile every
+   * material again while the page waits.
+   */
+  compile(renderer: THREE.WebGLRenderer, scene: THREE.Scene, object: THREE.Object3D = scene): Promise<unknown> {
+    const before = renderer.getRenderTarget()
+    let programs: Promise<unknown>
+    renderer.setRenderTarget(this.target)
+    try { programs = renderer.compileAsync(object, this.inner, scene) } finally { renderer.setRenderTarget(before) }
+    return Promise.all([programs, renderer.compileAsync(this.screen, this.screenCamera)])
+  }
+
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2())
     // A little over the screen's resolution: the lens magnifies the middle
