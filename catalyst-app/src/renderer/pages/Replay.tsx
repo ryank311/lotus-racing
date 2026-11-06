@@ -11,6 +11,7 @@ import { routeUrl, segment } from '../routes'
 import { useResource } from '../useResource'
 import { startLabel } from '../components/reviewTimeline'
 import { SessionPicker } from '../components/SessionPicker'
+import { GhostPicker } from '../replay/GhostPicker'
 import { InlineLoadStatus } from '../components/Loading'
 import { SPEED_RAMP } from '../components/chartTheme'
 import { carModelFor, presetFor, trackModelFor, type CarModel, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
@@ -355,13 +356,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       <label>Lap<select value={lapInfo ? String(lapInfo.lap) : ''} disabled={!scene} onChange={e => selectLap(e.target.value)}>
         {scene?.laps.map(l => <option key={String(l.lap)} value={String(l.lap)}>{l.lap === 'optimal' ? '◆ Optimal' : `${l.isBest ? '★ ' : ''}L${(l.lap as number) + 1}`} · {msToLap(l.durationMs)}{l.hasVideo ? ' · video' : ''}</option>)}
       </select></label>
-      <label>Ghost<select value={ghostInfo ? lapValue(ghostInfo) : 'none'} disabled={!scene} onChange={e => selectGhost(e.target.value)}>
-        <option value="none">No ghost</option>
-        {ghostInfo && !ghostOptions.some(g => g.laps.some(l => lapValue(l) === lapValue(ghostInfo))) && <option value={lapValue(ghostInfo)}>{ghostInfo.label}</option>}
-        {ghostOptions.map(g => <optgroup key={g.group} label={g.group}>
-          {g.laps.map(l => <option key={lapValue(l)} value={lapValue(l)}>{g.group === 'This session' ? (l.lap === 'optimal' ? '◆ Optimal' : `${l.isBest ? '★ ' : ''}L${(l.lap as number) + 1}`) : l.label} · {msToLap(l.durationMs)}</option>)}
-        </optgroup>)}
-      </select></label>
+      <GhostPicker groups={ghostOptions} ghost={ghostInfo} current={lapInfo} sessionGuid={scene?.sessionGuid ?? null}
+        onSelect={selectGhost} disabled={!scene} />
     </div>
 
     <div className={`replay-player${fullscreen.overlay ? ' pseudo-full' : ''}${ready ? '' : ' waiting'}`} ref={playerRef}>
