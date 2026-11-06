@@ -108,7 +108,7 @@ const DRIVER_LOOK_DOWN_DEG = 4
 const GARMIN_BARREL = 0.65
 const Y_AXIS = new THREE.Vector3(0, 1, 0)
 const DEG = Math.PI / 180
-/** Graphics levels; Low is a constrained device's (budget.ts): no grass, small shadows, a plain lens. */
+/** Graphics levels; Low is a constrained device's (budget.ts): no grass blades, small shadows, a plain lens. */
 export type GraphicsLevel = 'high' | 'medium' | 'low'
 // The Garmin lens's drawn size (× the screen) and multisampling, by graphics level.
 const LENS_QUALITY: Record<GraphicsLevel, [number, number]> = { high: [1.1, 4], medium: [1, 2], low: [1, 0] }
@@ -540,7 +540,7 @@ export class ReplayEngine {
     this.placeCars()
     this.placeCamera(0)
     // The sky's environment and the shadows first: the materials compile with them.
-    this.prepareLight(performance.now())
+    this.prepareLight(performance.now(), this.camera)
     // For the view it opens on: the Garmin lens's programs, or the screen's.
     const first = this.view === 'garmin' ? 'lens' : 'screen'
     const bodies = [this.car.body, this.ghostCar.body]
@@ -1035,12 +1035,12 @@ export class ReplayEngine {
     this.placeCars()
     if (this.easeLook(dt)) this.invalidate(1)
     this.placeCamera(dt)
-    this.prepareLight(now)
-    if (this.view === 'garmin') {
-      const lens = this.ensureLens()
-      lens.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
-      lens.render(this.renderer, this.scene)
-    } else this.renderer.render(this.scene, this.camera)
+    // Through the Garmin lens the scene is drawn with its own, wider camera (lens.ts).
+    const lens = this.view === 'garmin' ? this.ensureLens() : null
+    lens?.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
+    this.prepareLight(now, lens?.inner ?? this.camera)
+    if (lens) lens.render(this.renderer, this.scene)
+    else this.renderer.render(this.scene, this.camera)
     // A constrained device drops the CPU copies of what is now on the GPU (budget.ts).
     releaseUploaded(this.renderer)
     this.adaptResolution(now)
@@ -1049,13 +1049,14 @@ export class ReplayEngine {
 
   // Before each render: the sky and the sun's shadows follow the camera, the
   // environment map is rebuilt after a change of weather (and the car's
-  // reflections with it), and a new car body casts and takes shadows.
-  private prepareLight(now: number) {
+  // reflections with it), a new car body casts and takes shadows, and the
+  // grass is laid out for the camera the scene is drawn with.
+  private prepareLight(now: number, view: THREE.Camera) {
     const env = this.atmosphere.environment
     this.atmosphere.update(this.camera, now / 1000, this.car.root.visible ? this.car.root.position : null)
     this.atmosphere.prepare()
     this.atmosphere.renderShadows()
-    this.grass?.update(this.camera)
+    this.grass?.update(view, this.car.root.visible ? this.car.root.position.y : view.position.y - 1.5)
     if (this.atmosphere.environment !== env) this.refreshReflections()
     // Another driver's car is solid: it casts and takes shadows like yours.
     for (const body of [this.car.body, this.rival ? this.ghostCar.body : null]) {

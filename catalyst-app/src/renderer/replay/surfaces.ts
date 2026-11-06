@@ -28,6 +28,11 @@ export const WORLD_UNIFORMS = {
   uShadowEdge: { value: 0.08 },
 }
 
+/** The turf's: the grass field's reach (grass.ts), where it thins from and is gone by (m); 0 without one. */
+export const TURF_UNIFORMS = {
+  uGrassReach: { value: new THREE.Vector2() },
+}
+
 // ─── Procedural textures ───────────────────────────────────────────────────
 
 let seed = 1
@@ -179,11 +184,21 @@ const VERTEX_MAIN = /* glsl */`
 /**
  * Turf, shared by the ground's shader and the grass blades (grass.ts):
  * turfGate(photo) → (how grassy: green over red and saturated, so not sand,
- * gravel or clay; how straw-yellow), and turfAlbedo(brightness, straw, clump
- * noise, dry-patch noise) → lush, dark or straw-green turf at that brightness.
+ * gravel or clay; how straw-yellow), turfAlbedo(brightness, straw, clump
+ * noise, dry-patch noise) → lush, dark or straw-green turf at that
+ * brightness, and a blade's shade against it from its root (TURF_ROOT) to
+ * its tip (turfTip: yellow-green, drier with `dry`).
  */
 export const TURF = /* glsl */`
 const mat2 TURF_ROT = mat2( 0.7986, -0.6018, 0.6018, 0.7986 );
+const vec3 TURF_ROOT = vec3( 0.5, 0.52, 0.4 );
+vec3 turfTip( float dry ) { return mix( vec3( 1.42, 1.36, 0.88 ), vec3( 1.72, 1.5, 0.78 ), dry ); }
+// Those shades as the ground's carpet of short blades mixes them (the view
+// meets a blade about 87 % of the time: turfCarpet, simulated), and its
+// luminance: the turf's brightness is the photo's at that mean.
+const vec3 TURF_MEAN = vec3( 0.84, 0.829, 0.573 );
+const float TURF_MEAN_LUMA = 0.813;
+float turfHash( vec2 p ) { vec3 q = fract( p.xyx * vec3( 0.1031, 0.1030, 0.0973 ) ); q += dot( q, q.yzx + 33.33 ); return fract( ( q.x + q.y ) * q.z ); }
 vec2 turfGate( vec3 c ) {
   float mx = max( c.r, max( c.g, c.b ) ), mn = min( c.r, min( c.g, c.b ) );
   float gr = c.g / max( c.r, 1e-4 );
@@ -209,6 +224,7 @@ uniform float uWet;
 uniform sampler2D uDetail;
 uniform sampler2D uMacro;
 uniform float uShadowEdge;
+uniform vec2 uGrassReach;
 
 ${TURF}
 
@@ -220,6 +236,57 @@ float worldPuddleMask( vec4 macro ) {
   // Two fbm scales (tens of metres and a few metres), so pools are rare and ragged.
   float pools = texture2D( uMacro, vWorldPos.xz * 0.031 + 0.5 ).a * 0.6 + texture2D( uMacro, vWorldPos.xz * 0.13 + 0.2 ).r * 0.4;
   return smoothstep( 0.62, 0.7, pools ) * level * smoothstep( 0.5, 1.0, uWet );
+}
+
+// Short grass seen along the view, as the ground's own carpet: tiny blades
+// about TURF_CELL m apart and up to TURF_TALL m tall, tapering, marched from
+// the top down to the first one the view meets (a parallax volume, like
+// shells in one pass). They stand in two grids, turned and sized apart,
+// that the march steps through in turn, each blade anywhere in its cell, so
+// no rows line up. How far up that blade the view meets it (0-1), or -1 for
+// the dark ground between them.
+const float TURF_CELL = 0.016, TURF_TALL = 0.05;
+const mat2 TURF_GRID_A = mat2( 0.857, 0.515, -0.515, 0.857 ), TURF_GRID_B = mat2( 1.157, -0.354, 0.354, 1.157 );
+float turfCarpet( vec3 p ) {
+  vec3 v = normalize( p - cameraPosition );
+  vec2 back = v.xz / max( -v.y, 0.1 );
+  for ( int i = 0; i < 6; i++ ) {
+    float h = TURF_TALL * ( 1.0 - ( float( i ) + 0.5 ) / 6.0 );
+    vec2 at = p.xz - back * h;
+    bool odd = ( i & 1 ) == 1;
+    vec2 x = ( odd ? TURF_GRID_B * at : TURF_GRID_A * at ) / TURF_CELL;
+    vec2 cell = floor( x ) + ( odd ? 57.0 : 0.0 );
+    vec3 k = vec3( turfHash( cell ), turfHash( cell + 3.1 ), turfHash( cell + 7.7 ) );
+    float tall = TURF_TALL * ( 0.4 + 0.6 * k.z );
+    vec2 off = fract( x ) - 0.15 - 0.7 * k.xy;
+    // Flat: narrow across its face, which turns one of two ways a grid.
+    off = ( k.x > 0.5 ? off.yx : off ) * vec2( 2.2, 0.8 );
+    float r = 0.85 * ( 1.0 - 0.8 * h / tall );
+    if ( h < tall && dot( off, off ) < r * r ) return h / tall;
+  }
+  return -1.0;
+}
+
+// Mowing: lanes 2.4 m wide, mown one way and back, so each looks lighter or
+// darker by which way it is seen from; each field (cells of about 150 m,
+// their centres in the middle half of each, so the nearest is one of the
+// four around) is mown its own way, or not at all, the stripes fading at
+// its edges and with distance before they could alias. -1 to 1.
+float turfMowing( vec2 xz ) {
+  vec2 g = xz / 150.0, gi = floor( g - 0.5 );
+  float d1 = 1e9, d2 = 1e9;
+  vec2 field = gi;
+  for ( int k = 0; k < 4; k++ ) {
+    vec2 id = gi + vec2( float( k & 1 ), float( k >> 1 ) );
+    float d = distance( g, id + 0.25 + 0.5 * vec2( turfHash( id ), turfHash( id + 7.1 ) ) );
+    if ( d < d1 ) { d2 = d1; d1 = d; field = id; } else d2 = min( d2, d );
+  }
+  float a = turfHash( field + 3.3 ) * 3.1416;
+  vec2 dir = vec2( cos( a ), sin( a ) );
+  float lane = dot( xz, vec2( -dir.y, dir.x ) ) / 2.4;
+  float stripe = clamp( sin( lane * 3.1416 ) * 3.0, -1.0, 1.0 );
+  float fade = ( 1.0 - smoothstep( 0.12, 0.35, fwidth( lane ) ) ) * smoothstep( 0.0, 0.05, d2 - d1 ) * step( 0.2, turfHash( field + 5.5 ) );
+  return stripe * dot( normalize( xz - cameraPosition.xz + 1e-4 ), dir ) * fade;
 }
 
 float worldHg( float c, float g ) { float g2 = g * g; return ( 1.0 - g2 ) / pow( 1.0 + g2 - 2.0 * g * c, 1.5 ) * 0.0795774715; }
@@ -321,6 +388,25 @@ const DETAIL = {
   float worldFade = 1.0 - smoothstep( 18.0, 32.0, worldDist );
   float worldTuft = texture2D( uMacro, worldXZ * 1.1 ).r + texture2D( uMacro, TURF_ROT * worldXZ * 2.7 + 0.31 ).r - 1.0;
   diffuseColor.rgb *= 1.0 + 0.2 * worldTuft * worldFade * worldGrassy;
+  // Mowing stripes, gently; and patches of lighter, yellower tips over a
+  // metre or so (mipmapped: they fade to their mean at range).
+  diffuseColor.rgb *= 1.0 + 0.08 * turfMowing( worldXZ ) * worldGrassy;
+  float worldTips = smoothstep( 0.35, 0.75, texture2D( uMacro, TURF_ROT * worldXZ * 0.31 + 0.7 ).g );
+  diffuseColor.rgb *= mix( vec3( 1.0 ), vec3( 1.1, 1.06, 0.86 ), worldTips * worldGrassy );
+  // With the grass field (grass.ts): a carpet of short blades between its
+  // blades, out to where the carpet's are finer than a pixel across; past
+  // that its mean (the blades' yellow-green tips and dark roots).
+  // (Across the view a pixel must stay well under a blade, along it under a
+  // couple: the march's steps are each pixel's own, and alias beyond.)
+  float worldAcross = length( dFdx( worldXZ ) ) / TURF_CELL, worldAlong = length( dFdy( worldXZ ) ) / TURF_CELL;
+  float worldCarpetNear = uGrassReach.y > 0.0 ? ( 1.0 - smoothstep( 0.15, 0.35, worldAcross ) ) * ( 1.0 - smoothstep( 1.0, 2.5, worldAlong ) ) : 0.0;
+  vec3 worldCarpet = TURF_MEAN;
+  if ( worldCarpetNear * worldGrassy > 0.0 ) {
+    float at = turfCarpet( vWorldPos );
+    // Softer close up, where it is the shade between the field's own blades.
+    worldCarpet = mix( worldCarpet, at < 0.0 ? TURF_ROOT * 0.75 : mix( TURF_ROOT, turfTip( worldGate.y ), at ), worldCarpetNear * mix( 0.55, 1.0, smoothstep( 2.0, 8.0, worldDist ) ) );
+  }
+  diffuseColor.rgb *= mix( vec3( 1.0 ), worldCarpet / TURF_MEAN_LUMA, worldGrassy );
   float worldPuddle = 0.0;
   diffuseColor.rgb *= 1.0 - uWet * 0.25;
   diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 0.93, 1.04, 0.9 ), uWet * 0.5 * worldGrassy );
@@ -387,6 +473,7 @@ function group(kind: SurfaceKind): 'road' | 'painted' | 'ground' | 'object' | nu
 // Hooks applied before three resolves includes and unrolls loops.
 function patchShader(shader: THREE.WebGLProgramParametersWithUniforms, kind: SurfaceKind, extraFragment: ((fragment: string) => string) | undefined, detail: number) {
   Object.assign(shader.uniforms, WORLD_UNIFORMS, WORLD_SHADOW_UNIFORMS)
+  if (kind === 'ground') Object.assign(shader.uniforms, TURF_UNIFORMS)
 
   const lit = shader.fragmentShader.includes('#include <lights_fragment_begin>')
   shader.vertexShader = shader.vertexShader

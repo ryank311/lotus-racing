@@ -846,20 +846,44 @@ How the world is built (`src/renderer/replay/`, framework-free; the page is
   smeared close-up texels with a procedural turf (lush, dark and straw greens
   mixed by world noise at three scales, matched to the photo's softened
   brightness, only where the photo is grassy: green over red and saturated,
-  so not sand, gravel or clay) and a fine tuft mottle. Wet: tarmac darker and
-  glossy with a few ragged pools on level ground, kerbs and grass darker,
-  everything reflecting the sky. Textures are generated at startup (no
+  so not sand, gravel or clay), a fine tuft mottle, patches of lighter,
+  yellower tips, and faint mowing stripes (lanes 2.4 m wide that look lighter
+  or darker by which way they are seen from, each field of about 150 m mown
+  its own way or not at all, fading before they could alias). With the grass
+  field (High and Medium) the turf near the camera is a carpet of short
+  blades looked into along the view (a parallax march of six steps through
+  two grids of tiny blades turned apart, like shells in one pass), fading to
+  its mean colour where its blades get smaller than a pixel. Wet: tarmac
+  darker and glossy with a few ragged pools on level ground, kerbs and grass
+  darker, everything reflecting the sky. Textures are generated at startup (no
   assets).
-- `grass.ts`: blades near the camera on a track model's turf. The ground
-  around the camera is drawn from above into a small float map (height, how
-  grassy, brightness), again after the camera has moved a quarter of its
-  150 m: nothing grows on tarmac, kerbs, sand, clay or under buildings. Two
-  rings of clumps (dense to 16 m, sparse to 50 m on High) are placed in the
-  vertex shader on a world grid around the camera, each jittered, turned,
-  sized and coloured from a hash of its world cell (the ground's own turf
-  colour), so nothing moves or pops and there are no tiles; they thin out
-  at each ring's edge, sway with the session's wind, take the shadows and
-  cast none. Two draw calls, about 250k triangles.
+- `grass.ts`, `grassTiles.ts`: a dense field of grass blades around the
+  camera on a track model's turf, after Ghost of Tsushima's grass and
+  SimonDev's three.js grass. The ground around the camera is drawn from above
+  into a small float map (height, how grassy, brightness), again before the
+  field could reach past it (High: 1024² over 180 m): nothing grows on
+  tarmac, kerbs, sand, clay or under buildings. A mask of it per 2 m tile
+  (any turf, the ground's height range) is read back without waiting, so
+  tiles without turf are never drawn and the rest are culled at their real
+  height. Each frame the tiles in view are listed nearest first by tier, and
+  each tier is one instanced draw of a tile's blades: on High six (to 4.5 m
+  blades in three segments, to 13 m in two, then single triangles to 50 m),
+  on Medium four (to 34 m). A tile's blades are blue noise (best candidate,
+  every first n spread evenly), mirrored and turned by the tile, so no rows
+  line up; each blade drops out by its rank as the density falls with
+  distance (1,400 per m² near the camera on High, fewer and wider further
+  out, never under a pixel and a half), so a tile that changes tier keeps
+  its blades, and each eases into the next tier's shape before it does.
+  Blades take their height (4–14 cm), lean, turn and shade from hashes and
+  two noise samples turned apart (tufts of 30–50 cm with no grid), turn
+  partly to face the view so none thins to nothing edge on, are dark at the
+  root and yellow-green at the tip in the ground's own turf colour, sway with
+  the session's wind in gusts that roll across the field, take the shadows
+  (one filtered tap a map) and cast none, and are drawn before the world so
+  the turf behind them is never shaded. On the MacBook Pro's Radeon Pro 560X
+  at 1.75 × the field costs about 1.2 ms of GPU time on High (the turf's
+  carpet and stripes another 0.4) and 0.1–0.2 ms of CPU a frame; Low has
+  neither the blades nor the carpet, only the turf's stripes and patches.
 
 **Align to track** (the "On the track" panel, on by default, remembered in
 this browser; `replay/align.ts`): the Catalyst's GNSS is uncorrected, and its
@@ -896,7 +920,7 @@ Overcast | Wet** shows the session's own look or one of the others at the same
 time of day, and **Graphics: Auto | High | Medium | Low** trades grass, shadow
 resolution and the far shadow map for frame rate (Auto starts on High and steps
 to Medium only once the resolution has come down to 1.25 × and the frame rate
-still drops below 45; Low has no grass, small shadows and the Garmin lens
+still drops below 45; Low has no grass blades, small shadows and the Garmin lens
 without multisampling). Both are remembered in this browser. On the MacBook
 Pro's Radeon Pro 560X at 1.25 × resolution the AC track draws chase in about
 6 ms of GPU time, the driver's view in 8 and the Garmin view (lens pass
