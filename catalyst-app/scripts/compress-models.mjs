@@ -177,6 +177,8 @@ class EncoderPool {
 // ─── Command line ───────────────────────────────────────────────────────────
 
 async function main() {
+  // Room for every model's brotli and gzip at once (libuv reads this when its pool starts).
+  process.env.UV_THREADPOOL_SIZE ??= String(Math.min(16, Math.max(4, os.cpus().length)))
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -762,9 +764,9 @@ async function compressModels(inputs, outDir, settings) {
   if (failures.length) throw new Error(`Textures failed to encode:\n  ${failures.join('\n  ')}`)
   console.log(`Encoded ${total} image(s) in ${seconds(encodeMs)}.`)
 
-  // Write each model, check it and its sidecars.
-  const rows = []
-  for (const model of models) {
+  // Write each model, check it and its sidecars, all at once (brotli 11 is
+  // single-threaded per file and takes minutes on the large ones).
+  const rows = await Promise.all(models.map(async model => {
     const started = performance.now()
     const { document } = model
     let encoded = 0
@@ -800,7 +802,7 @@ async function compressModels(inputs, outDir, settings) {
     const kept = model.textures.filter(e => e.keep)
     const psnrs = model.textures.flatMap(e => (e.check?.psnr.length ? [{ label: e.label, psnr: e.check.psnr[0] }] : []))
     const worst = psnrs.sort((a, b) => a.psnr - b.psnr)[0]
-    rows.push({
+    const row = {
       name: model.name,
       before: { bytes: model.bytes.length, gz: before.gz.length, br: before.br.length },
       after: { bytes: bytes.length, gz: sizes.gz, br: sizes.br },
@@ -808,7 +810,7 @@ async function compressModels(inputs, outDir, settings) {
       gpuAfter: model.textures.reduce((a, e) => a + (e.ktx2 ? gpuBytes(e.outWidth, e.outHeight, true) : gpuBytes(e.width, e.height, false)), 0),
       textures: model.textures.length, encoded, kept, prunedSets, worst,
       ms: model.readMs + performance.now() - started,
-    })
+    }
     console.log(`Wrote ${target} (+ .br, .gz): ${json.nodes?.length ?? 0} nodes, ${json.textures?.length ?? 0} textures (${encoded} KTX2), structure checked${prunedSets ? `, ${prunedSets} unused UV set(s) dropped` : ''}.`)
     if (settings.verbose) {
       for (const e of model.textures) {
@@ -816,7 +818,8 @@ async function compressModels(inputs, outDir, settings) {
         console.log(`    ${e.label.padEnd(36)} ${`${e.width}×${e.height}`.padEnd(11)} [${e.slots.join(', ')}] ${what}`)
       }
     }
-  }
+    return row
+  }))
   printTable(rows, { textures: true, encodeMs })
 }
 

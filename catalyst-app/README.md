@@ -578,8 +578,13 @@ memory) with the textures it left alone:
   dropped (`--no-prune` keeps them); node, mesh and material names, extras
   and everything else are unchanged (checked after writing).
 - It needs Node 22.15 or later (zstd) and the dev dependencies
-  (`@gltf-transform/*`, `ktx2-encoder`, `sharp`); a 46 MB track with ~100
-  textures takes a few minutes on all cores.
+  (`@gltf-transform/*`, `ktx2-encoder`, `sharp`). VIR's five files (~150
+  textures) take about 10 minutes on a 12-core Mac: 3½ encoding on every
+  core, most of the rest brotli 11 on the 94 MB base; the four cars, 3.
+- The trade: textures stay near lossless (PSNR mostly 40–70 dB) and need a
+  quarter of the GPU memory, but UASTC downloads larger than the WebP/PNG
+  it replaces (VIR's files 27 → 94 MB brotli; the cars about the same).
+  Each version downloads once (it is cached for a year).
 
 Then replace the originals on the NAS with all three files of each model,
 keeping their times (`cp -p`; `mv` keeps them too). Stage them in
