@@ -10,11 +10,12 @@ import { NavLink, useNavigation, useRoute } from '../navigation'
 import { routeUrl, segment } from '../routes'
 import { useResource } from '../useResource'
 import { startLabel } from '../components/reviewTimeline'
+import { SessionPicker } from '../components/SessionPicker'
+import { InlineLoadStatus } from '../components/Loading'
 import { SPEED_RAMP } from '../components/chartTheme'
 import { carModelFor, presetFor, trackModelFor, type CarModel, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
 import { speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem } from '../../shared/units'
-import type { DbSessionRow } from '../../shared/types'
-import { ReplayEngine, type ReplayView } from '../replay/engine'
+import { ReplayEngine, type Alignment, type ReplayView } from '../replay/engine'
 import { LapPath } from '../replay/lapPath'
 import { buildModelWorld, buildWorld, type BuiltWorld, type TerrainData } from '../replay/world'
 import { trackModelLabel } from '../replay/acTrack'
@@ -22,6 +23,7 @@ import { parseGlb } from '../replay/car'
 import { shortTrackName } from '../replay/geo'
 import { REPLAY_DEBUG } from '../replay/debug'
 import { ReplayHud, clock, useFrame } from '../replay/Hud'
+import { CoachingCallout, CoachingPanel, CoachingToggles, useReplayCoaching } from '../replay/ReplayCoaching'
 import { WEATHER_CHOICES, lookFor, type Look, type WeatherChoice } from '../replay/weather'
 import '../replay/replay.css'
 
@@ -48,15 +50,6 @@ function trackFile(id: string, file: string): Promise<ArrayBuffer> {
   return bytes
 }
 
-
-function sessionGroups(rows: DbSessionRow[]) {
-  const groups = new Map<string, DbSessionRow[]>()
-  for (const s of [...rows].sort((a, b) => (b.session_start ?? '').localeCompare(a.session_start ?? ''))) {
-    const label = [s.track_name || 'Unknown track', s.track_configuration_name || 'Unknown layout'].join(' · ')
-    groups.set(label, [...(groups.get(label) ?? []), s])
-  }
-  return [...groups.entries()]
-}
 
 type WorldStatus = { step: string; building: boolean; error?: string }
 
@@ -226,6 +219,16 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   useEffect(() => { engine?.setView(debugOrbit ? 'orbit' : view) }, [engine, view, debugOrbit])
   const [lines, setLines] = useState({ racing: true, ghost: true })
   useEffect(() => { engine?.setLines(lines.racing, lines.ghost) }, [engine, lines])
+  // The laps' GPS lined up with the road (align.ts), or as recorded; after setLap/setGhost above.
+  const [align, setAlign] = useState(() => readStored(ALIGN_KEY, ALIGN_CHOICES, 'on') === 'on')
+  const [alignment, setAlignment] = useState<Alignment | null>(null)
+  useEffect(() => {
+    if (!engine) return
+    engine.setAlign(align)
+    setAlignment(engine.alignment())
+  }, [engine, align, lapPath, ghostPath, world])
+  // The session's coaching on the track (ReplayCoaching.tsx), after the lap and its alignment above.
+  const coaching = useReplayCoaching(engine, world, id ?? null, scene?.units ?? 'imperial', lapPath)
 
   // ── Weather and graphics ───────────────────────────────────────────────
   const [weather, setWeather] = useState<WeatherChoice>(() => readStored(WEATHER_KEY, WEATHER_CHOICES, 'auto'))
@@ -308,7 +311,6 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
 
   const selectLap = (value: string) => query({ lap: value })
   const selectGhost = (value: string) => query({ ghost: value })
-  const selectSession = (guid: string) => go(routeUrl(`/replay/${segment(guid)}`, { view: params.get('view') }))
 
   // ── Status ─────────────────────────────────────────────────────────────
   const error = engineError ?? sceneResource.error ?? lapResource.error ?? worldStatus.error ?? null
@@ -343,17 +345,13 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   return <div className="page-body replay-page">
     <header className="replay-header">
       <div><div className="page-eyebrow">// lap replay</div><h1 className="page-title">3D <span className="accent">Replay</span></h1></div>
-      {scene && <p className="replay-header-meta">{scene.track.trackName}{scene.track.configName ? ` · ${scene.track.configName}` : ''}<span>{[scene.vehicle.year, scene.vehicle.make, scene.vehicle.model].filter(Boolean).join(' ')}</span></p>}
     </header>
 
+    <InlineLoadStatus label="sessions" pending={catalogue.pending} error={catalogue.error} hasData={catalogue.data !== undefined} onRetry={catalogue.reload} />
     <div className="replay-pickers">
-      <label>Session<select value={id ?? ''} disabled={!sessions.length} onChange={e => selectSession(e.target.value)}>
-        {!id && <option value="">Choose a session</option>}
-        {id && !sessions.some(s => s.session_guid === id) && <option value={id}>{scene ? startLabel(scene.sessionStart) : 'This session'}</option>}
-        {sessionGroups(sessions).map(([label, rows]) => <optgroup key={label} label={label}>
-          {rows.map(s => <option key={s.session_guid} value={s.session_guid}>{startLabel(s.session_start)}{s.best_lap_ms ? ` · best ${msToLap(s.best_lap_ms)}` : ''}{s.video_count ? ' · video' : ''}</option>)}
-        </optgroup>)}
-      </select></label>
+      <SessionPicker sessions={sessions} selected={id} label="Replay session" loading={catalogue.pending}
+        sessionUrl={guid => routeUrl(`/replay/${segment(guid)}`, { view: params.get('view') })}
+        fallback={scene ? { title: [scene.track.configName, scene.track.trackName].filter(Boolean).join(' · '), detail: `${startLabel(scene.sessionStart)} · ${[scene.vehicle.make, scene.vehicle.model].filter(Boolean).join(' ')}` } : undefined} />
       <label>Lap<select value={lapInfo ? String(lapInfo.lap) : ''} disabled={!scene} onChange={e => selectLap(e.target.value)}>
         {scene?.laps.map(l => <option key={String(l.lap)} value={String(l.lap)}>{l.lap === 'optimal' ? '◆ Optimal' : `${l.isBest ? '★ ' : ''}L${(l.lap as number) + 1}`} · {msToLap(l.durationMs)}{l.hasVideo ? ' · video' : ''}</option>)}
       </select></label>
@@ -373,6 +371,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       {engine && world && <ResetView engine={engine} />}
       {world?.note && <div className="replay-note" role="status">{world.note}</div>}
       {!world?.note && lapMissing && <div className="replay-note" role="status">{lapParam === 'optimal' ? 'Garmin has no optimal lap for this session' : `Lap ${Number(lapParam) + 1} is not a valid lap of this session`}; showing {lapInfo!.label.split(' · ').pop()}.</div>}
+      {engine && lapPath && world && <CoachingCallout coaching={coaching} engine={engine} lap={lapPath} />}
       {showLoader && <ReplayLoader active={!ready} title={loaderTitle} subtitle={lapInfo?.label ?? null} steps={loaderSteps} />}
       {error && <div className="replay-loading error" role="alert"><strong>{error}</strong>
         {worldStatus.error && <button className="btn ghost small" type="button" onClick={() => setWorldAttempt(n => n + 1)}>Try again</button>}</div>}
@@ -384,6 +383,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     </div>
 
     <div className="replay-panels">
+      {lapPath && id && <CoachingPanel coaching={coaching} engine={engine} lap={lapPath} sessionGuid={id} />}
       {lapPath && <section className="replay-panel replay-lines">
         <span className="review-eyebrow">On the track</span>
         <label className="replay-check"><input type="checkbox" checked={lines.racing} onChange={e => setLines(l => ({ ...l, racing: e.target.checked }))} />Racing line, by speed</label>
@@ -392,6 +392,10 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           <div className="replay-legend-labels"><span>{Math.round(speedFromMps(lapPath.minSpeed, units))}</span><span>{Math.round(speedFromMps(lapPath.maxSpeed, units))} {speedUnitLabel(units)}</span></div>
         </div>
         {ghostPath && <label className="replay-check"><input type="checkbox" checked={lines.ghost} onChange={e => setLines(l => ({ ...l, ghost: e.target.checked }))} /><i className="replay-swatch ghost" />Ghost line · {ghostLabel}</label>}
+        <label className="replay-check" title="GPS without corrections is a metre or more off, a little differently each session: shift each lap as a whole so it sits on the road. Off: the GPS as recorded.">
+          <input type="checkbox" checked={align} onChange={e => { setAlign(e.target.checked); store(ALIGN_KEY, e.target.checked ? 'on' : 'off') }} />Align to track</label>
+        {alignment?.lap && <p className="muted small">{alignmentNote(alignment, ghostLabel)}</p>}
+        <CoachingToggles coaching={coaching} />
         <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets</p>
         {world?.edges && <p className="muted small">Road edges: {world.edges.applied ? `from the aerial photo (${Math.round(world.edges.found * 100)}% of the lap; the tarmac centre sits ${Math.abs(world.edges.medianShiftM).toFixed(1)} m ${world.edges.medianShiftM >= 0 ? 'left' : 'right'} of Garmin’s line, typically)` : `±${((scene?.track.widthM ?? 10) / 2).toFixed(1)} m around Garmin’s line`}{world.trees ? ` · ${world.trees.toLocaleString()} trees from the photo` : ''}</p>}
       </section>}
@@ -406,6 +410,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
 // The weather to show (the session's, or a look to check) and the graphics
 // level, remembered in this browser.
 const WEATHER_KEY = 'catalyst:replay-weather'
+const ALIGN_KEY = 'catalyst:replay-align'
+const ALIGN_CHOICES = ['on', 'off'] as const
 const GRAPHICS_KEY = 'catalyst:replay-graphics'
 const GRAPHICS_CHOICES = ['auto', 'high', 'medium'] as const
 type GraphicsChoice = typeof GRAPHICS_CHOICES[number]
@@ -417,6 +423,17 @@ function readStored<T extends string>(key: string, choices: readonly T[], fallba
 }
 function store(key: string, value: string) {
   try { localStorage.setItem(key, value) } catch { /* optional */ }
+}
+
+// The fit in a line: "GPS shifted 3.5 m onto the road: off it for 436 m of the lap as recorded, 8 m now."
+function alignmentNote({ on, lap, ghost }: Alignment, ghostLabel: string | null): string {
+  if (!lap) return ''
+  const shift = (fit: NonNullable<Alignment['lap']>) => `${Math.hypot(fit.dx, fit.dz).toFixed(1)} m`
+  const offRoad = (metres: number) => (metres < 1 ? 'none' : `${Math.round(metres)} m`)
+  if (!lap.applied) return 'This lap does not follow the road closely enough to line up; shown as recorded.'
+  const ghostPart = ghost?.applied ? ` Ghost${ghostLabel ? ` (${ghostLabel})` : ''}: ${shift(ghost)}.` : ''
+  if (!on) return `GPS as recorded: ${offRoad(lap.before.metres)} of the lap off the road (aligned, it moves ${shift(lap)}).`
+  return `GPS shifted ${shift(lap)} onto the road: off it for ${offRoad(lap.before.metres)} of the lap as recorded, ${offRoad(lap.after.metres)} now.${ghostPart}`
 }
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -435,8 +452,9 @@ function ConditionsPanel({ engine, scene, look, units, weather, onWeather, graph
     c && c.surface !== 'unknown' ? `${c.surface} track` : null,
   ].filter(Boolean).join(' · ')
   const sun = `Sun ${Math.round(look.sun.elevationDeg)}° up in the ${compass(look.sun.azimuthDeg)}${c?.localStart ? ` at ${c.localStart.slice(11, 16)}` : ''}`
-  const state = useFrame(engine)
-  const level = state?.quality
+  // The level Auto picked: re-rendered only when it changes, not every frame.
+  const [level, setLevel] = useState<'high' | 'medium' | null>(null)
+  useEffect(() => engine.subscribe(state => setLevel(state.quality)), [engine])
   return <section className="replay-panel replay-conditions">
     <span className="review-eyebrow">Weather and light</span>
     <div className="replay-view-switch" role="group" aria-label="Weather">

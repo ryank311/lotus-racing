@@ -3,14 +3,16 @@ import { InlineLoadStatus } from '../components/Loading'
 import { PreparingPanel, type PreparingStep } from '../components/Preparing'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { api, msToLap } from '../api'
-import { NavLink, useNavigation, useRoute } from '../navigation'
+import { NavLink, useRoute } from '../navigation'
 import { routeUrl, segment } from '../routes'
 import { useUnits } from '../units'
 import { SURFACES, type MetricComparison, type RegionKind, type ReviewMetric, type ReviewSnapshot, type ReviewSummary, type SessionReviewResponse, type Surface } from '../../shared/review'
-import type { DbSessionRow, FocusStatus, SessionNotes } from '../../shared/types'
+import type { FocusStatus, SessionNotes } from '../../shared/types'
 import { FocusCheckRow, ReviewCoachContent, ReviewDeltaBars, ReviewDeltaLegend, ReviewLapScatter, ReviewMap, ReviewMarkers, ReviewTrend, VerdictChip } from '../components/ReviewCharts'
 import { startLabel } from '../components/reviewTimeline'
 import { SessionVideoPanel } from '../components/SessionVideoPanel'
+import { SessionPicker } from '../components/SessionPicker'
+import { newestSessionFirst } from '../components/sessionPickerData'
 import { requestVideoRange, useVideoPlayerPresent } from '../videoBus'
 import './review-extras.css'
 
@@ -25,21 +27,6 @@ export function useReviewFormat() {
 /** Analysis focuses a corner by its ref: `corner:T11` → `T11`. */
 export const regionRef = (id: string) => { const ref = id.slice(id.indexOf(':') + 1); return /^[A-Za-z0-9-]{1,16}$/.test(ref) ? ref : null }
 const analysisUrl = (guid: string, regionId?: string) => routeUrl('/analysis', { session: [guid], focus: regionId ? regionRef(regionId) : null })
-/** Newest first, grouped by track · layout, then vehicle; option labels use local track time. */
-function sessionGroups(sessions: DbSessionRow[]) {
-  const sorted = [...sessions].sort((a, b) => (b.session_start ?? '').localeCompare(a.session_start ?? ''))
-  const layout = (s: DbSessionRow) => [s.track_name || 'Unknown track', s.track_configuration_name || 'Unknown layout'].join(' · ')
-  const rank = new Map<string, number>(), groups = new Map<string, { label: string; rank: number; rows: DbSessionRow[] }>()
-  for (const s of sorted) {
-    if (!rank.has(layout(s))) rank.set(layout(s), rank.size)
-    const label = `${layout(s)} · ${s.vehicle_model || 'Unknown car'}`
-    if (!groups.has(label)) groups.set(label, { label, rank: rank.get(layout(s))!, rows: [] })
-    groups.get(label)!.rows.push(s)
-  }
-  return [...groups.values()].sort((a, b) => a.rank - b.rank)
-}
-const optionLabel = (s: DbSessionRow) => `${startLabel(s.session_start)}${s.best_lap_ms ? ` · best ${msToLap(s.best_lap_ms)}` : ''}${s.lap_count ? ` · ${s.lap_count} laps` : ''}`
-
 function MetricCard({ title, value, metric, format, neutral = false, note, badge, comparing = false }: { title: string; value: string; metric: MetricComparison; format: (n: number) => string; neutral?: boolean; note?: string; badge?: string | false; comparing?: boolean }) {
   const d = metric.delta
   // Colour only a clear change; limited evidence reads as a neutral number.
@@ -174,7 +161,7 @@ function LapControls({ snapshot, onSave, disabled }: { snapshot: ReviewSnapshot;
 }
 
 export function SessionReview({ refreshTick, busy }: { refreshTick: number; busy: string | null }) {
-  const { id } = useRoute(), { go } = useNavigation(), f = useReviewFormat()
+  const { id } = useRoute(), f = useReviewFormat()
   const catalogue = useResource(() => api.listSessions(), '', refreshTick)
   const sessions = catalogue.data ?? []
   const [response, setResponse] = useState<SessionReviewResponse | null>(null)
@@ -250,7 +237,7 @@ export function SessionReview({ refreshTick, busy }: { refreshTick: number; busy
     } : null
   }
   const pb = !!snapshot && snapshot.bestLap.current != null && snapshot.bestLap.personalBest != null && snapshot.bestLap.current < snapshot.bestLap.personalBest
-  const listed = sessions.find(s => s.session_guid === id)
+  const latestSession = [...sessions].sort(newestSessionFirst)[0]
   // Preparing: first load, telemetry download, this session's metrics, or the
   // matched history still being measured (comparisons would still move).
   const historyPending = !!snapshot && snapshot.coverage.pending > 0
@@ -276,17 +263,16 @@ export function SessionReview({ refreshTick, busy }: { refreshTick: number; busy
     delayMs={stage === 'load' ? 250 : 0}
   />
   return <div className="page-body review-page">
-      <header className="review-page-header review-header-actions"><div><div className="page-eyebrow">// post-session</div><h1 className="page-title">Session <span className="accent">Review</span></h1></div>{id && <NavLink className="btn ghost" to={analysisUrl(id)}>Open in Analysis →</NavLink>}</header>
+      <header className="review-page-header review-header-actions"><div><div className="page-eyebrow">// post-session</div><h1 className="page-title">Session <span className="accent">Review</span></h1></div>{id && <div className="review-header-links"><NavLink className="btn ghost" to={routeUrl(`/replay/${segment(id)}`)} title="Watch this session’s best lap in 3D, with its coaching on the track">3D Replay →</NavLink><NavLink className="btn ghost" to={analysisUrl(id)}>Open in Analysis →</NavLink></div>}</header>
       <InlineLoadStatus label="sessions" pending={catalogue.pending} error={catalogue.error} hasData={catalogue.data !== undefined} onRetry={catalogue.reload} />
       <div className="review-context">
-        <details className="review-picker review-context-picker" key={id ?? 'choose'} open={!id}>
-          <summary><span className="review-context-label"><strong>{summary ? `${summary.track} · ${summary.layout}` : listed ? [listed.track_name, listed.track_configuration_name].filter(Boolean).join(' · ') : id ? 'Loading session…' : 'Choose a session'}</strong>{summary ? <span>{summary.vehicle} · {startLabel(summary.start)}</span> : listed && <span>{[listed.vehicle_year, listed.vehicle_make, listed.vehicle_model].filter(Boolean).join(' ')} · {startLabel(listed.session_start)}</span>}</span><span className="reference">Change session</span></summary>
-          <label>Session<select aria-label="Review session" disabled={catalogue.data === undefined} value={id ?? ''} onChange={e => go(e.target.value ? `/review/${segment(e.target.value)}` : '/review')}><option value="">Choose one session</option>{sessionGroups(sessions).map(g => <optgroup key={g.label} label={g.label}>{g.rows.map(s => <option key={s.session_guid} value={s.session_guid}>{optionLabel(s)}</option>)}</optgroup>)}</select></label>
-        </details>
+        <SessionPicker sessions={sessions} selected={id} label="Review session" loading={catalogue.pending}
+          sessionUrl={guid => `/review/${segment(guid)}`}
+          fallback={summary ? { title: `${summary.layout} · ${summary.track}`, detail: `${startLabel(summary.start)} · ${summary.vehicle}` } : undefined} />
         {summary && <Conditions key={`conditions:${id}`} summary={summary} onSave={mutate} disabled={saving || busy === 'sync' || busy === 'load'} />}
       </div>
       {error && <div className="review-error" role="alert">{error}<button className="btn ghost" onClick={() => void mutate(async () => { if (id) await api.ensureSessionReview(id, response?.state === 'failed') })}>Retry review</button></div>}
-      {!id && catalogue.data !== undefined && <div className="review-panel"><h2>Your next session starts here</h2><p>Select a session to compare your fastest laps with your recent progress.</p>{sessions[0] ? <NavLink className="btn primary" to={`/review/${segment(sessionGroups(sessions)[0].rows[0].session_guid)}`}>Review latest session</NavLink> : <NavLink to="/overview">Sync sessions from Overview</NavLink>}</div>}
+      {!id && catalogue.data !== undefined && <div className="review-panel"><h2>Your next session starts here</h2><p>Select a session to compare your fastest laps with your recent progress.</p>{latestSession ? <NavLink className="btn primary" to={`/review/${segment(latestSession.session_guid)}`}>Review latest session</NavLink> : <NavLink to="/overview">Sync sessions from Overview</NavLink>}</div>}
       {response?.state === 'failed' && !error && <div className="review-panel" role="alert"><h2>Review processing failed</h2><p>{response.error ?? 'This session could not be measured.'}</p><button className="btn primary" onClick={() => void mutate(() => api.ensureSessionReview(id!, true))}>Retry processing</button></div>}
       {stage && !snapshot && preparing}
       {snapshot && summary && <>

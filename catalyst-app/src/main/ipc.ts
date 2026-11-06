@@ -18,6 +18,7 @@ import { importCatalystVideo, planCatalystImport, rematchCatalystVideo } from '.
 import type { CatalystPlanEntry } from '../shared/catalystVideo.js'
 import { sessionCarData } from '../garmin/sessionCarData.js'
 import { replayLap, replayLapRef, replayScene } from '../garmin/replayData.js'
+import { replayCoaching } from '../garmin/replayCoaching.js'
 import { MAX_VIDEO_BYTES, VIDEO_ID_RE, type VideoImportResult } from '../shared/pdr.js'
 import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
 import { configuredModelFor, DEFAULT_REASONING_EFFORT, maxOutputTokensFor } from '../shared/aiModels.js'
@@ -1128,6 +1129,14 @@ export function registerApiHandlers(
   register('replay:scene', (_e, guid: string) => withDb(con => replayScene(con, sessionId(guid), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
   register('replay:lap', (_e, sceneGuid: string, ref: unknown) =>
     withDb(con => replayLap(con, sessionId(sceneGuid), replayLapRef(ref), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
+  // The session's coaching, placed along its mean line: the AI coach's reports, the
+  // previous focus, Session Review's clear changes and the best pass per corner.
+  register('replay:coaching', async (_e, guid: string) => {
+    const id = sessionId(guid)
+    // Session Review's comparison when it is ready; coaching does without it.
+    const review = await startReviews().then(() => reviews.get(id)).catch(() => null)
+    return withDb(con => replayCoaching(con, id, loadConfig().units ?? DEFAULT_UNIT_SYSTEM, { review }), DB_PATH)
+  })
 
   // ---- workers ---------------------------------------------------------
 

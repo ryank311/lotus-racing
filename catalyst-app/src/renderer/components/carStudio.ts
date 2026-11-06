@@ -29,6 +29,7 @@ const GARMIN_BARREL = 0.65
 const PLACEHOLDER_PAINT = 0xff5e3a
 const EYE_COLOR = 0x7dd3fc
 const GARMIN_COLOR = 0xf5a623
+const GPS_COLOR = 0x5dd17f
 const DEG = Math.PI / 180
 const TURN_AROUND = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI)
 const X_AXIS = new THREE.Vector3(1, 0, 0), Y_AXIS = new THREE.Vector3(0, 1, 0)
@@ -41,10 +42,10 @@ const ORBIT_FOV = 32
 // A default view from the front, on the driver's (left) side, a little above.
 const ORBIT_AZIMUTH = 38 * DEG, ORBIT_POLAR = 72 * DEG
 
-/** Where the eye and the Garmin camera sit, and the lens: the fit's, else the vehicle preset's (as engine.ts). */
+/** Where the eye, the Garmin camera and the data collector sit, and the lens: the fit's, else the vehicle preset's (as engine.ts). */
 function cameraPoints(fit: CarModelFit | null, preset: CarPreset) {
   const full = fullFit(fit, preset)
-  return { eye: full.eyeM, dashcam: full.dashcamM, fovDeg: full.dashcamFovDeg, pitchDeg: full.dashcamPitchDeg }
+  return { eye: full.eyeM, dashcam: full.dashcamM, fovDeg: full.dashcamFovDeg, pitchDeg: full.dashcamPitchDeg, gps: full.gpsM }
 }
 
 export class CarStudio {
@@ -63,8 +64,11 @@ export class CarStudio {
   private markers = new THREE.Group()
   private eyeMarker = new THREE.Group()
   private garminMarker = new THREE.Group()
+  // The data collector, with a drop line to the ground: where the lap's line runs under the car.
+  private gpsMarker = new THREE.Group()
+  private gpsDrop: THREE.Line
   private garminFrustum: THREE.LineSegments
-  private labels: { eye: HTMLElement; garmin: HTMLElement }
+  private labels: { eye: HTMLElement; garmin: HTMLElement; gps: HTMLElement }
   private view: StudioView = 'orbit'
   private look = { yaw: 0, pitch: 0 }
   private orbitPose: { position: THREE.Vector3; quaternion: THREE.Quaternion } | null = null
@@ -110,7 +114,10 @@ export class CarStudio {
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.055, 0.035), this.markerMaterial(GARMIN_COLOR))
     body.renderOrder = 20
     this.garminMarker.add(body, this.garminFrustum)
-    this.markers.add(this.eyeMarker, this.garminMarker)
+    this.gpsDrop = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, -1, 0)]), this.lineMaterial(GPS_COLOR, 0.8))
+    this.gpsDrop.renderOrder = 20
+    this.gpsMarker.add(this.dot(GPS_COLOR, 0.04), this.gpsDrop)
+    this.markers.add(this.eyeMarker, this.garminMarker, this.gpsMarker)
     this.scene.add(this.markers)
     const label = (text: string, kind: string) => {
       const el = document.createElement('span')
@@ -120,7 +127,7 @@ export class CarStudio {
       container.appendChild(el)
       return el
     }
-    this.labels = { eye: label('Eye', 'eye'), garmin: label('Garmin', 'garmin') }
+    this.labels = { eye: label('Eye', 'eye'), garmin: label('Garmin', 'garmin'), gps: label('GPS', 'gps') }
 
     this.controls = new OrbitControls(this.camera, canvas)
     this.controls.enableDamping = true
@@ -219,6 +226,8 @@ export class CarStudio {
     this.eyeMarker.rotation.set(DRIVER_LOOK_DOWN_DEG * DEG, 0, 0)
     this.garminMarker.position.fromArray(points.dashcam)
     this.garminMarker.rotation.set(points.pitchDeg * DEG, 0, 0)
+    this.gpsMarker.position.fromArray(points.gps)
+    this.gpsDrop.scale.y = Math.max(0.01, points.gps[1])
     this.setFrustum(points.fovDeg)
     if (this.body) {
       const size = fittedSize(this.body)
@@ -286,6 +295,7 @@ export class CarStudio {
     } else this.renderer.render(this.scene, this.camera)
     this.placeLabel(this.labels.eye, this.eyeMarker, !looking)
     this.placeLabel(this.labels.garmin, this.garminMarker, !looking)
+    this.placeLabel(this.labels.gps, this.gpsMarker, !looking)
   }
 
   private placeLabel(el: HTMLElement, marker: THREE.Object3D, show: boolean) {
@@ -421,5 +431,6 @@ export class CarStudio {
     canvas.remove()
     this.labels.eye.remove()
     this.labels.garmin.remove()
+    this.labels.gps.remove()
   }
 }

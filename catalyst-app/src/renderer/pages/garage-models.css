@@ -231,6 +231,7 @@
 .garage-fit-marker { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .garage-fit-marker.eye { background: var(--cyan); }
 .garage-fit-marker.garmin { background: var(--amber); border-radius: 1px; }
+.garage-fit-marker.gps { background: var(--green); }
 .garage-fit-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 
 @media (min-width: 801px) and (max-width: 1250px) {

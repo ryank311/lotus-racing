@@ -2,8 +2,9 @@
 // tracks, say), shared by every driver on a server (desktop: one library per
 // workspace). One folder per model:
 //
-//   <dir>/<id>/track.json   name, credits, trackName, layouts → files, georef,
-//                           footprint (see TrackModel in shared/replay.ts)
+//   <dir>/<id>/track.json   name, credits, trackName, layouts → files (and the
+//                           road's edges), georef, footprint (see TrackModel
+//                           in shared/replay.ts)
 //   <dir>/<id>/*.glb        the model, split however the layouts share it
 //   <dir>/.cache/<id>/      gzipped copies of the .glb files, made on first use
 //
@@ -79,9 +80,22 @@ function cleanLayouts(value: unknown): Record<string, TrackModelLayout> {
     if (!key || !Array.isArray(files) || !files.length || files.length > 32) throw new Error(`layout "${name}" needs a list of files`)
     for (const file of files) if (typeof file !== 'string' || !TRACK_MODEL_FILE_RE.test(file) || !/\.glb$/i.test(file)) throw new Error(`layout "${name}": "${file}" is not a .glb in the folder`)
     out[key] = { files: [...new Set(files as string[])] }
+    const edges = cleanEdges((layout as TrackModelLayout).edges, name)
+    if (edges) out[key].edges = edges
   }
   if (!Object.keys(out).length) throw new Error('layouts is empty')
   return out
+}
+
+const MAX_EDGE_POINTS = 50_000
+
+// A layout's road edges: [leftX, leftZ, rightX, rightZ] per point (optional).
+function cleanEdges(value: unknown, layout: string): Array<[number, number, number, number]> | null {
+  if (value == null) return null
+  const ok = Array.isArray(value) && value.length >= 10 && value.length <= MAX_EDGE_POINTS
+    && value.every(p => Array.isArray(p) && p.length === 4 && p.every(v => finite(v, 100_000)))
+  if (!ok) throw new Error(`layout "${layout}": edges must be a list of [leftX, leftZ, rightX, rightZ] points`)
+  return (value as number[][]).map(p => [p[0], p[1], p[2], p[3]])
 }
 
 function cleanPattern(value: unknown): string | null {

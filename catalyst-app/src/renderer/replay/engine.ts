@@ -19,6 +19,7 @@ import { SHADOW_QUALITY, markCarCasters } from './shadows'
 import { ensureDetailTextures } from './surfaces'
 import { GrassField, GRASS_QUALITY } from './grass'
 import type { Look as WeatherLook } from './weather'
+import { fitToRoad, type RoadFit, type TrackEdges } from './align'
 
 export type ReplayView = 'driver' | 'garmin' | 'chase' | 'orbit'
 
@@ -34,7 +35,16 @@ export interface ReplayWorld {
   shadowBounds?: THREE.Box3
   /** Sky-matched colour for fog and the far ground. */
   horizon: THREE.Color
+  /** The road's edges as drawn, for lining the laps' GPS up with it (align.ts); none: laps stay as recorded. */
+  trackEdges?: TrackEdges | null
   dispose: () => void
+}
+
+/** How the lap and the ghost line up with the road (null without one), and whether the shift is on. */
+export interface Alignment {
+  on: boolean
+  lap: RoadFit | null
+  ghost: RoadFit | null
 }
 
 export interface FrameState {
@@ -64,6 +74,8 @@ const DRIVER_LOOK_DOWN_DEG = 4
 const GARMIN_BARREL = 0.65
 const Y_AXIS = new THREE.Vector3(0, 1, 0)
 const DEG = Math.PI / 180
+// The Garmin lens's drawn size (× the screen) and multisampling, by graphics level.
+const LENS_QUALITY: Record<'high' | 'medium', [number, number]> = { high: [1.1, 4], medium: [1, 2] }
 // Auto graphics step down to medium only at or below this pixel ratio.
 const AUTO_QUALITY_RATIO = 1.25
 // The inside cameras ride a steady mount, not the car's every bump: its
@@ -122,6 +134,10 @@ export class ReplayEngine {
   private ghostLine: THREE.Mesh | null = null
   private showRacingLine = true
   private showGhostLine = true
+  private alignToTrack = true
+  // Each lap's fit to a world's road, computed once (a lap belongs to one world's frame).
+  private roadFits = new WeakMap<LapPath, { edges: TrackEdges; fit: RoadFit }>()
+  private alignListeners = new Set<(alignment: Alignment) => void>()
   private preset: CarPreset | null = null
   private fit: CarModelFit | null = null
   private model: THREE.Object3D | null = null
@@ -237,6 +253,7 @@ export class ReplayEngine {
     this.quality = quality
     this.atmosphere.setQuality(SHADOW_QUALITY[quality])
     this.grass?.setQuality(GRASS_QUALITY[quality])
+    this.lens?.setQuality(...LENS_QUALITY[quality])
     this.invalidate()
     this.publish()
   }
@@ -328,6 +345,7 @@ export class ReplayEngine {
       this.grass.setWind(...this.wind)
       this.scene.add(this.grass.group)
     }
+    this.applyAlignment()
     this.rebuildLines()
     this.chaseReady = this.mount.ready = false
     this.ceiling = 2
@@ -339,6 +357,7 @@ export class ReplayEngine {
     this.mount.ready = false
     this.timeMs = Math.min(this.timeMs, lap?.durationMs ?? 0)
     this.car.hint = 0
+    this.applyAlignment()
     this.rebuildLines()
     this.chaseReady = false
     this.invalidate()
@@ -347,8 +366,61 @@ export class ReplayEngine {
   setGhost(ghost: LapPath | null) {
     this.ghost = ghost
     this.ghostCar.hint = 0
+    this.applyAlignment()
     this.rebuildLines()
     this.invalidate()
+  }
+
+  /**
+   * Line the laps' GPS up with the road (on, the default) or show it as
+   * recorded. Each lap (and the ghost) is shifted as a whole by its own fit
+   * (align.ts fitToRoad); the car, its line and the ghost's all read the
+   * shifted positions. Costs a fit per lap, once, and a rebuild of the lines.
+   */
+  setAlign(on: boolean) {
+    if (on === this.alignToTrack) return
+    this.alignToTrack = on
+    this.applyAlignment()
+    this.rebuildLines()
+    this.chaseReady = this.mount.ready = false
+    this.invalidate()
+  }
+
+  alignment(): Alignment {
+    return { on: this.alignToTrack, lap: this.roadFit(this.lap), ghost: this.roadFit(this.ghost) }
+  }
+
+  /**
+   * Called whenever the lap's or the ghost's shift changes (a new lap, ghost
+   * or world, the toggle), after the positions have moved: overlays built
+   * from lat/lon with LapPath.toLocal rebuild here. Returns an unsubscribe.
+   */
+  onAlignment(listener: (alignment: Alignment) => void): () => void {
+    this.alignListeners.add(listener)
+    return () => this.alignListeners.delete(listener)
+  }
+
+  private roadFit(lap: LapPath | null): RoadFit | null {
+    const edges = this.world?.trackEdges
+    if (!lap || !edges) return null
+    const known = this.roadFits.get(lap)
+    if (known?.edges === edges) return known.fit
+    const fit = fitToRoad(lap.gpsX, lap.gpsZ, edges)
+    this.roadFits.set(lap, { edges, fit })
+    return fit
+  }
+
+  private applyAlignment() {
+    let changed = false
+    for (const lap of [this.lap, this.ghost]) {
+      if (!lap) continue
+      const fit = this.alignToTrack ? this.roadFit(lap) : null
+      if (lap.setOffset(fit?.applied ? fit.dx : 0, fit?.applied ? fit.dz : 0)) changed = true
+    }
+    if (changed && this.alignListeners.size) {
+      const alignment = this.alignment()
+      for (const listener of this.alignListeners) listener(alignment)
+    }
   }
 
   setLines(racing: boolean, ghost: boolean) {
@@ -571,7 +643,10 @@ export class ReplayEngine {
     this.placeCamera(dt)
     this.prepareLight(now)
     if (this.view === 'garmin') {
-      this.lens ??= new LensPass()
+      if (!this.lens) {
+        this.lens = new LensPass()
+        this.lens.setQuality(...LENS_QUALITY[this.quality])
+      }
       this.lens.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
       this.lens.render(this.renderer, this.scene)
     } else this.renderer.render(this.scene, this.camera)
@@ -644,7 +719,7 @@ export class ReplayEngine {
   /** Pose a car on the road: height from the surface, pitch and roll from its slope. */
   private placeRig(rig: CarRig, lap: LapPath, timeMs: number) {
     const road = this.world!.road
-    const pose = lap.pose(timeMs, rig.pose)
+    const pose = this.toCarCentre(lap.pose(timeMs, rig.pose))
     const preset = this.preset
     const halfBase = (preset?.wheelbaseM ?? 2.4) / 2, halfTrack = ((preset?.widthM ?? 1.8) - 0.25) / 2
     const s = rig.hint = road.nearestFrom(pose.x, pose.z, road.stationAt(pose.dist), 12)
@@ -660,9 +735,26 @@ export class ReplayEngine {
   /** A car's height on the ground at a lap time, as placeRig rests it (for its springs). */
   private restingHeight = (lap: LapPath, timeMs: number): number => {
     const road = this.world!.road
-    const pose = lap.pose(timeMs, this.restPose)
+    const pose = this.toCarCentre(lap.pose(timeMs, this.restPose))
     const halfBase = (this.preset?.wheelbaseM ?? 2.4) / 2, halfTrack = ((this.preset?.widthM ?? 1.8) - 0.25) / 2
     return this.restOn(pose, road.nearestFrom(pose.x, pose.z, road.stationAt(pose.dist), 12), halfBase, halfTrack, this.restQuat)
+  }
+
+  /**
+   * A lap pose is where the data collector's GPS went; move it to the car's
+   * centre, so that point of the car rides on the line (a unit on the
+   * passenger's dash draws the car off-centre from it, as it was). The
+   * racing and ghost lines stay on the GPS track.
+   */
+  private toCarCentre(pose: LapPose): LapPose {
+    const gps = this.fit?.gpsM ?? this.preset?.fit.gpsM
+    if (gps) {
+      const left = gps[0], forward = gps[2]
+      // The car's left is (fz, −fx) in x/z.
+      pose.x -= pose.fx * forward + pose.fz * left
+      pose.z -= pose.fz * forward - pose.fx * left
+    }
+    return pose
   }
 
   /** The ground under a point near station `s`: the track model's, else the road's. */

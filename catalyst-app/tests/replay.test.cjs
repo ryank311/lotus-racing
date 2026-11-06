@@ -60,7 +60,54 @@ function seedExtras(dbPath) {
   childProcess.execFileSync(process.execPath, ['-e', script], { stdio: 'pipe' })
 }
 
-async function serverFor(t, { mediaDir = false, models = [] } = {}) {
+// AI coaching for the scene, as saved reports leave it: a Session Review
+// report (priorities and a throttle-point focus), an Analysis report with a
+// corner tip, an apex and a suggested line, and an earlier report whose
+// focus applied going into the session.
+function seedCoaching(dbPath) {
+  const context = { vehicleGuid: 'car', account: 'driver', meanLineGuid: 'test-line', configurationId: 41, trackLabel: 'Test Raceway · Full Course', lapFilter: 'all', units: 'imperial' }
+  const focus = (id, metric, unit, values) => ({
+    id, complexId: 'C1', complexName: 'T1 · Hairpin', complexStartM: 300, complexEndM: 700, ref: 'T1', phase: 'exit', change: 'Throttle at the apex.', why: '',
+    cue: 'Throttle at the apex', metric, metricLabel: unit === 'm' ? 'Throttle pickup point' : 'Speed 100 m after the minimum', better: unit === 'm' ? 'lower' : 'higher', unit,
+    ...values, display: { baseline: String(values.baseline), best: String(values.best), target: String(values.target) }, referenceLap: '', confidence: 'medium', evidence: [],
+  })
+  const reports = [
+    { id: 'earlier', created_at: '2026-10-29 12:00:00', guids: [OTHER.sg], parsed: {
+      headline: '', consistency_loss_ms: 0, tips: [], drills: [], annotations: [],
+      focus: [focus('f-old', 'C1.exit100', 'mps', { baseline: 20, best: 22, target: 21 })], context: { ...context, latestSessionStart: '2026-10-29 09:00:00' },
+    } },
+    { id: 'review', created_at: '2026-10-30 18:00:00', guids: [SCENE.sg], context: { sessionGuid: SCENE.sg, revision: 'r1', units: 'imperial', evidence: {} }, result: {
+      summary: '', strengths: [], regressions: [], limitations: [],
+      priorities: [
+        { ref: 'corner:T1', advice: 'Brake later into the hairpin.', evidence: ['corner:T1'], cue: 'Brake at the 100 board', successMetric: 'T1 under 9 s' },
+        { ref: 'session', advice: 'Warm the tyres first.', evidence: ['pace'], cue: 'Warm up', successMetric: '' },
+      ],
+      focus: [focus('f-new', 'C1.throttle_at', 'm', { baseline: 520, best: 505, target: 512 })],
+    } },
+    { id: 'analysis', created_at: '2026-10-30 19:00:00', guids: [OTHER.sg, SCENE.sg], parsed: {
+      headline: '', consistency_loss_ms: 0, drills: [],
+      tips: [{ section: 'Hairpin', ref: 'T1', body: 'Apex later. Then throttle.', cue: 'Late apex', annotations: [] }],
+      annotations: [{ type: 'corner_tip', ref: 'T1', body: 'Apex later.', recommended_apex_dist_m: 510, target_vmin_mph: 50 }],
+      coach_line: [{ dist_m: 450, delta: 0 }, { dist_m: 500, delta: 0.1 }, { dist_m: 550, delta: 0 }],
+    } },
+  ]
+  const script = `
+    const { withDb } = require(${JSON.stringify(path.join(__dirname, '../dist-main/garmin/loadToDb.js'))})
+    const reports = ${JSON.stringify(reports)}
+    const json = v => (v ? JSON.stringify(v) : null)
+    withDb(async con => {
+      await con.run('ALTER TABLE coaching_sessions ADD COLUMN IF NOT EXISTS review_context JSON; ALTER TABLE coaching_sessions ADD COLUMN IF NOT EXISTS review_result JSON')
+      for (const r of reports) {
+        await con.run('INSERT INTO coaching_sessions (id, created_at, session_guids, profile_name, model_used, title, prompt, raw_response, parsed_result, review_context, review_result) '
+          + "VALUES (?, CAST(? AS TIMESTAMP), ?, 'Lotus', 'test', ?, '', '', ?, ?, ?)",
+          [r.id, r.created_at, JSON.stringify(r.guids), 'Report ' + r.id, json(r.parsed), json(r.context), json(r.result)])
+      }
+    }, ${JSON.stringify(dbPath)}).then(() => process.exit(0), error => { console.error(error); process.exit(1) })
+  `
+  childProcess.execFileSync(process.execPath, ['-e', script], { stdio: 'pipe' })
+}
+
+async function serverFor(t, { mediaDir = false, models = [], coaching = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-replay-'))
   const dataDir = path.join(root, 'server')
   const media = mediaDir ? path.join(root, 'media') : null
@@ -72,6 +119,7 @@ async function serverFor(t, { mediaDir = false, models = [] } = {}) {
   writeMeanLines(path.join(dir, 'garmin', 'data', 'mean_lines'))
   childProcess.execFileSync(process.execPath, [path.join(__dirname, 'fixtures/compareFixture.cjs'), workspaceDbPath(dir), JSON.stringify([SCENE, OTHER, DEVICE, ELSEWHERE])], { stdio: 'pipe' })
   seedExtras(workspaceDbPath(dir))
+  if (coaching) seedCoaching(workspaceDbPath(dir))
   // Car models copied into the shared folder by hand before the server starts.
   const modelsDir = path.join(media ?? dataDir, 'shared', 'car-models')
   for (const [name, bytes] of models) { fs.mkdirSync(modelsDir, { recursive: true }); fs.writeFileSync(path.join(modelsDir, name), bytes) }
@@ -180,6 +228,58 @@ test('replay: a session’s scene and laps, with ghosts from other mean lines', 
   await assert.rejects(rpc('replay:lap', SCENE.sg, { sessionGuid: SCENE.sg, lap: 7 }), /no telemetry/)
   await assert.rejects(rpc('replay:lap', SCENE.sg, { sessionGuid: '../x', lap: 0 }), /Invalid lap/)
   await assert.rejects(rpc('replay:scene', 'missing'), /not in your workspace/)
+})
+
+test('replay: a session’s coaching, placed along its mean line', { timeout: 120000 }, async t => {
+  const { rpc } = await serverFor(t, { coaching: true })
+  const coaching = await rpc('replay:coaching', SCENE.sg)
+  assert.equal(coaching.sessionGuid, SCENE.sg)
+  assert.deepEqual(coaching.sources.map(s => [s.source, s.reportId ?? null]), [['coach', 'review'], ['coach', 'analysis'], ['focus', 'earlier']])
+
+  // One point per corner, the AI coach's notes first, then the session-wide one.
+  assert.deepEqual(coaching.points.map(p => p.id), ['corner:T1', 'session'])
+  const [t1, session] = coaching.points
+  assert.equal(t1.title, 'T1 · Hairpin')
+  assert.equal(t1.tone, 'coach')
+  assert.equal(t1.headline, 'Brake at the 100 board')
+  assert.deepEqual(t1.notes.map(n => n.source), ['coach', 'coach', 'coach', 'coach', 'focus'])
+  assert.ok(t1.notes.some(n => n.headline === 'Throttle at the apex' && /Target: throttle pickup point 512/.test(n.text)), 'the review’s focus item')
+  assert.ok(t1.notes.some(n => n.headline === 'Late apex' && /Apex later/.test(n.text)), 'the Analysis tip')
+  assert.ok(t1.notes.some(n => n.headline === 'Target minimum 50 mph'), 'the annotation’s target speed')
+  assert.equal(t1.notes.at(-1).verdict, 'not_measured', 'one representative lap cannot measure the earlier focus')
+  assert.deepEqual(t1.targets, [{ kind: 'apex', atM: 510, label: 'Coach: apex' }, { kind: 'throttle', atM: 512, label: 'Coach: throttle' }])
+  assert.equal(t1.atM, 500)
+  assert.deepEqual(t1.windowM, [250, 610])
+  assert.deepEqual([session.atM, session.headline], [null, 'Warm up'])
+
+  // Every valid lap's marks over the corner: braking from 400 m, the minimum at the apex.
+  assert.deepEqual(Object.keys(t1.laps).sort(), ['0', '1', '2'])
+  for (const marks of Object.values(t1.laps)) {
+    assert.ok(Math.abs(marks.brakeM - 400) <= 5, `brake ${marks.brakeM}`)
+    assert.ok(Math.abs(marks.vminM - 500) <= 3, `minimum ${marks.vminM}`)
+    assert.ok(marks.timeMs > 0)
+  }
+  // The best pass: the quickest representative lap through the window (L2, 1.1×).
+  assert.deepEqual([t1.reference.lap, t1.reference.label], [1, 'L2'])
+  assert.ok(t1.laps['0'].timeMs > t1.reference.timeMs && t1.laps['2'].timeMs > t1.laps['0'].timeMs)
+  assert.ok(t1.startM <= t1.reference.brakeM && t1.startM >= 250, 'the stretch starts where the best pass braked')
+
+  // Lines: the coach's, shifted toward the right edge (east, on a lap heading
+  // north) at 500 m and not at its ends, and the best-sector line.
+  const coachLine = coaching.lines.find(l => l.id === 'coach')
+  const at500 = coachLine.dist.indexOf(500)
+  assert.ok(at500 > 0 && coachLine.lon[at500] > -79 + 1e-5 && Math.abs(coachLine.lat[at500] - 37.005) < 1e-6, JSON.stringify([coachLine.lat[at500], coachLine.lon[at500]]))
+  assert.equal(coachLine.lon[0], -79)
+  const sectors = coaching.lines.find(l => l.id === 'best-sectors')
+  assert.deepEqual([sectors.dist[0], sectors.dist.at(-1)], [0, 1000])
+  assert.ok(sectors.lat.every((lat, i) => Math.abs(lat - (37 + sectors.dist[i] * 1e-5)) < 1e-7))
+  assert.match(sectors.detail, /L2 \(S1, S2\)/)
+
+  // Without reports or enough laps there is nothing to coach; bad IDs are refused.
+  const none = await rpc('replay:coaching', DEVICE.sg)
+  assert.deepEqual([none.points, none.sources], [[], []])
+  await assert.rejects(rpc('replay:coaching', '../x'), /Invalid session ID/)
+  await assert.rejects(rpc('replay:coaching', 'missing'), /not in your workspace/)
 })
 
 test('terrain: built once per area from USGS, polled, sampled and cached', { timeout: 120000 }, async t => {
@@ -379,7 +479,13 @@ test('car models: a shared library of .glb files', { timeout: 120000 }, async t 
   assert.deepEqual((await withCamera.json()).model.fit, dashcam)
   const restored = JSON.parse(fs.readFileSync(path.join(modelsDir, 'models.json'), 'utf8'))
   assert.deepEqual(restored.models.find(m => m.id === model.id).fit, dashcam, 'camera saved')
-  for (const bad of [{ dashcamM: [0, 1] }, { dashcamFovDeg: 400 }, { dashcamFovDeg: 10 }, { dashcamPitchDeg: 'down' }]) {
+  // So is the data collector's position (the GPS the line was traced by).
+  const collector = { ...dashcam, gpsM: [-0.3, 0.8, 0.1] }
+  const withGps = await sendJson('PATCH', `/api/car-models/${model.id}`, { fit: collector }, cookie)
+  assert.equal(withGps.status, 200)
+  assert.deepEqual((await withGps.json()).model.fit, collector)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(modelsDir, 'models.json'), 'utf8')).models.find(m => m.id === model.id).fit, collector, 'GPS position saved')
+  for (const bad of [{ dashcamM: [0, 1] }, { dashcamFovDeg: 400 }, { dashcamFovDeg: 10 }, { dashcamPitchDeg: 'down' }, { gpsM: [0, 'x', 0] }, { gpsM: [0, 0, 99] }]) {
     assert.equal((await sendJson('PATCH', `/api/car-models/${model.id}`, { fit: { ...fit, ...bad } }, cookie)).status, 400, JSON.stringify(bad))
   }
 

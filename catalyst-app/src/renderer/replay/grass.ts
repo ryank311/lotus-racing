@@ -117,7 +117,7 @@ const GRASS_BEGIN = /* glsl */`
   turf = mix( vec3( dot( turf, vec3( 0.2126, 0.7152, 0.0722 ) ) ), turf, 0.7 );
   vGrassColor = turf * mix( vec3( 0.8 ), vec3( 1.08, 1.08, 1.0 ), position.y );
   // Lit mostly like the ground under it, a little like the blade's face.
-  vec3 objectNormal = normalize( vec3( -bladeDir.y * 0.35, 1.0, bladeDir.x * 0.35 ) );
+  vec3 objectNormal = normalize( vec3( -bladeDir.y * 0.15, 1.0, bladeDir.x * 0.15 ) );
 `
 
 /** The clump: three tapered blades (a quad and a tip each) at their own angles. */
@@ -250,8 +250,8 @@ export class GrassField {
       patchWorldMaterial(material, 'far', f => f
         .replace('#include <common>', '#include <common>\nvarying vec3 vGrassColor;')
         .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb = vGrassColor * ( 1.0 - uWet * 0.25 );')
-        // Both faces lit as the turf is (no flipped normal on the back face).
-        .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n  normal = normalize( vNormal );'), 'grass')
+        // Both faces lit as the turf is: undo three's flip of the back face's normal.
+        .replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n#ifdef DOUBLE_SIDED\n  normal *= faceDirection;\n#endif'), 'grass')
       const world = material.onBeforeCompile
       material.onBeforeCompile = (shader, renderer) => {
         world.call(material, shader, renderer)

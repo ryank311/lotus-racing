@@ -1,0 +1,70 @@
+/* Coaching in the 3D replay: toggles, the list and the callout (ReplayCoaching.tsx). */
+
+.replay-coach-toggles { display: grid; gap: 7px; }
+.replay-coach-layers { display: grid; gap: 6px; padding-left: 24px; }
+.replay-coach-layers .replay-check { font-size: 12px; color: var(--text-dim); }
+.replay-coach-layers .replay-swatch { margin-right: -4px; }
+.replay-coach-layers .replay-swatch.dashed { background: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 8px); }
+.replay-coach-key { display: inline-block; width: 12px; height: 9px; border-radius: 2px; background: #0f0f12; border: 1px solid #ffffff30; box-shadow: inset 3px 0 0 var(--amber); }
+.replay-coach-none { margin: 0; }
+
+/* The list. */
+.replay-coaching { align-content: start; grid-column: 1 / -1; }
+.replay-coaching-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.replay-coach-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 8px; align-items: start; }
+:where(.replay-coach-item, .replay-coach-callout) { --tone: #5eead4; }
+.replay-coach-item { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; padding: 9px 11px 10px 10px; background: var(--bg-elev); border: 1px solid var(--border); border-left: 3px solid var(--tone); border-radius: var(--radius); }
+.replay-coach-item.general { grid-template-columns: minmax(0, 1fr); }
+.replay-coach-item.seekable { cursor: pointer; }
+.replay-coach-item.seekable:hover { border-color: var(--border-strong); border-left-color: var(--tone); }
+.replay-coach-item.active { background: color-mix(in srgb, var(--tone) 9%, var(--bg-elev)); border-color: color-mix(in srgb, var(--tone) 45%, var(--border)); border-left-color: var(--tone); }
+.tone-loss { --tone: var(--red); }
+.tone-gain { --tone: var(--green); }
+.tone-coach { --tone: var(--amber); }
+.tone-note { --tone: #5eead4; }
+.replay-coach-time { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 0 8px 0 5px; background: none; border: 1px solid var(--border-strong); border-radius: var(--radius); color: var(--text); font: 600 11px var(--font-mono); font-variant-numeric: tabular-nums; cursor: pointer; }
+.replay-coach-time svg { width: 13px; height: 13px; color: var(--tone); }
+.replay-coach-time:hover:not(:disabled) { border-color: var(--tone); }
+.replay-coach-time:disabled { opacity: .45; cursor: default; }
+.replay-coach-body { display: grid; gap: 3px; min-width: 0; }
+.replay-coach-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font: 600 10px/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); }
+.replay-coach-title small { font-weight: 400; color: var(--text-mute); letter-spacing: .04em; }
+.replay-coach-headline { font: 700 14px/1.3 var(--font-body); color: var(--text); }
+.replay-coach-item p, .replay-coach-callout p { margin: 0; font: 12px/1.45 var(--font-body); color: var(--text-dim); }
+.replay-coach-note span { display: inline-block; margin-right: 6px; font: 600 9px/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-mute); }
+.replay-coach-note.source-coach span { color: var(--amber); }
+.replay-coach-item p.replay-coach-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.replay-coach-more { margin-top: 2px; }
+.replay-coach-more > summary { cursor: pointer; font: 10px/1.6 var(--font-mono); letter-spacing: .06em; color: var(--text-mute); }
+.replay-coach-more > summary:hover { color: var(--text-dim); }
+.replay-coach-more[open] > summary { margin-bottom: 4px; }
+.replay-coach-more p + p { margin-top: 4px; }
+.replay-coach-note b { color: var(--text); font-weight: 600; }
+.replay-coach-item p.replay-coach-vs, .replay-coach-callout p.replay-coach-vs { color: var(--text); font: 11px/1.45 var(--font-mono); }
+
+/* The callout over the view: top centre, clear of the timer and the video. */
+.replay-coach-callout {
+  position: absolute; z-index: 1; top: 12px; left: 50%; transform: translateX(-50%);
+  width: min(420px, calc(100% - 2 * min(32%, 360px) - 24px)); min-width: min(300px, calc(100% - 24px));
+  display: grid; gap: 3px; padding: 9px 13px 10px 12px; pointer-events: none;
+  background: rgba(15, 15, 18, 0.82); border: 1px solid #ffffff1f; border-left: 3px solid var(--tone); border-radius: var(--radius-lg);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  animation: replay-coach-in .22s ease-out;
+}
+.replay-coach-callout p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.replay-reset-view ~ .replay-coach-callout, .replay-note ~ .replay-coach-callout { top: 54px; }
+@keyframes replay-coach-in { from { opacity: 0; transform: translate(-50%, -6px); } }
+@keyframes replay-coach-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .replay-coach-callout { animation: none; } }
+
+@container (max-width: 640px) {
+  /* Across the view under the timer (and under the video when it shows), over the sky. */
+  .replay-coach-callout, .replay-reset-view ~ .replay-coach-callout, .replay-note ~ .replay-coach-callout {
+    top: 62px; left: 8px; right: 8px; width: auto; min-width: 0; transform: none; padding: 6px 10px 7px 9px;
+    animation-name: replay-coach-fade;
+  }
+  .replay-stage:has(.replay-pip) .replay-coach-callout { top: calc(44cqw * 9 / 16 + 40px); }
+  .replay-stage:has(.replay-pip.large) .replay-coach-callout { top: calc((100cqw - 16px) * 9 / 16 + 40px); }
+  .replay-coach-callout .replay-coach-headline { font-size: 12px; }
+  .replay-coach-callout p { font-size: 10.5px; -webkit-line-clamp: 1; }
+}

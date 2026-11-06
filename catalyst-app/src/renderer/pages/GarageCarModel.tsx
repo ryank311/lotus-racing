@@ -135,6 +135,10 @@ export function CarModelPanel({ vehicleKey: key, vehicleName, models, onModels, 
           <NumberField label="Tilt up" unit="°" value={-full.dashcamPitchDeg} step={0.5} min={-45} max={45} decimals={1} onChange={v => edit(f => ({ ...f, dashcamPitchDeg: -v }))} />
           <NumberField label="Lens" unit="°" value={full.dashcamFovDeg} step={1} min={40} max={170} decimals={0} onChange={v => edit(f => ({ ...f, dashcamFovDeg: v }))} />
         </FitGroup>
+        <FitGroup title="Data collector (GPS)" marker="gps">
+          <Vec3Fields label={['Left', 'Height', 'Forward']} value={full.gpsM} range={300} onChange={gpsM => edit(f => ({ ...f, gpsM }))} />
+          <p className="garage-car3d-note">Where the Catalyst unit sits (its GPS traced the lap). The replay puts this point of the car on the line, so a unit on the passenger’s dash has Left negative.</p>
+        </FitGroup>
         <div className="garage-fit-actions">
           <button type="button" className="btn primary tiny" disabled={!fitDraft} onClick={() => void saveFit()}>Save fit</button>
           <button type="button" className="btn ghost tiny" disabled={!fitDraft} onClick={() => { setDraft(null); setStatus('') }}>Undo</button>
@@ -294,7 +298,7 @@ function UploadModel({ vehicleKey, onModels, onError }: {
 }
 
 function FitGroup({ title, marker, looking, onLook, children }: {
-  title: string; marker?: 'eye' | 'garmin'; looking?: boolean; onLook?: () => void; children: React.ReactNode
+  title: string; marker?: 'eye' | 'garmin' | 'gps'; looking?: boolean; onLook?: () => void; children: React.ReactNode
 }) {
   return <div className="garage-fit-group" role="group" aria-label={title}>
     <div className="garage-fit-group-head">

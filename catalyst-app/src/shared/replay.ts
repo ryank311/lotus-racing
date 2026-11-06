@@ -208,6 +208,13 @@ export interface CarModelFit {
   dashcamFovDeg?: number
   dashcamPitchDeg?: number
   /**
+   * The data collector (the Catalyst unit, whose GPS traced the line), metres
+   * [left, up, forward]. The replay puts this point of the car on the line,
+   * so a unit on the passenger's dash draws the car off-centre from it, as it
+   * was. Absent: the vehicle preset's.
+   */
+  gpsM?: [number, number, number]
+  /**
    * Wheel hints, for a model whose wheels are not found (or found wrongly)
    * by name and shape: a regular expression (any case) for the node or
    * material names of the parts that roll (tyres, rims, discs), and true to
@@ -265,12 +272,12 @@ export interface CarDynamics {
 export const CAR_PRESETS: Record<string, CarPreset> = {
   'LOTUS EXIGE': {
     name: 'Lotus Exige S (S2)', lengthM: 3.80, widthM: 1.73, heightM: 1.16, wheelbaseM: 2.30,
-    fit: { yawDeg: 0, lengthM: 3.80, offsetM: [0, 0, 0], eyeM: [0.31, 0.86, -0.36], dashcamM: [0, 1.06, 0.21], dashcamFovDeg: 120, dashcamPitchDeg: -6.5 },
+    fit: { yawDeg: 0, lengthM: 3.80, offsetM: [0, 0, 0], eyeM: [0.31, 0.86, -0.36], dashcamM: [0, 1.06, 0.21], dashcamFovDeg: 120, dashcamPitchDeg: -6.5, gpsM: [-0.3, 0.8, 0.1] },
     dynamics: { steeringRatio: 14, rollDegPerG: 1.0, diveDegPerG: 0.8, squatDegPerG: 0.5, rideHz: 1.9, damping: 0.65 },
   },
   'CHEVROLET CORVETTE': {
     name: 'Chevrolet Corvette C8 Z51', lengthM: 4.63, widthM: 1.93, heightM: 1.23, wheelbaseM: 2.72,
-    fit: { yawDeg: 180, lengthM: 4.63, offsetM: [0, 0, 0], eyeM: [0.37, 0.98, -0.26], dashcamM: [0, 1.07, 0.36], dashcamFovDeg: 120, dashcamPitchDeg: -5 },
+    fit: { yawDeg: 180, lengthM: 4.63, offsetM: [0, 0, 0], eyeM: [0.37, 0.98, -0.26], dashcamM: [0, 1.07, 0.36], dashcamFovDeg: 120, dashcamPitchDeg: -5, gpsM: [-0.37, 0.92, 0.2] },
     dynamics: { steeringRatio: 15.7, rollDegPerG: 1.3, diveDegPerG: 0.8, squatDegPerG: 0.5, rideHz: 1.6, damping: 0.65 },
   },
 }
@@ -367,6 +374,13 @@ export interface TrackModelGeoref {
 export interface TrackModelLayout {
   /** The model's files to load for this layout, in order. */
   files: string[]
+  /**
+   * The road's edges (track limits) along the direction of the race, a few
+   * metres apart: [leftX, leftZ, rightX, rightZ] in glTF metres (placed by
+   * the georef like the model). The replay lines laps up with them
+   * ("Align to track"); without them it uses Garmin's line ± half the width.
+   */
+  edges?: Array<[number, number, number, number]>
 }
 
 /**

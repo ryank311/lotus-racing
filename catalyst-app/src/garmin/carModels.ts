@@ -87,7 +87,8 @@ export function cleanFit(value: unknown): CarModelFit {
   // The Garmin camera's mount, lens and tilt are optional.
   if ((f.dashcamM != null && !triple(f.dashcamM))
     || (f.dashcamFovDeg != null && (!n(f.dashcamFovDeg, 170) || f.dashcamFovDeg < 40))
-    || (f.dashcamPitchDeg != null && !n(f.dashcamPitchDeg, 45))) {
+    || (f.dashcamPitchDeg != null && !n(f.dashcamPitchDeg, 45))
+    || (f.gpsM != null && !triple(f.gpsM))) {
     throw new Error('Invalid model fit')
   }
   // So are the wheel hints: a regular expression and a flag.
@@ -98,6 +99,7 @@ export function cleanFit(value: unknown): CarModelFit {
     ...(f.dashcamM != null ? { dashcamM: [...f.dashcamM] as [number, number, number] } : {}),
     ...(f.dashcamFovDeg != null ? { dashcamFovDeg: f.dashcamFovDeg } : {}),
     ...(f.dashcamPitchDeg != null ? { dashcamPitchDeg: f.dashcamPitchDeg } : {}),
+    ...(f.gpsM != null ? { gpsM: [...f.gpsM] as [number, number, number] } : {}),
     ...(f.wheelPartsPattern ? { wheelPartsPattern: f.wheelPartsPattern } : {}),
     ...(f.staticWheels ? { staticWheels: true } : {}),
   }

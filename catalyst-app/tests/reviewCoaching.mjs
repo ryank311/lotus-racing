@@ -68,7 +68,7 @@ async function main() {
 
   await coach()
   await js("window.router.navigate('/review/fixture-5')")
-  await waitFor(`document.querySelector('[aria-label="Review session"]')?.value === 'fixture-5' && document.querySelector('.review-coach button')?.disabled === true`)
+  await waitFor(`document.querySelector('[aria-label="Review session"]')?.dataset.session === 'fixture-5' && document.querySelector('.review-coach button')?.disabled === true`)
   await js('window.finishCoach()')
   await waitFor(`!!document.querySelector('.coach-toast')`)
   assert.equal(await js(reportVisible(2, 'fixture-6')), false, 'another session never receives the completed report')
@@ -91,7 +91,7 @@ async function main() {
   await js('(() => { window.holdReport = true; window.finishCoach() })()')
   await waitFor(`typeof window.releaseReport === 'function'`)
   await js("window.router.navigate('/review/fixture-5')")
-  await waitFor(`document.querySelector('[aria-label="Review session"]')?.value === 'fixture-5'`)
+  await waitFor(`document.querySelector('[aria-label="Review session"]')?.dataset.session === 'fixture-5'`)
   await js('window.releaseReport()')
   await waitFor(`!!document.querySelector('.coach-toast')`)
   assert.equal(await js('window.router.state.location.pathname'), '/review/fixture-5')

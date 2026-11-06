@@ -78,8 +78,15 @@ export class LapPath {
   readonly d: Float64Array
   /** Distance made non-decreasing, for time-at-distance lookups. */
   readonly dMono: Float64Array
+  /** Positions, local metres: the GPS's (lightly smoothed) plus the offset. */
   readonly x: Float64Array
   readonly z: Float64Array
+  /** The GPS's own positions, before any offset. */
+  readonly gpsX: Float64Array
+  readonly gpsZ: Float64Array
+  /** The shift applied to the GPS positions (setOffset), metres: aligning the lap with the road (align.ts). */
+  offsetX = 0
+  offsetZ = 0
   readonly fx: Float64Array
   readonly fz: Float64Array
   readonly speed: Float64Array
@@ -102,7 +109,7 @@ export class LapPath {
   private li = 0
   private lf = 0
 
-  constructor(readonly lap: ReplayLap, frame: LocalFrame, totalM: number) {
+  constructor(readonly lap: ReplayLap, readonly frame: LocalFrame, totalM: number) {
     const n = this.n = lap.timeMs.length
     this.t = Float64Array.from(lap.timeMs)
     this.d = unwrapDistance(lap.dist, totalM)
@@ -111,7 +118,8 @@ export class LapPath {
     this.durationMs = lap.durationMs || (n ? this.t[n - 1] - this.t[0] : 0)
     // GNSS jitter: a light binomial smooth of the positions.
     const rawX = lap.lon.map(lon => localX(frame, lon)), rawZ = lap.lat.map(lat => localZ(frame, lat))
-    this.x = smooth(rawX, [1, 4, 6, 4, 1]); this.z = smooth(rawZ, [1, 4, 6, 4, 1])
+    this.gpsX = smooth(rawX, [1, 4, 6, 4, 1]); this.gpsZ = smooth(rawZ, [1, 4, 6, 4, 1])
+    this.x = Float64Array.from(this.gpsX); this.z = Float64Array.from(this.gpsZ)
     // Heading from the path over about 3 m each way, then smoothed again.
     const s = new Float64Array(n)
     for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(this.x[i] - this.x[i - 1], this.z[i] - this.z[i - 1])
@@ -166,6 +174,31 @@ export class LapPath {
     }
     const correlation = ss > 0 && kk > 0 ? sk / Math.sqrt(ss * kk) : 0
     return Math.abs(correlation) < 0.5 ? 0 : Math.sign(correlation)
+  }
+
+  /**
+   * Shifts the whole lap by (dx, dz) metres from the GPS's positions (0, 0:
+   * as recorded). A translation: heading and curvature stay. The car, its
+   * line and anything else reading `x`/`z` move together. True if it changed.
+   */
+  setOffset(dx: number, dz: number): boolean {
+    if (dx === this.offsetX && dz === this.offsetZ) return false
+    this.offsetX = dx; this.offsetZ = dz
+    for (let i = 0; i < this.n; i++) { this.x[i] = this.gpsX[i] + dx; this.z[i] = this.gpsZ[i] + dz }
+    return true
+  }
+
+  /**
+   * A GPS position from this lap's session (a lat/lon: a suggested line, a
+   * marker) in the replay's local metres with the lap's correction applied
+   * ("Align to track": the same shift as the lap's own positions), into
+   * `out` as [x, z]. Overlays drawn with the lap use this so they move with
+   * it; rebuild them when the shift changes (ReplayEngine.onAlignment).
+   */
+  toLocal(lat: number, lon: number, out: [number, number] = [0, 0]): [number, number] {
+    out[0] = localX(this.frame, lon) + this.offsetX
+    out[1] = localZ(this.frame, lat) + this.offsetZ
+    return out
   }
 
   /** Sample index and fraction at a lap time (ms from the lap start). */

@@ -6,7 +6,6 @@
 
 import * as THREE from 'three'
 
-const OVERSIZE = 1.15
 
 export interface LensSettings {
   /** Output field of view across the frame, degrees. */
@@ -67,6 +66,14 @@ export class LensPass {
     this.screen.add(this.quad)
   }
 
+  private oversize = 1.1
+
+  /** Drawn size against the screen's and multisampling: less for slower graphics. */
+  setQuality(oversize: number, samples: number) {
+    this.oversize = oversize
+    if (this.target.samples !== samples) { this.target.dispose(); this.target.samples = samples }
+  }
+
   /**
    * Point the inner camera like `view` and widen it to cover the lens's
    * corners (with a little margin).
@@ -96,8 +103,8 @@ export class LensPass {
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2())
     // A little over the screen's resolution: the lens magnifies the middle
-    // (by about 1.6 at 120°, so 1.15 × leaves it 1.4: soft, as the camera is).
-    const w = Math.round(size.x * OVERSIZE), h = Math.round(size.y * OVERSIZE)
+    // (by about 1.6 at 120°, so 1.1 × leaves it 1.45: soft, as the camera is).
+    const w = Math.round(size.x * this.oversize), h = Math.round(size.y * this.oversize)
     if (this.target.width !== w || this.target.height !== h) this.target.setSize(w, h)
     renderer.setRenderTarget(this.target)
     renderer.render(scene, this.inner)

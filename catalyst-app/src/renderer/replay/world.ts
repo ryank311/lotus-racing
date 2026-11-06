@@ -15,6 +15,7 @@ import { interp, unwrapDistance } from './lapPath'
 import type { ReplayWorld } from './engine'
 import { buildFarField, loadAcTrack } from './acTrack'
 import { patchWorldMaterial, type SurfaceKind } from './surfaces'
+import { TrackEdges } from './align'
 
 export interface TerrainData {
   info: TerrainInfo
@@ -119,6 +120,8 @@ export async function buildWorld(track: ReplayTrack, terrain: TerrainData | null
   shadowBounds.expandByVector(new THREE.Vector3(250, 40, 250))
   return {
     group, road, frame, edges, note, trees, shadowBounds,
+    // The laps line up with the road as drawn: its edges in the photo, else Garmin's line ± half the width.
+    trackEdges: TrackEdges.fromRoad(road),
     horizon: HORIZON.clone(),
     dispose: () => {
       disposeObject(group)
@@ -197,6 +200,8 @@ export async function buildModelWorld(track: ReplayTrack, terrain: TerrainData |
 
   return {
     group, road, frame, edges: null, note: null, trees: 0,
+    // The laps line up with the model's own road edges (its track.json), else Garmin's line ± half the width.
+    trackEdges: source.layout.edges?.length ? TrackEdges.fromModel(source.layout.edges, model.matrix) : TrackEdges.fromRoad(road),
     // The model's ground and roads, and the trees and stands on them.
     shadowBounds: model.surface.bounds.clone().expandByVector(new THREE.Vector3(10, 30, 10)),
     horizon: HORIZON.clone(),

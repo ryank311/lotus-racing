@@ -52,6 +52,7 @@
 }
 .car-viewer-label.eye { color: var(--cyan); }
 .car-viewer-label.garmin { color: var(--amber); }
+.car-viewer-label.gps { color: var(--green); }
 
 .car-viewer-status {
   position: absolute;

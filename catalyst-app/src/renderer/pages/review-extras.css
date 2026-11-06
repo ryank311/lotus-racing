@@ -2,6 +2,8 @@
 .review-page .neutral, .review-delta-legend .neutral { color: var(--text-dim); }
 .review-header-actions { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
 .review-header-actions > .btn, .review-region-detail .review-section-heading .btn { text-decoration: none; display: inline-flex; align-items: center; }
+.review-header-links { display: flex; flex-wrap: wrap; gap: 10px; }
+.review-header-links > .btn { text-decoration: none; }
 .review-region-detail .review-section-heading h3 { margin: 0; }
 .review-regions { scroll-margin-top: 16px; }
 

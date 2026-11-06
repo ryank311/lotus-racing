@@ -185,6 +185,8 @@ export class SunShadows {
   setBounds(bounds: THREE.Box3 | null) {
     this.bounds = bounds?.clone() ?? null
     this.regionCentre = null
+    // The far map's strength comes back with a world (fitFar zeroes it without one).
+    this.configure()
     this.fitFar()
   }
 

@@ -343,6 +343,7 @@ const remoteBridge: CatalystBridge = {
 
   getReplayScene: guid => rpc('replay:scene', guid),
   getReplayLap: (sceneGuid, ref) => rpc('replay:lap', sceneGuid, ref),
+  getReplayCoaching: guid => rpc('replay:coaching', guid),
   getTerrain: (area, onState) => remoteTerrain(area, onState),
   getTerrainGrid: key => remoteTerrainGrid(key),
   getTerrainImage: key => remoteTerrainImage(key),

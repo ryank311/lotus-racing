@@ -7,6 +7,7 @@ import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachR
 import type { SessionCarData, SessionVideo, VideoImportResult } from './pdr.js'
 import type { CatalystPlan, CatalystPlanEntry } from './catalystVideo.js'
 import type { CarModel, GeoBox, ReplayLap, ReplayLapRef, ReplayScene, TerrainInfo, TrackModel } from './replay.js'
+import type { ReplayCoaching } from './replayCoaching.js'
 
 export interface VideoImportOptions {
   // Attach to this session only; otherwise the best match is found.
@@ -531,6 +532,8 @@ export interface CatalystBridge {
   // on the scene's mean line), terrain and the shared car-model library.
   getReplayScene(sessionGuid: string): Promise<ReplayScene>
   getReplayLap(sceneSessionGuid: string, ref: ReplayLapRef): Promise<ReplayLap>
+  // The session's coaching, placed by distance along its mean line (replayCoaching.ts).
+  getReplayCoaching(sessionGuid: string): Promise<ReplayCoaching>
   // Resolves once the terrain is built (the first call downloads from USGS
   // and can take a while); onState reports 'building' while it waits.
   getTerrain(area: GeoBox, onState?: (state: 'building' | 'ready') => void): Promise<TerrainInfo>

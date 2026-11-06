@@ -100,6 +100,20 @@ test('track models: folders copied in by hand are checked and registered', async
   assert.equal(trackModelFor(await library.list(), { trackName: 'Elsewhere', configName: 'Full Course' }), null)
 })
 
+test('track models: a layout may carry its road edges, checked', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-tracks-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const logs = []
+  const library = new TrackModelLibrary(root, message => logs.push(message))
+  const edges = Array.from({ length: 12 }, (_, i) => [i * 3, -5.5, i * 3, 5.5])
+  writeModel(path.join(root, 'with-edges'), { json: manifest({ layouts: { 'Full Course': { files: ['base.glb', 'full.glb'], edges } } }) })
+  writeModel(path.join(root, 'bad-edges'), { json: manifest({ layouts: { 'Full Course': { files: ['base.glb'], edges: [[0, 1, 2]] } } }) })
+  const [model] = await library.list()
+  assert.equal(model.id, 'with-edges')
+  assert.deepEqual(model.layouts['Full Course'], { files: ['base.glb', 'full.glb'], edges })
+  assert.ok(logs.some(l => l.includes('bad-edges was not registered') && /edges must be/.test(l)), logs.join(' / '))
+})
+
 test('track models: served to signed-in drivers, gzipped, with long cache headers', { timeout: 120000 }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-tracks-'))
   const dataDir = path.join(root, 'server'), media = path.join(root, 'media')

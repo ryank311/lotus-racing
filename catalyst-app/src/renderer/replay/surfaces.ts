@@ -1,9 +1,9 @@
-// The world's shading on top of three's standard material: close-up detail
-// for tarmac and grass (procedural tiling textures, so the track model's
-// soft textures hold up near the car), a wet surface (darker, glossy, with
-// puddles), aerial haze in the scene's linear light, and the sun's far
-// shadow beyond the near shadow map. Every patched material shares one set
-// of uniforms (WORLD_UNIFORMS), driven by the atmosphere.
+// The world's shading on top of three's standard materials, by kind: a fine
+// procedural aggregate on tarmac close up, a procedural turf over the aerial
+// photo's grass (TURF, shared with grass.ts), a wet surface (darker, glossy,
+// a few pools), aerial haze in the scene's linear light, and the world's
+// shadow maps (shadows.ts) on top of the sun's. Every patched material shares
+// one set of uniforms (WORLD_UNIFORMS), driven by the atmosphere.
 
 import * as THREE from 'three'
 import { WORLD_SHADOW_UNIFORMS } from './shadows'
@@ -145,9 +145,12 @@ export function disposeDetailTextures() {
 
 // ─── Shader patch ───────────────────────────────────────────────────────────
 
+// WORLD_LIT: the material takes light (and so the sun's shadow). An unlit
+// one (MeshBasicMaterial: the public world's start line) has no normal in
+// its vertex shader and needs no shadow coordinates.
 const VERTEX_PARS = /* glsl */`
 varying vec3 vWorldPos;
-#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+#if defined( WORLD_LIT ) && defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
 uniform mat4 uRegionMatrix;
 uniform mat4 uFarMatrix;
 uniform float uRegionNormalBias;
@@ -164,7 +167,7 @@ const VERTEX_MAIN = /* glsl */`
   #endif
   vec4 worldPos4 = modelMatrix * wp;
   vWorldPos = worldPos4.xyz;
-  #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+  #if defined( WORLD_LIT ) && defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
     // The world's shadow maps (shadows.ts), offset along the normal as three does.
     vec3 shadowNormal = inverseTransformDirection( transformedNormal, viewMatrix );
     vRegionCoord = uRegionMatrix * ( worldPos4 + vec4( shadowNormal * uRegionNormalBias, 0.0 ) );
@@ -189,7 +192,7 @@ vec2 turfGate( vec3 c ) {
 }
 vec3 turfAlbedo( float luma, float straw, float clump, float dry ) {
   vec3 t = mix( vec3( 0.07, 0.115, 0.032 ), vec3( 0.045, 0.08, 0.026 ), smoothstep( 0.42, 0.68, clump ) );
-  t = mix( t, vec3( 0.12, 0.122, 0.058 ), clamp( 0.35 * smoothstep( 0.45, 0.8, dry ) + 0.45 * straw, 0.0, 1.0 ) );
+  t = mix( t, vec3( 0.12, 0.122, 0.058 ), clamp( 0.3 * smoothstep( 0.45, 0.8, dry ) + 0.25 * straw, 0.0, 1.0 ) );
   return t * luma / max( dot( t, vec3( 0.2126, 0.7152, 0.0722 ) ), 1e-4 );
 }
 `
@@ -242,16 +245,24 @@ uniform vec4 uFarShadow;
 varying vec4 vRegionCoord;
 varying vec4 vFarCoord;
 // The sun's shadow: the cars' map (three's, map 0) times the world's: the
-// region map where it reaches, fading to the whole-track map beyond (shadows.ts).
+// region map where it reaches, fading to the whole-track map beyond, or to
+// none without one (shadows.ts).
+//
+// Each map reaches only as deep as its camera's far plane. Three's lookup
+// checks just one end of the depth range, and with the reversed depth
+// buffer that is the near end (z 1; the far plane is z 0): a point beyond
+// the far plane (with a low sun, the ground a few tens of metres past the
+// car, or past the region, on the side away from the sun) is compared
+// against the cleared map and comes out in full shadow. So the far end is
+// checked here. The maps are orthographic: their coordinates' w is 1.
 float worldSunShadow( DirectionalLightShadow s0, sampler2DShadow map0, vec4 coord0 ) {
-  float shadow = getShadow( map0, s0.shadowMapSize, s0.shadowIntensity, s0.shadowBias, s0.shadowRadius, coord0 );
-  vec2 c = vRegionCoord.xy / vRegionCoord.w;
-  vec2 e = min( c, 1.0 - c );
-  float w = uRegionShadow.w > 0.0 ? smoothstep( 0.0, uShadowEdge, min( e.x, e.y ) ) : 0.0;
-  float world = 1.0;
-  if ( w > 0.0 ) world = getShadow( uRegionMap, uRegionShadow.xx, uRegionShadow.w, uRegionShadow.y, uRegionShadow.z, vRegionCoord );
-  if ( w < 1.0 && uFarShadow.w > 0.0 ) world = mix( getShadow( uFarMap, uFarShadow.xx, uFarShadow.w, uFarShadow.y, uFarShadow.z, vFarCoord ), world, w );
-  return shadow * world;
+  float shadow = coord0.z >= 0.0 ? getShadow( map0, s0.shadowMapSize, s0.shadowIntensity, s0.shadowBias, s0.shadowRadius, coord0 ) : 1.0;
+  vec3 e = min( vRegionCoord.xyz, 1.0 - vRegionCoord.xyz );
+  float w = uRegionShadow.w > 0.0 ? smoothstep( 0.0, uShadowEdge, min( e.z, min( e.x, e.y ) ) ) : 0.0;
+  float worldRegion = w > 0.0 ? getShadow( uRegionMap, uRegionShadow.xx, uRegionShadow.w, uRegionShadow.y, uRegionShadow.z, vRegionCoord ) : 1.0;
+  float worldFar = 1.0;
+  if ( w < 1.0 && uFarShadow.w > 0.0 && vFarCoord.z >= 0.0 ) worldFar = getShadow( uFarMap, uFarShadow.xx, uFarShadow.w, uFarShadow.y, uFarShadow.z, vFarCoord );
+  return shadow * mix( worldFar, worldRegion, w );
 }
 #endif
 `
@@ -377,8 +388,9 @@ function group(kind: SurfaceKind): 'road' | 'painted' | 'ground' | 'object' | nu
 function patchShader(shader: THREE.WebGLProgramParametersWithUniforms, kind: SurfaceKind, extraFragment: ((fragment: string) => string) | undefined, detail: number) {
   Object.assign(shader.uniforms, WORLD_UNIFORMS, WORLD_SHADOW_UNIFORMS)
 
+  const lit = shader.fragmentShader.includes('#include <lights_fragment_begin>')
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', `#include <common>\n${VERTEX_PARS}`)
+    .replace('#include <common>', `#include <common>\n${lit ? '#define WORLD_LIT\n' : ''}${VERTEX_PARS}`)
     .replace('#include <project_vertex>', `#include <project_vertex>\n${VERTEX_MAIN}`)
   let f = shader.fragmentShader
     .replace('#include <common>', `#include <common>\n#define WORLD_DETAIL ${detail.toFixed(2)}\n${FRAGMENT_PARS.split('#if defined( USE_SHADOWMAP )')[0]}`)

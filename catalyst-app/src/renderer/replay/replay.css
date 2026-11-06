@@ -7,7 +7,8 @@
 .replay-header-meta { margin: 0; text-align: right; font: 600 15px/1.35 var(--font-body); color: var(--text); }
 .replay-header-meta span { display: block; font: 11px var(--font-mono); color: var(--text-dim); letter-spacing: .04em; }
 
-.replay-pickers { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.3fr); gap: 12px; align-items: end; }
+.replay-pickers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.replay-pickers > .session-picker { grid-column: 1 / -1; }
 .replay-pickers label, .replay-car > label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font: 10px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); }
 .replay-page select, .replay-page input[type=number] {
   color: var(--text); background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius);

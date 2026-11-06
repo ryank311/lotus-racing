@@ -338,7 +338,13 @@ course, matched by Garmin's course ID. A lap comes back in time order with
 GPS, speed, accelerations, GNSS altitude and heading; a lap measured along
 another mean line (another device's, or one Garmin rebuilt) is moved onto
 the scene's line (`meanLineAlign.ts`), and a lap a synced video covers carries
-the same car data as Session Review. GNSS altitude is height above the WGS84
+the same car data as Session Review. The scene also carries the session's
+`conditions` for the replay's light: Garmin's weather text, temperature,
+humidity and wind, the surface (the driver's correction in Session Review,
+else read from the text), and the start on the track's clock and in UTC.
+Starts are stored as the track's wall-clock time, so the UTC offset is
+estimated from the track's longitude and, in North America and Europe, their
+daylight-saving rules (`estimateUtcOffsetMin`). GNSS altitude is height above the WGS84
 ellipsoid: at VIR it sits about 30 m below the terrain's heights, so place the
 car on the terrain (`sampleTerrain`) and use altitude only for its shape.
 
@@ -422,8 +428,10 @@ with an unsaved fit asks first). The viewer (`components/CarModelViewer.tsx`,
 `carStudio.ts`; three.js loads only when it opens) draws the model exactly as
 the replay fits it (`replay/car.ts`) on a plain floor in neutral studio light
 with a studio environment map. Drag orbits, the wheel or a pinch zooms,
-double-click resets; markers show the eye (cyan) and the Garmin camera
-(amber, with its field of view), and **Driver's eye** / **Garmin camera** look
+double-click resets; markers show the eye (cyan), the Garmin camera
+(amber, with its field of view) and the data collector (green, with a drop
+line to where the lap's line runs under the car), and **Driver's eye** /
+**Garmin camera** look
 through them (the Garmin view through the replay's lens, framed 16:9 like its
 video) to check the fit; dragging there turns the head. Each vehicle card
 names its model. `/garage?vehicle=<MAKE MODEL>` opens the driver's car of
@@ -481,6 +489,13 @@ earth) are the surface the cars sit on; `drivablePattern` (a regular
 expression on node names) can add more. The footprint is a PNG mask (255 =
 the model has ground) in glTF x/z; the public lidar terrain and photo are
 drawn around the model as far field and sunk under it inside the mask.
+A layout may also carry its road's `edges` (track limits), a few metres
+apart along the direction of the race: `[[leftX, leftZ, rightX, rightZ], …]`
+in glTF metres, placed by the georef like the model. The replay lines laps
+up with them (**Align to track**, below); without them it uses Garmin's line
+± half the width. For an Assetto Corsa track they come from each layout's
+`ai/fast_lane.ai` (the AI line and its distances to the left and right
+limits), about 3 m apart: ~200 KB of `track.json` for VIR's three layouts.
 
 A folder is registered at startup and whenever the library is listed, once
 its `track.json` parses and every file it names is present (`.glb` files are
@@ -522,7 +537,8 @@ replay, and models must be added again.
 Lap indices are the app's own (L3 is `lap=2`). Without a session it opens the
 latest session with laps; without a lap, the session's best; without a ghost,
 the best lap when you watch another (`ghost=none` turns it off). Session
-Review links each lap and the video panel's lap here ("Watch in 3D").
+Review links each lap and the video panel's lap here ("Watch in 3D"), and
+the session itself (**3D Replay** in its header: the best lap).
 three.js loads with this page (lazy route) and the Garage's 3D viewer only.
 
 What you see: the car on the road with the speed-coloured racing line, an
@@ -570,6 +586,28 @@ memory while the app is open. Public data (the lidar, the aerial photo and
 the road along Garmin's line) is only the fallback: for a layout without a
 model, or when the model cannot be loaded (with a note).
 
+**Coaching on the track** (RPC `replay:coaching`, `src/garmin/replayCoaching.ts`;
+drawn by `replay/coachOverlay.ts`, page parts in `replay/ReplayCoaching.tsx`):
+one point per coached corner, from the AI coach's Session Review report for
+the session and the latest Analysis report that included it (priorities,
+tips, focus items, apex and throttle targets, a suggested line), the
+coach's previous focus measured on this session (its verdict), Session
+Review's clear gains and regressions, and the session's own laps (the best
+pass through a corner against the median, the largest few). Each point
+carries every valid lap's brake, minimum-speed and throttle points and its
+time through the corner, and the best pass's. On the track: a note floats
+over each corner (only the next one or two along the track), stripes and
+small boards mark where the best pass braked, reached its minimum and picked
+up the throttle (cyan, green) and where this lap braked (orange, on the
+other side of the road), the coached stretches light the road's edges in the
+note's colour, and the best-sector line (your quickest lap through each of
+Garmin's sectors; the coach's line in white when a report has one) runs
+dashed in pink beside the racing line, with the lap's "Align to track"
+shift. A callout shows each point as the car reaches it. The Coaching list
+under the view jumps the replay to 3 s before a corner; "On the track" has
+a Coaching toggle and one per layer (remembered in this browser). A session
+without coaching shows none of it and says so.
+
 The **Garmin camera** matches what the Catalyst's windscreen camera records,
 so the 3D view and the onboard video compare frame for frame: the camera sits
 at the top centre of the screen (per car), tilted slightly up, and the scene
@@ -597,8 +635,8 @@ How the world is built (`src/renderer/replay/`, framework-free; the page is
   a chequered start/finish line sit on top.
 - `terrain.ts`: the 1,400 px grid as one vertex buffer drawn in culled tiles,
   the photo draped on it, pressed just under the road and its verges and
-  eased back to the lidar over a few metres, a skirt down to a wide ground
-  plane, sky and fog. `trees.ts` scatters low-poly trees where the photo is
+  eased back to the lidar over a few metres, and a skirt down to a wide
+  ground plane. `trees.ts` scatters low-poly trees where the photo is
   forest, at least 15 m off the tarmac.
 - `lapPath.ts`, `engine.ts`: the lap by lap time, positions lightly smoothed,
   heading from the path over ±3 m. The car's height, pitch and roll come from
@@ -613,17 +651,114 @@ How the world is built (`src/renderer/replay/`, framework-free; the page is
   else a low-poly car at the real dimensions. A model is centred, turned
   (yaw), scaled to its length and nudged (offset) by its fit, including the
   Garmin camera's mount, tilt and lens (`dashcamM`, `dashcamPitchDeg`,
-  `dashcamFovDeg`; absent, the car's preset). The page's Car panel only names
+  `dashcamFovDeg`) and the data collector's position (`gpsM`; absent, the
+  car's preset, the passenger's dash). The lap's positions are where the
+  Catalyst unit's GPS went, so the engine puts that point of the car on the
+  line (`toCarCentre`): a unit on the passenger's dash draws the car beside
+  its line, as it was; the racing and ghost lines stay on the GPS track. The
+  page's Car panel only names
   the model, with **Change in Garage** (`/garage/<vehicle>`); choosing and
   fitting happen there. Glass is drawn as plain tinted transparency
-  (transmission would render the scene twice). The car reflects a neutral
-  studio environment (three's RoomEnvironment), not the sky, so paint reads
-  true: silver stays silver, gloss black black.
+  (transmission would render the scene twice). The car reflects the session's
+  own sky over the woods and ground around the track (`atmosphere.ts`), the
+  same environment that lights the world, so it sits in the scene's light.
+- `weather.ts`, `sun.ts`: the session's look. The sun stands where it stood
+  ten minutes into the session (NOAA's solar position, from the start in UTC
+  and the track's latitude and longitude; at least 4° up, so a dusk session
+  still reads). Garmin's weather text sets the sky: fair and clear a few
+  cumulus; mostly clear and partly cloudy more; mostly cloudy cumulus under a
+  broken deck; cloudy and overcast a full grey deck; mist, drizzle and rain a
+  darker deck, haze and a wet surface. Visibility (the haze) comes from the
+  text and the humidity (VIR's humid summers are hazy; mist is ~2.5 km). The
+  surface is the session's (wet, damp or dry; mist leaves it damp); the wind
+  sways the grass.
+- `sky.ts`, `atmosphere.ts`: the light. The sky is Preetham's clear sky (as
+  three's Sky addon) with fair-weather cumulus, an overcast deck that covers
+  it (brighter overhead, lumpy, with a glow where the sun is) and horizon
+  haze. The same model is integrated on the CPU for the sky's irradiance, the
+  sun's strength and colour (about 5:1 direct to diffuse with a high sun,
+  less low down and in haze), the haze colour and the exposure, so the drawn
+  sky and the light agree. Units: a white level surface under a clear sky
+  reads 1; an overcast deck gives 30 % of that (rain cloud less) and the
+  exposure adapts most of the way, as a camera does. An environment map of
+  the sky over a ring of woods and the ground lights every material (no
+  hemisphere light) and gives the reflections, the wet track's included.
+  Tone mapping is AgX with a little more contrast and saturation (a camera's
+  standard profile). The world's haze is applied in linear light before tone
+  mapping (height-thinned, glowing towards the sun); other materials take
+  three's fog set to match.
+- `shadows.ts`: the sun's shadows in three maps. The sun's own map follows the
+  car and holds only the cars (24 m, drawn every frame); a region map (300 m
+  ahead of the camera, snapped to whole texels in the light's frame so edges
+  never swim) holds the track's trees, buildings and barriers and is drawn
+  again only when the camera has moved ~60 m; a far map covers the whole
+  track once per sun. The region and far lights sit on a layer the view never
+  draws, so no material lights with them: their maps are drawn by a pass of
+  their own and read only by the world's shaders. Overcast shadows are soft
+  and faint; under a full deck the maps stop drawing. Car glass casts and
+  takes no shadow.
+- `surfaces.ts`: the world's shading on three's standard material, by kind
+  (`acTrack.ts` `surfaceKindOf`, from the Assetto Corsa material names):
+  tarmac gets a fine procedural aggregate close up (gone by ~30 m and before
+  its texels shrink below a pixel) and patchy macro variation; kerbs, lines
+  and plain concrete keep their own texture; turf replaces the aerial photo's
+  smeared close-up texels with a procedural turf (lush, dark and straw greens
+  mixed by world noise at three scales, matched to the photo's softened
+  brightness, only where the photo is grassy: green over red and saturated,
+  so not sand, gravel or clay) and a fine tuft mottle. Wet: tarmac darker and
+  glossy with a few ragged pools on level ground, kerbs and grass darker,
+  everything reflecting the sky. Textures are generated at startup (no
+  assets).
+- `grass.ts`: blades near the camera on a track model's turf. The ground
+  around the camera is drawn from above into a small float map (height, how
+  grassy, brightness), again after the camera has moved a quarter of its
+  150 m: nothing grows on tarmac, kerbs, sand, clay or under buildings. Two
+  rings of clumps (dense to 16 m, sparse to 50 m on High) are placed in the
+  vertex shader on a world grid around the camera, each jittered, turned,
+  sized and coloured from a hash of its world cell (the ground's own turf
+  colour), so nothing moves or pops and there are no tiles; they thin out
+  at each ring's edge, sway with the session's wind, take the shadows and
+  cast none. Two draw calls, about 250k triangles.
+
+**Align to track** (the "On the track" panel, on by default, remembered in
+this browser; `replay/align.ts`): the Catalyst's GNSS is uncorrected, and its
+position carries an offset that holds through a lap and drifts slowly over a
+session. At VIR, over 394 laps of 60 Full Course sessions measured against
+the Assetto Corsa road, the offset is a median 2.2 m and up to 5.8 m (laps of
+one session agree to about 0.5 m), while the model's own error is a metre
+at most (no stretch where every session runs off its road; the georef was
+fitted to Garmin's mean line, RMS 2 m). Drawn as recorded, a lap runs onto the grass
+where the driver used an edge. So each lap and the ghost are shifted, each
+as a whole, by the smallest translation that keeps the line on the road:
+Gauss–Newton on the distance past the edges less 0.8 m (half a car), Huber
+past a metre, ignoring points more than 15 m off, then again without points
+still 3 m off (real excursions and the pit lane stay as they were), with a
+light pull toward no shift and at most 6 m. The road is the track model's
+`edges`, else the generated road's (Garmin's line and the tarmac edges found
+in the photo). One fit per lap (~25 ms), no cost per frame; the car, its
+line and the ghost's read the same shifted positions (`LapPath.setOffset`),
+and an overlay drawn from a session's lat/lon uses `LapPath.toLocal` and
+redraws on `ReplayEngine.onAlignment`. The panel says how far the lap moved
+and how much of it was off the road before and after; off shows the GPS as
+recorded. At VIR the off-road part of a lap drops from a median 263 m to
+7 m, and the position across the road agrees better with Garmin's own
+camera-based `lateral_position` (median difference 1.65 m → 1.02 m).
 
 Without terrain (offline, or USGS failed) the road follows the lap's GPS
 altitude over flat ground, with a note. The first visit to a circuit waits
 for the server's terrain build ("Building VIR terrain from USGS elevation
 data…", about 2 minutes); later visits load in a second or two.
+
+**Weather and light** (panel under the view): the session's weather, with the
+start time and the sun's height and direction; **Weather: Auto | Sunny |
+Overcast | Wet** shows the session's own look or one of the others at the same
+time of day, and **Graphics: Auto | High | Medium** trades grass, shadow
+resolution and the far shadow map for frame rate (Auto starts on High and steps
+to Medium only once the resolution has come down to 1.25 × and the frame rate
+still drops below 45). Both are remembered in this browser. On the MacBook
+Pro's Radeon Pro 560X at 1.25 × resolution the AC track draws chase in about
+6 ms of GPU time, the driver's view in 8 and the Garmin view (lens pass
+included) in 11.
 
 Debugging: in `vite` dev, or after `localStorage['catalyst:replay-debug'] = '1'`,
 the timer shows the frame rate, O toggles an orbit camera, and
