@@ -914,6 +914,37 @@ altitude over flat ground, with a note. The first visit to a circuit waits
 for the server's terrain build ("Building VIR terrain from USGS elevation
 data…", about 2 minutes); later visits load in a second or two.
 
+**Track debug** (panel under the view, `replay/TrackDebugPanel.tsx`,
+`trackDebug.ts`, `flyCamera.ts`), for finding where the track and the data
+disagree:
+
+- **Fly camera** (or N): a free camera over the track while the lap plays.
+  W A S D move along the view, E and Q rise and sink, Shift is faster and Alt
+  slower, the wheel sets the speed; a click on the view locks the pointer
+  for looking (Esc frees it; a drag turns it on a touch screen). Picking a
+  camera, or N again, leaves it.
+- **Overlays**, lines a little above the ground (hills still hide them):
+  the track model's road edges (track.json `edges`, what Align to track and
+  the coaching marks use), its centre and a cross-section every 20 m
+  (yellow); Garmin's centre line (cyan); each lap's GPS as recorded, before
+  the shift (red, the compared lap's pink); the car's path as drawn (the GPS
+  plus the lap's one shift), coloured by the car's side against the model's
+  edge: green inside, amber within 0.5 m, red over, magenta a car's width
+  off; and the track model as wireframe.
+- **Readout** on the view: metres along the lap, the model's road width
+  there, the car's offset from its centre and how far its side is inside or
+  over the edge, where Garmin's line sits across the model's road, and the
+  lap's shift.
+- **Flags** (Flag this spot, or M): marks where the car is, as a post on the
+  track and a line in the panel (click to go there), kept on the device per
+  track. **Copy report** puts them in words (corner, offsets, widths, shift)
+  for fixing the data.
+
+The car's position is the lap's GPS (lightly smoothed) moved by one 2D shift
+for the whole lap, not an offset from a centre line: an error that changes
+along the lap (the GPS's, or the model's georeferencing) shows as a stretch
+of red where the rest is green.
+
 **Weather and light** (panel under the view): the session's weather, with the
 start time and the sun's height and direction; **Weather: Auto | Sunny |
 Overcast | Wet** shows the session's own look or one of the others at the same

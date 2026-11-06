@@ -25,9 +25,11 @@ import { anyReleased, releaseUploaded, releaseWhenUploaded, replayProfile } from
 import { configureKtx2 } from './ktx2'
 import { adapt, FrameWindow, type Ladder } from './resolution'
 import { removeFrontHalves, splitDoubleSided, transparentSort } from './twoSided'
+import { FlyCamera } from './flyCamera'
+import { TrackDebug, type TrackDebugOptions, type TrackProbe } from './trackDebug'
 
 /** 'both' keeps your car and the compared car in frame (chase when there is none). */
-export type ReplayView = 'driver' | 'garmin' | 'chase' | 'both' | 'orbit'
+export type ReplayView = 'driver' | 'garmin' | 'chase' | 'both' | 'orbit' | 'fly'
 
 /**
  * Another driver's car, raced in the ghost's place: solid, in its own model,
@@ -257,6 +259,10 @@ export class ReplayEngine {
   // The "Both cars" camera: its framing's offset from your car, distance and pitch, eased.
   private both = { ready: false, offset: new THREE.Vector3(), dist: 0, pitch: 0 }
   private orbit: OrbitControls | null = null
+  /** The free camera (the debug 'fly' view), while it is on. */
+  private fly: FlyCamera | null = null
+  /** Track debug overlays (trackDebug.ts). */
+  private readonly trackDebug = new TrackDebug()
   private lens: LensPass | null = null
   private resizeObserver: ResizeObserver
   private listeners = new Set<(state: FrameState) => void>()
@@ -335,6 +341,7 @@ export class ReplayEngine {
 
     ensureDetailTextures(this.renderer.capabilities.getMaxAnisotropy())
     this.atmosphere = new Atmosphere(this.renderer, this.scene)
+    this.scene.add(this.trackDebug.group)
 
     const rig = (): CarRig => {
       const root = new THREE.Group()
@@ -616,6 +623,30 @@ export class ReplayEngine {
     this.rebuildLines()
     this.chaseReady = this.mount.ready = false
     this.invalidate()
+  }
+
+  /** Track debug overlays to draw (trackDebug.ts). */
+  setTrackDebug(options: TrackDebugOptions) {
+    this.trackDebug.setOptions(options)
+    this.invalidate()
+  }
+
+  /** Spots marked on the lap (metres along it), as posts with the debug lines. */
+  setTrackFlags(dists: number[]) {
+    this.trackDebug.setFlags(dists)
+    this.invalidate()
+  }
+
+  /** Your lap's time (ms) at a distance along it; null off it. */
+  lapTimeAt(dist: number): number | null {
+    return this.lap?.timeAtDist(dist) ?? null
+  }
+
+  /** Your car against the track data where it is now; null before a lap and world. */
+  trackProbe(): TrackProbe | null {
+    const pose = this.car.pose
+    if (!this.world || !this.lap || pose.dist == null) return null
+    return this.trackDebug.probe(this.world, this.lap, pose.x, pose.z, pose.dist, (this.car.preset?.widthM ?? 1.8) / 2)
   }
 
   alignment(): Alignment {
@@ -964,6 +995,9 @@ export class ReplayEngine {
     this.camera.fov = this.fieldOfView()
     this.camera.near = this.view === 'driver' || this.view === 'garmin' ? 0.03 : 0.1
     this.camera.updateProjectionMatrix()
+    // The free camera starts where the view was.
+    if (this.view === 'fly' && !this.fly) this.fly = new FlyCamera(this.camera, this.renderer.domElement)
+    if (this.view !== 'fly' && this.fly) { this.fly.dispose(); this.fly = null }
     if (this.view === 'orbit' && !this.orbit) void this.startOrbit()
     if (this.view !== 'orbit' && this.orbit) { this.orbit.dispose(); this.orbit = null }
   }
@@ -1027,7 +1061,7 @@ export class ReplayEngine {
         this.onEnded?.()
       }
     }
-    const moving = this.playing || this.renderFrames > 0 || this.view === 'orbit'
+    const moving = this.playing || this.renderFrames > 0 || this.view === 'orbit' || this.view === 'fly'
     if (!moving) return
     this.renderFrames = Math.max(0, this.renderFrames - 1)
     this.fpsWindow.push(now)
@@ -1039,6 +1073,7 @@ export class ReplayEngine {
     this.placeCars()
     if (this.easeLook(dt)) this.invalidate(1)
     this.placeCamera(dt)
+    this.trackDebug.sync(this.world, this.lap, this.ghost, (this.car.preset?.widthM ?? 1.8) / 2)
     // Through the Garmin lens the scene is drawn with its own, wider camera (lens.ts).
     const lens = this.view === 'garmin' ? this.ensureLens() : null
     lens?.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
@@ -1255,6 +1290,7 @@ export class ReplayEngine {
       this.turnHead(this.looks.driver.now, -DRIVER_LOOK_DOWN_DEG * Math.PI / 180)
       return
     }
+    if (this.view === 'fly') { this.fly?.update(dt); return }
     if (this.view === 'orbit') {
       if (this.orbit) {
         const shift = root.position.clone().sub(this.orbit.target)
@@ -1355,7 +1391,7 @@ export class ReplayEngine {
 
   // ── Looking around ───────────────────────────────────────────────────────
 
-  private lookView(): LookView | null { return this.view === 'orbit' ? null : this.view }
+  private lookView(): LookView | null { return this.view === 'orbit' || this.view === 'fly' ? null : this.view }
 
   /** The current view's camera is away from its default. */
   get lookActive(): boolean {
@@ -1505,6 +1541,8 @@ export class ReplayEngine {
     this.resizeObserver.disconnect()
     document.removeEventListener('visibilitychange', this.onVisibility)
     this.orbit?.dispose()
+    this.fly?.dispose()
+    this.trackDebug.dispose()
     this.lens?.dispose()
     this.listeners.clear()
     const canvas = this.renderer.domElement

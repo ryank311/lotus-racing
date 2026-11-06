@@ -375,3 +375,31 @@
   .replay-loader-steps, .replay-loader-note { display: none; }
   .replay-loader-current { display: block; }
 }
+
+/* Track debug (TrackDebugPanel.tsx): the panel, and its readout over the view. */
+.replay-debug > summary { cursor: pointer; list-style: none; }
+.replay-debug > summary::-webkit-details-marker { display: none; }
+.replay-debug > summary::before { content: "▸ "; }
+.replay-debug[open] > summary::before { content: "▾ "; }
+.replay-debug kbd, .replay-debug-actions kbd { margin-left: 6px; padding: 0 4px; border: 1px solid var(--border-strong); border-radius: 3px; font: 9px var(--font-mono); color: var(--text-dim); }
+.replay-debug-swatch { display: inline-block; width: 14px; height: 3px; margin-right: 7px; vertical-align: middle; border-radius: 2px; }
+.replay-debug-swatch.path { background: linear-gradient(90deg, #34d399, #fbbf24, #ef4444, #d946ef); }
+.replay-debug-legend .inside, .replay-debug-readout .inside { color: #34d399; }
+.replay-debug-legend .near, .replay-debug-readout .near { color: #fbbf24; }
+.replay-debug-legend .over, .replay-debug-readout .over { color: #ef4444; }
+.replay-debug-legend .far, .replay-debug-readout .far { color: #d946ef; }
+.replay-debug-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.replay-debug-flags { margin: 0; padding-left: 18px; display: grid; gap: 6px; font: 11px/1.45 var(--font-mono); color: var(--text-dim); }
+.replay-debug-flags li { display: flex; gap: 6px; align-items: flex-start; }
+.replay-debug-flags .link { background: none; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.replay-debug-flags .link:hover { color: var(--text); text-decoration: underline; }
+.replay-debug-remove { flex-shrink: 0; background: none; border: 0; color: var(--text-mute); cursor: pointer; font-size: 14px; line-height: 1; }
+.replay-debug-remove:hover { color: var(--red); }
+.replay-debug-readout {
+  position: absolute; z-index: 2; left: 50%; top: 56px; transform: translateX(-50%); width: max-content; max-width: min(540px, calc(100% - 24px), 52%); display: grid; gap: 4px;
+  padding: 6px 12px; background: rgba(10, 10, 12, 0.85); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-lg);
+  font: 11px/1.4 var(--font-mono); color: var(--text-dim); pointer-events: none; text-align: center;
+}
+.replay-debug-readout b { color: var(--text); }
+.replay-debug-keys { font-size: 10px; color: var(--text-mute); }
+.replay-stage canvas.flying { cursor: crosshair; }

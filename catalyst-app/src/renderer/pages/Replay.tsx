@@ -28,6 +28,7 @@ import { replayProfile } from '../replay/budget'
 import { ReplayHud, clock, frameWriter, labelClock, useFrameValue, type FrameSource } from '../replay/Hud'
 import { CoachingCallout, CoachingPanel, CoachingToggles, useReplayCoaching } from '../replay/ReplayCoaching'
 import { WEATHER_CHOICES, lookFor, type Look, type WeatherChoice } from '../replay/weather'
+import { TrackDebugPanel, TrackDebugReadout, useTrackDebug } from '../replay/TrackDebugPanel'
 import '../replay/replay.css'
 
 // The cameras, in the order C cycles them; Both cars only with a compared car.
@@ -144,6 +145,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   // Racing another driver, both cars stay in frame unless a camera was chosen.
   const view: ReplayView = viewParam === 'driver' || viewParam === 'garmin' || viewParam === 'both' || viewParam === 'chase' ? viewParam : rivalRef ? 'both' : 'chase'
   const [debugOrbit, setDebugOrbit] = useState(false)
+  // The track debug's free camera (TrackDebugPanel): over any chosen camera until turned off.
+  const [fly, setFly] = useState(false)
 
   const lapKey = id && lapInfo ? `${id}|${lapValue(lapInfo)}` : ''
   const lapResource = useResource<ReplayLap | null>(() => (id && lapInfo ? api.getReplayLap(id, { sessionGuid: lapInfo.sessionGuid, lap: lapInfo.lap }) : Promise.resolve(null)), lapKey)
@@ -218,6 +221,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   const [lapReadyFor, setLapReadyFor] = useState('')
   useEffect(() => { if (lapData && trackKey) setLapReadyFor(trackKey) }, [lapData, trackKey])
   const haveLap = !!trackKey && lapReadyFor === trackKey
+  const trackDebug = useTrackDebug(engine, trackKey)
   const [worldAttempt, setWorldAttempt] = useState(0)
   useEffect(() => {
     if (!engine || !scene || !haveLap || !trackKey) return
@@ -305,7 +309,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   const ghostPath = useMemo(() => (ghostData && world && scene ? new LapPath(ghostData, world.frame, scene.track.totalDistM) : null), [ghostData, world, scene])
   useEffect(() => { engine?.setLap(lapPath); engine?.seek(0) }, [engine, lapPath])
   useEffect(() => { engine?.setGhost(ghostPath) }, [engine, ghostPath])
-  useEffect(() => { engine?.setView(debugOrbit ? 'orbit' : view) }, [engine, view, debugOrbit])
+  useEffect(() => { engine?.setView(debugOrbit ? 'orbit' : fly ? 'fly' : view) }, [engine, view, debugOrbit, fly])
   const [lines, setLines] = useState({ racing: true, ghost: true })
   useEffect(() => { engine?.setLines(lines.racing, lines.ghost) }, [engine, lines])
   // The laps' GPS lined up with the road (align.ts), or as recorded; after setLap/setGhost above.
@@ -425,7 +429,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   useEffect(() => { engine?.setRivalMarked(marked) }, [engine, marked])
 
   // ── Controls ───────────────────────────────────────────────────────────
-  const setView = useCallback((next: ReplayView) => { setDebugOrbit(false); query({ view: next }) }, [query])
+  const setView = useCallback((next: ReplayView) => { setDebugOrbit(false); setFly(false); query({ view: next }) }, [query])
   const playerRef = useRef<HTMLDivElement>(null)
   const fullscreen = useFullscreen(playerRef)
   const toggleFullscreen = fullscreen.toggle
@@ -446,6 +450,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
         event.preventDefault()
         engine.setGhostOffset(engine.ghostOffset + (event.key === '[' || event.key === '{' ? -1 : 1) * (event.shiftKey ? 1000 : 100))
       } else if (event.key === 'f' || event.key === 'F') toggleFullscreen()
+      else if (event.key === 'n' || event.key === 'N') setFly(on => !on)
       else if (REPLAY_DEBUG && (event.key === 'o' || event.key === 'O')) setDebugOrbit(v => !v)
     }
     window.addEventListener('keydown', onKey)
@@ -524,12 +529,13 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     </div>
 
     <div className={`replay-player${fullscreen.overlay ? ' pseudo-full' : ''}${ready ? '' : ' waiting'}`} ref={playerRef}>
-    <div className={`replay-stage ${view === 'garmin' && !debugOrbit ? 'garmin' : ''}`} ref={stageRef}>
+    <div className={`replay-stage ${view === 'garmin' && !debugOrbit && !fly ? 'garmin' : ''}`} ref={stageRef}>
       {engine && lapPath && world && <ReplayHud engine={engine} lap={lapPath} ghost={ghostPath} ghostLabel={ghostLabel} units={units} showVideo
         rival={rivalRef && ghostPath ? { name: ghostLabel!, color: RIVAL_COLOR } : null} />}
       {engine && lapPath && world && <PlayOverlay engine={engine} />}
       {engine && world && <ResetView engine={engine} />}
       {world?.note && <div className="replay-note" role="status">{world.note}</div>}
+      {engine && world && <TrackDebugReadout engine={engine} active={trackDebug.active} fly={fly} />}
       {!world?.note && rivalError && <div className="replay-note" role="status">{rivalRef!.driver}’s lap could not be loaded: {rivalError}</div>}
       {!world?.note && !rivalError && lapMissing && <div className="replay-note" role="status">{lapParam === 'optimal' ? 'Garmin has no optimal lap for this session' : `Lap ${Number(lapParam) + 1} is not a valid lap of this session`}; showing {lapInfo!.label.split(' · ').pop()}.</div>}
       {engine && lapPath && world && <CoachingCallout coaching={coaching} engine={engine} lap={lapPath} />}
@@ -539,7 +545,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       {!id && catalogue.data && !sessions.length && <div className="replay-loading"><strong>No sessions with laps yet.</strong><NavLink to="/sessions">Download sessions</NavLink></div>}
       {contextLost && <div className="replay-loading" role="status"><strong>Graphics were reset by the system; restoring the scene…</strong>
         <button className="btn ghost small" type="button" onClick={() => { setContextLost(false); setEngineAttempt(n => n + 1) }}>Reload the 3D view</button></div>}
-      {engine && lapPath && <Transport engine={engine} lap={lapPath} scene={scene!} view={debugOrbit ? null : view} views={cameras} onView={setView}
+      {engine && lapPath && <Transport engine={engine} lap={lapPath} scene={scene!} view={debugOrbit || fly ? null : view} views={cameras} onView={setView}
         fullscreen={fullscreen.active} onFullscreen={toggleFullscreen} stage={stageRef}
         compared={ghostPath ? { name: comparedName, label: ghostLabel ?? comparedName, color: comparedColor } : null} />}
     </div>
@@ -560,9 +566,11 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           <input type="checkbox" checked={align} onChange={e => { setAlign(e.target.checked); store(ALIGN_KEY, e.target.checked ? 'on' : 'off') }} />Align to track</label>
         {alignment?.lap && <p className="muted small">{alignmentNote(alignment, ghostLabel, !!rivalRef)}</p>}
         <CoachingToggles coaching={coaching} />
-        <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras{ghostPath ? ' and both cars' : ''} · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets{ghostPath ? ` · [ ] move ${rivalRef ? `${ghostLabel}’s car` : 'the ghost'} alone a tenth (⇧ a second)` : ''}</p>
+        <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras{ghostPath ? ' and both cars' : ''} · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets · N flies the camera (track debug){ghostPath ? ` · [ ] move ${rivalRef ? `${ghostLabel}’s car` : 'the ghost'} alone a tenth (⇧ a second)` : ''}</p>
         {world?.edges && <p className="muted small">Road edges: {world.edges.applied ? `from the aerial photo (${Math.round(world.edges.found * 100)}% of the lap; the tarmac centre sits ${Math.abs(world.edges.medianShiftM).toFixed(1)} m ${world.edges.medianShiftM >= 0 ? 'left' : 'right'} of Garmin’s line, typically)` : `±${((scene?.track.widthM ?? 10) / 2).toFixed(1)} m around Garmin’s line`}{world.trees ? ` · ${world.trees.toLocaleString()} trees from the photo` : ''}</p>}
       </section>}
+      {engine && lapPath && scene && <TrackDebugPanel engine={engine} debug={trackDebug} fly={fly} onFly={setFly} corners={scene.track.corners}
+        place={[shortTrackName(scene.track.trackName), scene.track.configName].filter(Boolean).join(' · ')} session={scene.sessionGuid} lapLabel={lapPath.lap.label} />}
       {scene && <CarPanel scene={scene} preset={preset} model={model} status={modelStatus}
         rival={rivalRef && rivalVehicle ? { driver: ghostLabel!, vehicle: rivalVehicle, preset: rivalPreset, model: rivalModel, status: rivalStatus } : null} />}
       {scene && look && engine && <ConditionsPanel engine={engine} scene={scene} look={look} units={units}
