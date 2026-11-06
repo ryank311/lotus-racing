@@ -403,3 +403,6 @@
 .replay-debug-readout b { color: var(--text); }
 .replay-debug-keys { font-size: 10px; color: var(--text-mute); }
 .replay-stage canvas.flying { cursor: crosshair; }
+/* What lane positions are measured across (Place by Garmin's lane position). */
+.replay-lane-width { display: flex; align-items: center; gap: 8px; margin-left: 26px; font-size: 12px; color: var(--text-dim); }
+.replay-lane-width select { flex: 1; min-width: 0; padding: 4px 6px; background: var(--panel-raised, var(--panel)); color: var(--text); border: 1px solid var(--border); border-radius: 4px; font: inherit; }

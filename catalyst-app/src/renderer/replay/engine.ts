@@ -82,12 +82,19 @@ export interface ReplayWorld {
 }
 
 /** How the lap and the ghost line up with the road (null without one), and whether the shift is on. */
+/**
+ * What a lane position's share is measured across: the model's road at each
+ * point, the model's road width averaged, or Garmin's track width (one
+ * number for the course, as Garmin may reckon the share).
+ */
+export type LaneWidth = 'model' | 'average' | 'garmin'
+
 export interface Alignment {
   on: boolean
   lap: RoadFit | null
   ghost: RoadFit | null
   /** Placing by Garmin's lane position on the track model (trackFrame.ts): asked for, how Garmin's line sits on the model, and which laps it placed. */
-  lane: { on: boolean; stats: FrameStats | null; lap: boolean; ghost: boolean }
+  lane: { on: boolean; stats: FrameStats | null; lap: boolean; ghost: boolean; width: LaneWidth; widthM: number | null }
 }
 
 export interface FrameState {
@@ -245,6 +252,7 @@ export class ReplayEngine {
   private alignToTrack = true
   /** Laps placed by Garmin's distance and lane position on the track model, not their GPS. */
   private lanePlacement = false
+  private laneWidth: LaneWidth = 'model'
   private frameCache: { edges: TrackEdges; road: ReplayWorld['road']; frame: TrackFrame } | null = null
   // Each lap's fit to a world's road, computed once (a lap belongs to one world's frame).
   private roadFits = new WeakMap<LapPath, { edges: TrackEdges; fit: RoadFit }>()
@@ -629,6 +637,23 @@ export class ReplayEngine {
    * shifted positions. Costs a fit per lap, once, and a rebuild of the lines.
    */
   /** Place the laps by Garmin's lane position on the track model (trackFrame.ts) instead of their GPS. */
+  /** What lane positions are measured across (LaneWidth). */
+  setLaneWidth(width: LaneWidth) {
+    if (width === this.laneWidth) return
+    this.laneWidth = width
+    if (!this.lanePlacement) return
+    this.applyAlignment()
+    this.rebuildLines()
+    this.chaseReady = this.mount.ready = false
+    this.invalidate()
+  }
+
+  // The constant width for lane positions, or null for the model's road at each point.
+  private laneWidthM(frame: TrackFrame | null): number | null {
+    if (!frame || this.laneWidth === 'model') return null
+    return this.laneWidth === 'average' ? frame.stats.meanWidthM : this.world!.road.widthM
+  }
+
   setLanePlacement(on: boolean) {
     if (on === this.lanePlacement) return
     this.lanePlacement = on
@@ -675,7 +700,7 @@ export class ReplayEngine {
     const frame = this.lanePlacement ? this.laneFrame() : null
     return {
       on: this.alignToTrack, lap: this.roadFit(this.lap), ghost: this.roadFit(this.ghost),
-      lane: { on: this.lanePlacement, stats: frame?.stats ?? null, lap: !!this.lap?.placed, ghost: !!this.ghost?.placed },
+      lane: { on: this.lanePlacement, stats: frame?.stats ?? null, lap: !!this.lap?.placed, ghost: !!this.ghost?.placed, width: this.laneWidth, widthM: this.laneWidthM(frame) },
     }
   }
 
@@ -711,6 +736,7 @@ export class ReplayEngine {
     let changed = false
     const frame = this.lanePlacement ? this.laneFrame() : null
     if (this.world && (this.world.laneFrame ?? null) !== frame) { this.world.laneFrame = frame; changed = true }
+    const widthM = this.laneWidthM(frame) ?? undefined
     for (const lap of [this.lap, this.ghost]) {
       if (!lap) continue
       const fit = this.alignToTrack ? this.roadFit(lap) : null
@@ -720,10 +746,10 @@ export class ReplayEngine {
         const xs = new Float64Array(lap.n), zs = new Float64Array(lap.n), out: [number, number] = [0, 0]
         for (let i = 0; i < lap.n; i++) {
           const share = Number.isFinite(lap.lateral[i]) ? lap.lateral[i] : frame.garminOf(lap.gpsX[i], lap.gpsZ[i], lap.d[i]).share
-          frame.place(lap.d[i], share, out)
+          frame.place(lap.d[i], share, out, widthM)
           xs[i] = out[0]; zs[i] = out[1]
         }
-        lap.place(xs, zs, (x, z, to) => frame.mapLocal(x, z, to))
+        lap.place(xs, zs, (x, z, to) => frame.mapLocal(x, z, to, widthM))
         changed = true
       } else if (lap.place(null, null)) changed = true
     }

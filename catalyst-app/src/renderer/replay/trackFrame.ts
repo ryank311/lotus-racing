@@ -21,7 +21,13 @@ import type { RoadModel } from './road'
 export interface FramePoint { x: number; z: number; ax: number; az: number; fx: number; fz: number; half: number }
 
 /** How far Garmin's line runs from the model's centre (metres), and how much of it could be tied to the model. */
-export interface FrameStats { medianM: number; p90M: number; maxM: number; coverage: number; /** Model stations whose width spiked, bridged over. */ despiked: number }
+export interface FrameStats {
+  medianM: number; p90M: number; maxM: number; coverage: number
+  /** Model stations whose width spiked, bridged over. */
+  despiked: number
+  /** The model's road width averaged along it (spikes bridged), metres. */
+  meanWidthM: number
+}
 
 /** Garmin points further than this from the model's centre are not tied (another road, a pit lane). */
 const MAX_TIE_M = 20
@@ -92,7 +98,11 @@ export class TrackFrame {
 
     apart.sort((a, b) => a - b)
     const q = (p: number) => apart.length ? apart[Math.min(apart.length - 1, Math.floor(p * apart.length))] : NaN
-    this.stats = { medianM: q(0.5), p90M: q(0.9), maxM: apart.length ? apart[apart.length - 1] : NaN, coverage: m ? apart.length / m : 0, despiked }
+    // The road's width averaged by length along it.
+    let widthSum = 0, lengthSum = 0
+    for (let k = 1; k < n; k++) { const seg = this.U[k] - this.U[k - 1]; widthSum += (this.half[k] + this.half[k - 1]) * seg; lengthSum += seg }
+    const meanWidthM = lengthSum > 0 ? widthSum / lengthSum : 2 * this.half[0]
+    this.stats = { medianM: q(0.5), p90M: q(0.9), maxM: apart.length ? apart[apart.length - 1] : NaN, coverage: m ? apart.length / m : 0, despiked, meanWidthM }
   }
 
   // Where the model's edges stray (a pit or service road joining, a run-off
@@ -149,11 +159,13 @@ export class TrackFrame {
    * The point `share` of the way across the model's road (0 at the left
    * edge, 1 at the right) at a distance along Garmin's line; [x, z]. Garmin's
    * share is where the device is, inside the car: the car's sides can be
-   * over an edge while it is not.
+   * over an edge while it is not. `widthM`: a width to measure the share
+   * across instead of the model's road there (a constant, as Garmin may
+   * reckon it), still from the model's centre.
    */
-  place(dist: number, share: number, out: [number, number] = [0, 0]): [number, number] {
+  place(dist: number, share: number, out: [number, number] = [0, 0], widthM?: number): [number, number] {
     const p = this.at(dist, SCRATCH)
-    const o = (0.5 - share) * 2 * p.half
+    const o = (0.5 - share) * (widthM ?? 2 * p.half)
     out[0] = p.x + p.ax * o; out[1] = p.z + p.az * o
     return out
   }
@@ -173,9 +185,9 @@ export class TrackFrame {
   }
 
   /** A local point (a GPS position) moved onto the model the way the laps are; [x, z]. */
-  mapLocal(x: number, z: number, out: [number, number] = [0, 0]): [number, number] {
+  mapLocal(x: number, z: number, out: [number, number] = [0, 0], widthM?: number): [number, number] {
     const g = this.garminOf(x, z)
-    return this.place(g.dist, g.share, out)
+    return this.place(g.dist, g.share, out, widthM)
   }
 
   // The nearest point of the model's centre to (x, z), around station k: its arc length and distance.

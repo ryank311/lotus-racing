@@ -99,3 +99,13 @@ test('where the model\'s edge strays (a road joining), the road either side carr
     assert.ok(Math.abs(Math.hypot(rx, rz) - 207) < 0.1, `${d} m: right ${Math.hypot(rx, rz)}`)
   }
 })
+
+test('a constant width measures the share from the model\'s centre instead of its edges', () => {
+  const road = garminLoop(200), edges = modelLoop(202, 5)
+  const f = new TrackFrame(road, edges)
+  assert.ok(Math.abs(f.stats.meanWidthM - 10) < 0.01)
+  const r = (share: number, widthM?: number) => { const [x, z] = f.place(300, share, [0, 0], widthM); return Math.hypot(x, z) }
+  assert.ok(Math.abs(r(0, 8) - 198) < 0.05)
+  assert.ok(Math.abs(r(1, 8) - 206) < 0.05)
+  assert.ok(Math.abs(r(0.5, 8) - 202) < 0.05)
+})

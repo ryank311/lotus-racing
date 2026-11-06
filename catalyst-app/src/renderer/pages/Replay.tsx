@@ -16,7 +16,7 @@ import { InlineLoadStatus } from '../components/Loading'
 import { SPEED_RAMP } from '../components/chartTheme'
 import { carModelFor, driverGhostParam, parseDriverGhostParam, presetFor, trackModelFor, type CarModel, type CarPreset, type ReplayDriverLap, type ReplayVehicle, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
 import { speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem } from '../../shared/units'
-import { ReplayEngine, type Alignment, type FrameState, type ReplayView } from '../replay/engine'
+import { ReplayEngine, type Alignment, type FrameState, type LaneWidth, type ReplayView } from '../replay/engine'
 import { formatOffset, scrubFraction } from '../replay/compare'
 import { LapPath } from '../replay/lapPath'
 import { buildModelWorld, buildWorld, type BuiltWorld, type TerrainData } from '../replay/world'
@@ -317,13 +317,15 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   const [align, setAlign] = useState(() => readStored(ALIGN_KEY, ALIGN_CHOICES, 'on') === 'on')
   // Or placed on the track model by Garmin's distance and lane position (trackFrame.ts).
   const [lane, setLane] = useState(() => readStored(LANE_KEY, ALIGN_CHOICES, 'off') === 'on')
+  const [laneWidth, setLaneWidth] = useState<LaneWidth>(() => readStored(LANE_WIDTH_KEY, LANE_WIDTHS, 'model'))
   const [alignment, setAlignment] = useState<Alignment | null>(null)
   useEffect(() => {
     if (!engine) return
     engine.setAlign(align)
+    engine.setLaneWidth(laneWidth)
     engine.setLanePlacement(lane)
     setAlignment(engine.alignment())
-  }, [engine, align, lane, lapPath, ghostPath, world])
+  }, [engine, align, lane, laneWidth, lapPath, ghostPath, world])
   // The session's coaching on the track (ReplayCoaching.tsx), after the lap and its alignment above.
   const coaching = useReplayCoaching(engine, world, id ?? null, scene?.units ?? 'imperial', lapPath)
 
@@ -572,6 +574,14 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           <input type="checkbox" checked={align} disabled={lane && !!alignment?.lane.lap} onChange={e => { setAlign(e.target.checked); store(ALIGN_KEY, e.target.checked ? 'on' : 'off') }} />Align to track</label>
         <label className="replay-check" title="Each moment of the lap goes to its distance along the track on the 3D model's centre line, and across the model's road by the share of the road Garmin measured (its lane position): the car follows the model's road and keeps the line it drove. The racing lines and coaching marks follow. Off: placed by GPS.">
           <input type="checkbox" checked={lane} onChange={e => { setLane(e.target.checked); store(LANE_KEY, e.target.checked ? 'on' : 'off') }} />Place by Garmin’s lane position on the track</label>
+        {lane && <label className="replay-lane-width" title="What Garmin's share across the road is measured across, from the model's centre line">
+          <span>Across</span>
+          <select value={laneWidth} onChange={e => { const v = e.target.value as LaneWidth; setLaneWidth(v); store(LANE_WIDTH_KEY, v) }}>
+            <option value="model">the model’s road at each point</option>
+            <option value="average">the model’s average width{alignment?.lane.stats ? ` (${alignment.lane.stats.meanWidthM.toFixed(1)} m)` : ''}</option>
+            <option value="garmin">Garmin’s track width{scene?.track.widthM ? ` (${scene.track.widthM.toFixed(1)} m)` : ''}</option>
+          </select>
+        </label>}
         {alignment && (alignment.lap || alignment.lane.on) && <p className="muted small">{alignmentNote(alignment, ghostLabel, !!rivalRef)}</p>}
         <CoachingToggles coaching={coaching} />
         <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras{ghostPath ? ' and both cars' : ''} · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets · N flies the camera (track debug){ghostPath ? ` · [ ] move ${rivalRef ? `${ghostLabel}’s car` : 'the ghost'} alone a tenth (⇧ a second)` : ''}</p>
@@ -593,6 +603,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
 const WEATHER_KEY = 'catalyst:replay-weather'
 const ALIGN_KEY = 'catalyst:replay-align'
 const LANE_KEY = 'catalyst:replay-lane'
+const LANE_WIDTH_KEY = 'catalyst:replay-lane-width'
+const LANE_WIDTHS = ['model', 'average', 'garmin'] as const
 const ALIGN_CHOICES = ['on', 'off'] as const
 const GRAPHICS_KEY = 'catalyst:replay-graphics'
 const GRAPHICS_CHOICES = ['auto', 'high', 'medium', 'low'] as const
@@ -621,7 +633,8 @@ function alignmentNote({ on, lap, ghost, lane }: Alignment, ghostLabel: string |
     if (!lane.lap) return 'This lap has no lane positions from Garmin: placed by GPS.'
     const m = (v: number) => `${v.toFixed(1)} m`
     const ghostPart = ghost && !lane.ghost ? ` ${who} has no lane positions: placed by GPS.` : ''
-    return `Placed on the track model by Garmin’s distance and lane position. Garmin’s line runs ${m(lane.stats.medianM)} from the model’s centre typically (90% within ${m(lane.stats.p90M)}, at most ${m(lane.stats.maxM)}).${ghostPart}`
+    const across = lane.widthM != null ? ` across a constant ${m(lane.widthM)}` : ' across the model’s road at each point'
+    return `Placed on the track model by Garmin’s distance and lane position${across}. Garmin’s line runs ${m(lane.stats.medianM)} from the model’s centre typically (90% within ${m(lane.stats.p90M)}, at most ${m(lane.stats.maxM)}).${ghostPart}`
   }
   if (!lap) return ''
   const shift = (fit: NonNullable<Alignment['lap']>) => `${Math.hypot(fit.dx, fit.dz).toFixed(1)} m`

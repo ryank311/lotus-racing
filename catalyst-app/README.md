@@ -923,7 +923,12 @@ inside the car). Garmin's line is tied to the model's centre line station by
 station (each of its points projected onto the model's centre, smoothed and
 never running backwards), so a distance along Garmin's line becomes a
 distance along the model; the sample goes there, that share of the way
-across the model's road (lane positions lightly smoothed, ±4 m). The car
+across the model's road (lane positions lightly smoothed, ±4 m). **Across** picks what the
+share is measured across, from the model's centre: the model's road at each
+point, the model's average width (11.1 m at VIR Full), or Garmin's track
+width (one number per course, 10.64 m at VIR: Garmin may reckon the share
+against it). Against the GPS the three agree about equally (a median 1.3 m
+apart at VIR), so it is a matter of what matches the video. The car
 keeps the line it drove however the model's road differs from the real one
 in place or width; its sides can hang over an edge where the device is near
 it, as on the real track. The racing and ghost lines, the coaching marks
