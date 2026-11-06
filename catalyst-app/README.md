@@ -475,12 +475,17 @@ sudo cp 2006_lotus_exige_s.glb /volume1/docker/catalyst-coach/media/shared/car-m
 sudo chown 1000:1000 /volume1/docker/catalyst-coach/media/shared/car-models/*.glb
 ```
 
-Routes: `GET /api/car-models`; `POST /api/car-models/uploads`, then
+Routes: `GET /api/car-models` (each model with its file's `version` and
+current size); `POST /api/car-models/uploads`, then
 `PUT …/uploads/<id>?offset=` and `POST …/uploads/<id>/finish`;
-`GET /api/car-models/<id>.glb`; `PATCH` and `DELETE /api/car-models/<id>`;
+`GET /api/car-models/<id>.glb[?v=<version>]`; `PATCH` and `DELETE /api/car-models/<id>`;
 `POST /api/car-models/assign {vehicleKey, modelId | null}` (the Garage's
 choice; returns `{models}`, the whole library). Desktop: IPC `carModels:*`,
-`carModels:assign` for the choice.
+`carModels:assign` for the choice. The `.glb` is served like a track model's
+(below): cached for a year under its current `?v=` (the web client adds it
+from the last listing), revalidated by `ETag` without it, as its
+precompressed `.glb.br`/`.glb.gz` when there is a current one, else as it
+is (byte ranges allowed); the server never compresses car models itself.
 
 **Track models** (`src/garmin/trackModels.ts`) are 3D tracks, such as a
 converted Assetto Corsa track, that replace the generated road and terrain
@@ -534,13 +539,66 @@ sudo chown -R 1000:1000 /volume1/docker/catalyst-coach/media/shared/track-models
 
 Routes: `GET /api/track-models` (each model with its files' versions) and
 `GET /api/track-models/<id>/<file>`, only for files `track.json` names.
-`.glb` files are served gzipped when the browser accepts it, from a copy made
-on first use (registration starts it) in `track-models/.cache/<id>/`; with
-`?v=<version>` the response is cached for a year (`immutable`), without it
-the browser revalidates (`ETag`). Desktop: `<data dir>/track-models/`, over IPC.
-Draco, meshopt and KTX2 compression are not supported (the renderer's CSP
-blocks their WebAssembly decoders); `KHR_mesh_quantization` and WebP
-textures are.
+A `.glb` goes out as its precompressed sidecar when it has a current one
+(`<file>.glb.br` for browsers that take brotli, else `<file>.glb.gz`; see
+below), else gzipped from a copy made on first use (registration starts it)
+in `track-models/.cache/<id>/`, else as it is; with `?v=<version>` the
+response is cached for a year (`immutable`), without it the browser
+revalidates (`ETag`). Desktop: `<data dir>/track-models/`, over IPC.
+Draco and meshopt are not supported; `KHR_mesh_quantization`, WebP and
+KTX2 (`KHR_texture_basisu`, from the compression step below) textures are.
+
+#### Compressing models (offline)
+
+The NAS never compresses a model itself (beyond the track gzip copy above,
+made only when a file has no `.gz` beside it). Compress car and track models
+once on a desktop with `scripts/compress-models.mjs`:
+
+```bash
+cd catalyst-app
+npm run compress-models -- ~/models/vir ~/models/out/vir                 # every .glb in a folder
+npm run compress-models -- ~/models/cars/*.glb ~/models/out/car-models   # or files
+npm run compress-models -- ~/models/out/vir --sidecars-only ~/models/out/vir   # only .br/.gz, textures untouched
+```
+
+For each `.glb` it writes `<name>.glb` (same name) plus `<name>.glb.br`
+(brotli 11) and `<name>.glb.gz` (gzip 9) to the output folder, and prints a
+before/after table (file, gzip and brotli sizes, estimated GPU texture
+memory) with the textures it left alone:
+
+- Textures become KTX2 (`KHR_texture_basisu`): UASTC, zstd, full mip chains;
+  the browser transcodes them to ASTC (iPad) or BC7 (desktop) at a quarter
+  of the GPU memory of decoded PNG/JPEG/WebP. Colour slots are encoded as
+  sRGB, normal maps in normal-map mode, metallic-roughness, occlusion and
+  the like as linear; each is decoded back and its PSNR checked. Level 0 is
+  resized up to a multiple of 4 when needed. `--keep <regex>` leaves
+  textures by name uncompressed; `--rdo <λ>` trades a little quality for a
+  smaller download (off by default).
+- Unused texture coordinate sets (TEXCOORD_1…7 on the car models) are
+  dropped (`--no-prune` keeps them); node, mesh and material names, extras
+  and everything else are unchanged (checked after writing).
+- It needs Node 22.15 or later (zstd) and the dev dependencies
+  (`@gltf-transform/*`, `ktx2-encoder`, `sharp`); a 46 MB track with ~100
+  textures takes a few minutes on all cores.
+
+Then replace the originals on the NAS with all three files of each model,
+keeping their times (`cp -p`; `mv` keeps them too). Stage them in
+`/volume1/docker/catalyst-coach/*-incoming`, then:
+
+```bash
+sudo cp -p /volume1/docker/catalyst-coach/track-incoming/vir-*.glb* /volume1/docker/catalyst-coach/media/shared/track-models/vir/
+sudo cp -p /volume1/docker/catalyst-coach/car-incoming/*.glb* /volume1/docker/catalyst-coach/media/shared/car-models/
+sudo chown -R 1000:1000 /volume1/docker/catalyst-coach/media/shared/track-models/vir /volume1/docker/catalyst-coach/media/shared/car-models
+```
+
+A sidecar is served only while it is current: its mtime at least the
+`.glb`'s (within 2 s) and, for the `.gz`, recording the `.glb`'s length (a
+stale `.gz` retires the `.br` with it). Replacing a `.glb` without its
+sidecars therefore serves the new file plainly (track models gzipped from
+the cache) until it is compressed again (`--sidecars-only` will do). The
+file's version changes with it, so browsers fetch it once. Compressed models
+need the replay's KTX2 support: three.js's `KTX2Loader` with the Basis
+transcoder (WebAssembly, which the renderer's CSP must allow).
 
 Models are third-party work under their own licences: never commit them, and
 keep their credit lines. Terrain and models live with the media, not in the
