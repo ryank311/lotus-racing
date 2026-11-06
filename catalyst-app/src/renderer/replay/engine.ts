@@ -1032,6 +1032,10 @@ export class ReplayEngine {
     this.renderFrames = Math.max(0, this.renderFrames - 1)
     this.fpsWindow.push(now)
     while (this.fpsWindow.length > 30) this.fpsWindow.shift()
+    // Before drawing: a change of resolution resizes the canvas, which clears
+    // it. Made after this frame's render, the page would show that cleared
+    // canvas for a frame (a black flash while playing).
+    this.adaptResolution(now)
     this.placeCars()
     if (this.easeLook(dt)) this.invalidate(1)
     this.placeCamera(dt)
@@ -1043,7 +1047,6 @@ export class ReplayEngine {
     else this.renderer.render(this.scene, this.camera)
     // A constrained device drops the CPU copies of what is now on the GPU (budget.ts).
     releaseUploaded(this.renderer)
-    this.adaptResolution(now)
     this.publish()
   }
 
