@@ -602,8 +602,12 @@ stale `.gz` retires the `.br` with it). Replacing a `.glb` without its
 sidecars therefore serves the new file plainly (track models gzipped from
 the cache) until it is compressed again (`--sidecars-only` will do). The
 file's version changes with it, so browsers fetch it once. Compressed models
-need the replay's KTX2 support: three.js's `KTX2Loader` with the Basis
-transcoder (WebAssembly, which the renderer's CSP must allow).
+need the replay's KTX2 support (`replay/ktx2.ts`): three.js's `KTX2Loader`
+with its Basis transcoder (WebAssembly), served from the app's own origin.
+The transcoder builds functions from strings, which the renderer's CSP
+forbids, so it runs in a worker of the app's own (`replay/basisWorker.ts`)
+rather than KTX2Loader's `blob:` workers, which keep the page's policy; the
+CSP itself is unchanged.
 
 Models are third-party work under their own licences: never commit them, and
 keep their credit lines. Terrain and models live with the media, not in the

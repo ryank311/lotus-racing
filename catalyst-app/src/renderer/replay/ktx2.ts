@@ -9,9 +9,9 @@
 // workers. The first renderer tells it what the GPU reads (configureKtx2);
 // parseGltf hands it to a GLTFLoader. The transcoder (three's
 // basis_transcoder.js and .wasm) is served from the app's own origin as
-// build assets; the workers start from blob: URLs and compile WebAssembly,
-// which the page's CSP allows for this (index.html: worker-src blob:,
-// 'wasm-unsafe-eval').
+// build assets, and run in workers of the app's own (basisWorker.ts): the
+// transcoder builds functions from strings, which the page's CSP forbids
+// and a worker from a script of the app's origin is not held to.
 //
 // On a constrained device (budget.ts) a texture is capped by leaving out
 // its top mip levels once transcoded (capCompressedTexture), fewer workers
@@ -40,8 +40,34 @@ function sharedLoader(): KTX2Loader {
     if (url === `${TRANSCODER_PATH}basis_transcoder.wasm`) return transcoder?.wasm ?? url
     return url
   })
-  shared = new KTX2Loader(manager).setTranscoderPath(TRANSCODER_PATH).setWorkerLimit(replayProfile().constrained ? 2 : 4)
-  return shared
+  const loader = new KTX2Loader(manager).setTranscoderPath(TRANSCODER_PATH).setWorkerLimit(replayProfile().constrained ? 2 : 4)
+  shared = loader
+  // KTX2Loader's own workers start from a blob: URL under the page's CSP,
+  // where the transcoder cannot run (basisWorker.ts): ours run its worker
+  // source instead, from a script of the app's origin.
+  const internals = loader as unknown as {
+    init(): Promise<void>
+    workerSourceURL: string
+    transcoderBinary: ArrayBuffer
+    workerConfig: unknown
+    workerPool: { setWorkerCreator(create: () => Worker): void }
+  }
+  const init = internals.init.bind(loader)
+  let ready: Promise<void> | null = null
+  internals.init = () => ready ??= init().then(async () => {
+    const body = await (await fetch(internals.workerSourceURL)).text()
+    internals.workerPool.setWorkerCreator(() => {
+      const worker = new Worker(new URL('./basisWorker.ts', import.meta.url), { type: 'module' })
+      worker.postMessage({ type: 'bootstrap', body })
+      const transcoderBinary = internals.transcoderBinary.slice(0)
+      worker.postMessage({ type: 'init', config: internals.workerConfig, transcoderBinary }, [transcoderBinary])
+      return worker
+    })
+  }).catch(error => {
+    ready = null
+    throw error
+  })
+  return loader
 }
 
 // Imported when first needed (never in the Node tests that load car.ts).
