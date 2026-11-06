@@ -214,28 +214,36 @@ function etagMatches(header: string | string[] | undefined, etag: string): boole
  * it; otherwise they revalidate by ETag. A .glb goes out as its
  * precompressed sidecar (.br, else .gz) when the client takes one, else
  * gzipped by `gzipFallback` (the track library's cache), else as it is,
- * with byte ranges. Nothing is compressed here.
+ * with byte ranges. Each encoding has its own ETag ("<version>",
+ * "<version>-br", "<version>-gzip"), so a range resumed with If-Range is
+ * never cut from another encoding. Nothing is compressed here.
  */
 async function serveModelFile(
   req: IncomingMessage, res: ServerResponse, url: URL,
   file: { path: string; version: string; type: string },
   gzipFallback: (() => Promise<string | null>) | null = null,
 ): Promise<void> {
-  const etag = `"${file.version}"`
+  const etagOf = (encoding: string | null) => `"${file.version}${encoding ? `-${encoding}` : ''}"`
+  // A range is of the file as it is; one whose If-Range names another representation gets the whole response.
+  const ifRange = req.headers['if-range']
+  const ranged = !!req.headers.range && (!ifRange || ifRange === etagOf(null))
+  let encoded: { path: string; encoding: 'br' | 'gzip' } | null = null
+  if (/\.glb$/i.test(file.path) && !ranged) {
+    const accept = req.headers['accept-encoding']
+    encoded = precompressedSidecar(file.path, accept)
+    if (!encoded && gzipFallback && encodingQuality(String(accept ?? ''))('gzip') > 0) {
+      const gzip = await gzipFallback()
+      if (gzip) encoded = { path: gzip, encoding: 'gzip' }
+    }
+  }
   const headers: Record<string, string> = {
-    'Content-Type': file.type, 'ETag': etag, 'Vary': 'Accept-Encoding',
+    'Content-Type': file.type, 'ETag': etagOf(encoded?.encoding ?? null), 'Vary': 'Accept-Encoding',
     'Cache-Control': url.searchParams.get('v') === file.version ? IMMUTABLE : 'private, no-cache',
   }
-  if (etagMatches(req.headers['if-none-match'], etag)) { res.writeHead(304, headers); res.end(); return }
-  // A range is of the file as it is.
-  if (/\.glb$/i.test(file.path) && !req.headers.range) {
-    const accept = req.headers['accept-encoding']
-    const sidecar = precompressedSidecar(file.path, accept)
-    if (sidecar) { serveFile(req, res, sidecar.path, { ...headers, 'Content-Encoding': sidecar.encoding }); return }
-    const gzip = gzipFallback && encodingQuality(String(accept ?? ''))('gzip') > 0 ? await gzipFallback() : null
-    if (gzip) { serveFile(req, res, gzip, { ...headers, 'Content-Encoding': 'gzip' }); return }
-  }
-  serveFileRange(req, res, file.path, file.type, headers)
+  if (etagMatches(req.headers['if-none-match'], headers.ETag)) { res.writeHead(304, headers); res.end(); return }
+  if (encoded) serveFile(req, res, encoded.path, { ...headers, 'Content-Encoding': encoded.encoding })
+  else if (req.headers.range && !ranged) serveFile(req, res, file.path, headers)
+  else serveFileRange(req, res, file.path, file.type, headers)
 }
 
 // Appends one upload chunk at `offset` to a part file (at most `limit` bytes).

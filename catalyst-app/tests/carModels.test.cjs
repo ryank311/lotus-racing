@@ -150,11 +150,25 @@ test('car models: versioned URLs, ETags and precompressed sidecars', { timeout: 
   assert.equal(head.headers['content-encoding'], 'br')
   assert.equal(Number(head.headers['content-length']), fs.statSync(`${file}.br`).size)
   assert.equal(head.body.length, 0)
-  // A range is of the file itself, sidecars or not.
+  // Each encoding has its own ETag; revalidation names the one the browser holds.
+  assert.equal(br.headers.etag, `"${model.version}-br"`)
+  assert.equal(gz.headers.etag, `"${model.version}-gzip"`)
+  assert.equal((await raw(url, { cookie, 'accept-encoding': 'br', 'if-none-match': br.headers.etag })).status, 304)
+  assert.equal((await raw(url, { cookie, 'accept-encoding': 'br', 'if-none-match': `"${model.version}"` })).status, 200)
+  // A range is of the file itself, sidecars or not; If-Range naming the brotli copy gets the whole of it.
   const ranged = await raw(url, { cookie, range: 'bytes=10-19', 'accept-encoding': 'br' })
   assert.equal(ranged.status, 206)
   assert.equal(ranged.headers['content-encoding'], undefined)
+  assert.equal(ranged.headers.etag, `"${model.version}"`)
   assert.deepEqual(ranged.body, glb.subarray(10, 20))
+  assert.equal((await raw(url, { cookie, range: 'bytes=10-19', 'if-range': `"${model.version}"` })).status, 206)
+  const resumed = await raw(url, { cookie, range: 'bytes=10-19', 'if-range': br.headers.etag, 'accept-encoding': 'br' })
+  assert.equal(resumed.status, 200)
+  assert.equal(resumed.headers['content-encoding'], 'br')
+  assert.deepEqual(zlib.brotliDecompressSync(resumed.body), glb)
+  const whole = await raw(url, { cookie, range: 'bytes=10-19', 'if-range': '"other"', 'accept-encoding': 'identity' })
+  assert.equal(whole.status, 200)
+  assert.deepEqual(whole.body, glb)
   // fetch() decodes it like a browser.
   const fetched = await fetch(server.url + url, { headers: { cookie } })
   assert.deepEqual(Buffer.from(await fetched.arrayBuffer()), glb)
