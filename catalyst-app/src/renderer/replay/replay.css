@@ -132,6 +132,16 @@
 .replay-pip-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 4px 3px 9px; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); }
 .replay-pip-bar button { min-width: 28px; min-height: 26px; background: none; border: 1px solid transparent; border-radius: 2px; color: var(--text); font-size: 15px; cursor: pointer; }
 .replay-pip-bar button:hover { border-color: var(--border-strong); }
+.replay-pip-actions { display: flex; gap: 2px; }
+/* The videos folded away: a small button where they were. */
+.replay-video-tab {
+  top: 12px; right: 12px; display: grid; place-items: center; grid-auto-flow: column; gap: 4px; min-width: 38px; height: 34px; padding: 0 9px;
+  background: rgba(10, 10, 12, 0.82); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-lg); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  color: var(--text-dim); cursor: pointer; pointer-events: auto;
+}
+.replay-video-tab svg { width: 18px; height: 18px; }
+.replay-video-tab b { font: 600 10px var(--font-mono); }
+.replay-video-tab:hover { color: var(--text); border-color: var(--border-strong); }
 
 .replay-note { left: 50%; top: 12px; transform: translateX(-50%); max-width: min(520px, calc(100% - 24px)); padding: 7px 12px; font: 11px/1.45 var(--font-body); color: var(--amber); }
 .replay-hud-timer ~ .replay-note { top: auto; bottom: 150px; }
@@ -277,6 +287,7 @@
   .replay-hud-g svg { width: 58px; height: 58px; }
   .replay-pip { top: 8px; right: 8px; width: 44%; }
   .replay-pips { top: 8px; right: 8px; width: 40%; gap: 5px; }
+  .replay-video-tab { top: 8px; right: 8px; }
   .replay-pips .replay-pip { width: 100%; }
   .replay-hud-rival b { font-size: 12px; }
   .replay-pip.large { width: calc(100% - 16px); }

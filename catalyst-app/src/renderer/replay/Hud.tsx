@@ -8,7 +8,7 @@
 // another lap, the video). Aria labels and titles follow a few times a second
 // while the lap plays, at once while it is paused.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { speedFromMps, speedUnitLabel, type UnitSystem } from '../../shared/units'
 import type { ReplayEngine, FrameState } from './engine'
@@ -101,6 +101,11 @@ export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo, ri
 }) {
   const feed = useMemo(() => comparedFeed(engine), [engine])
   const compared = useFrameValue(engine, hasCompared, false)
+  const [videoShown, setVideoShown] = useVideoShown()
+  const hide = useCallback(() => setVideoShown(false), [setVideoShown])
+  // Yours and, racing another driver, theirs beside it.
+  const pair = showVideo && !!rival && !!ghost?.hasVideo
+  const videos = pair ? (lap.hasVideo ? 2 : 1) : showVideo && lap.hasVideo ? 1 : 0
   const inputs = lap.hasChannel('throttle') || lap.hasChannel('brake')
   const showGap = !!ghost, showRival = !!rival && compared
   const time = useRef<HTMLElement>(null), duration = useRef<HTMLSpanElement>(null)
@@ -140,13 +145,39 @@ export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo, ri
       {inputs && <CarInputs engine={engine} lap={lap} />}
       <GMeter engine={engine} />
     </div>
-    {showVideo && rival && ghost?.hasVideo
+    {videos > 0 && !videoShown && <button type="button" className="replay-video-tab" onClick={() => setVideoShown(true)}
+      aria-label={videos > 1 ? 'Show the onboard videos' : 'Show the onboard video'} title={videos > 1 ? 'Show the onboard videos' : 'Show the onboard video'}>
+      <VideoIcon />{videos > 1 && <b>{videos}</b>}
+    </button>}
+    {videoShown && (pair && rival && ghost
       ? <div className="replay-pips">
-        {lap.hasVideo && <PipVideo engine={engine} lap={lap} />}
-        <div className="replay-pip-rival" data-driver={rival.name} style={{ ['--rival' as string]: rival.color }}><PipVideo engine={feed} lap={ghost} /></div>
+        {lap.hasVideo && <PipVideo engine={engine} lap={lap} onHide={hide} hideLabel="Hide the videos" />}
+        <div className="replay-pip-rival" data-driver={rival.name} style={{ ['--rival' as string]: rival.color }}><PipVideo engine={feed} lap={ghost} onHide={hide} hideLabel="Hide the videos" /></div>
       </div>
-      : showVideo && lap.hasVideo && <PipVideo engine={engine} lap={lap} />}
+      : showVideo && lap.hasVideo && <PipVideo engine={engine} lap={lap} onHide={hide} hideLabel="Hide the video" />)}
   </div>
+}
+
+const VIDEO_KEY = 'catalyst:replay-video'
+
+/**
+ * Whether the onboard videos show, remembered on this device. Hidden, they
+ * fold into a small button at the top right and their players go (paused,
+ * nothing more downloaded or decoded).
+ */
+function useVideoShown(): [boolean, (shown: boolean) => void] {
+  const [shown, setShown] = useState(() => { try { return localStorage.getItem(VIDEO_KEY) !== 'hidden' } catch { return true } })
+  const set = useCallback((next: boolean) => {
+    setShown(next)
+    try { localStorage.setItem(VIDEO_KEY, next ? 'shown' : 'hidden') } catch { /* optional */ }
+  }, [])
+  return [shown, set]
+}
+
+function VideoIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="2.5" y="6" width="13" height="12" rx="2" /><path d="M15.5 10.5 21 7.5v9l-5.5-3" />
+  </svg>
 }
 
 /**
@@ -252,7 +283,7 @@ function GMeter({ engine }: { engine: ReplayEngine }) {
 // The onboard video, picture in picture, held at the 3D car's distance
 // (pipSync.ts: nudged in rate on desktop and Android, steady with rare seeks
 // on iPhone and iPad).
-function PipVideo({ engine, lap }: { engine: FrameSource; lap: LapPath }) {
+function PipVideo({ engine, lap, onHide, hideLabel }: { engine: FrameSource; lap: LapPath; onHide: () => void; hideLabel: string }) {
   const video = useRef<HTMLVideoElement>(null)
   const [large, setLarge] = useState(false)
   const [covered, setCovered] = useState(true)
@@ -331,7 +362,10 @@ function PipVideo({ engine, lap }: { engine: FrameSource; lap: LapPath }) {
     <video ref={video} src={src} muted playsInline preload={steady ? 'metadata' : 'auto'} disablePictureInPicture onClick={tapToPlay} />
     <div className="replay-pip-bar">
       <span>{!covered ? 'Video does not cover this point' : refused ? 'Tap the video to play it' : 'Onboard video'}</span>
-      <button type="button" onClick={() => setLarge(v => !v)} aria-label={large ? 'Smaller video' : 'Larger video'} title={large ? 'Smaller video' : 'Larger video'}>{large ? '⤡' : '⤢'}</button>
+      <span className="replay-pip-actions">
+        <button type="button" onClick={() => setLarge(v => !v)} aria-label={large ? 'Smaller video' : 'Larger video'} title={large ? 'Smaller video' : 'Larger video'}>{large ? '⤡' : '⤢'}</button>
+        <button type="button" onClick={onHide} aria-label={hideLabel} title={hideLabel}>–</button>
+      </span>
     </div>
   </div>
 }
