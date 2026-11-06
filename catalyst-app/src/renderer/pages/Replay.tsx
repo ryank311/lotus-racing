@@ -29,6 +29,7 @@ import { ReplayHud, clock, frameWriter, labelClock, useFrameValue, type FrameSou
 import { CoachingCallout, CoachingPanel, CoachingToggles, useReplayCoaching } from '../replay/ReplayCoaching'
 import { WEATHER_CHOICES, lookFor, type Look, type WeatherChoice } from '../replay/weather'
 import { TrackDebugPanel, TrackDebugReadout, useTrackDebug } from '../replay/TrackDebugPanel'
+import { isTextEntry } from '../replay/flyCamera'
 import '../replay/replay.css'
 
 // The cameras, in the order C cycles them; Both cars only with a compared car.
@@ -439,6 +440,9 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return
       const target = event.target as HTMLElement | null
+      if (isTextEntry(target)) return
+      // N even from a checkbox just clicked (the track debug's own boxes).
+      if (event.key === 'n' || event.key === 'N') { setFly(on => !on); return }
       if (target?.closest('input, select, textarea, [contenteditable="true"]')) return
       if (event.key === ' ') { event.preventDefault(); engine.toggle() }
       else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
@@ -450,7 +454,6 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
         event.preventDefault()
         engine.setGhostOffset(engine.ghostOffset + (event.key === '[' || event.key === '{' ? -1 : 1) * (event.shiftKey ? 1000 : 100))
       } else if (event.key === 'f' || event.key === 'F') toggleFullscreen()
-      else if (event.key === 'n' || event.key === 'N') setFly(on => !on)
       else if (REPLAY_DEBUG && (event.key === 'o' || event.key === 'O')) setDebugOrbit(v => !v)
     }
     window.addEventListener('keydown', onKey)

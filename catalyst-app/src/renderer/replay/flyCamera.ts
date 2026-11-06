@@ -10,6 +10,18 @@ const KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft
 const SPEED: [number, number] = [2, 400]
 const PITCH = Math.PI / 2 - 0.01
 const euler = new THREE.Euler(0, 0, 0, 'YXZ')
+// Inputs that take typed text: keys pressed there are typing. A checkbox, a
+// slider or a button keeps focus after a click (the Fly camera box itself)
+// and must not swallow the keys.
+const NOT_TEXT = new Set(['checkbox', 'radio', 'range', 'button', 'submit', 'reset', 'color', 'file', 'image'])
+
+/** Whether a key event lands where text is being typed. */
+export function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  if (target.closest('textarea, select, [contenteditable="true"]')) return true
+  const input = target.closest('input')
+  return !!input && !NOT_TEXT.has(input.type)
+}
 const forward = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3()
 
 export class FlyCamera {
@@ -74,12 +86,8 @@ export class FlyCamera {
     this.pitch = Math.max(-PITCH, Math.min(PITCH, this.pitch - dy * perPx))
   }
 
-  private typing(event: Event): boolean {
-    return event.target instanceof Element && !!event.target.closest('input, select, textarea, [contenteditable="true"]')
-  }
-
   private onKeyDown = (event: KeyboardEvent) => {
-    if (!KEYS.has(event.code) || event.metaKey || event.ctrlKey || this.typing(event)) return
+    if (!KEYS.has(event.code) || event.metaKey || event.ctrlKey || isTextEntry(event.target)) return
     this.keys.add(event.code)
     // Alt alone would open the window menu on some systems.
     if (event.code.startsWith('Alt') || event.code.startsWith('Key')) event.preventDefault()
@@ -89,6 +97,9 @@ export class FlyCamera {
   private onBlur = () => { this.keys.clear() }
 
   private onPointerDown = (event: PointerEvent) => {
+    // Off any control that kept focus (a checkbox would take Space and the arrows).
+    const focused = document.activeElement as HTMLElement | null
+    if (focused && focused !== document.body && focused !== this.element) focused.blur?.()
     if (event.pointerType === 'mouse' && event.button === 0 && this.element.requestPointerLock && document.pointerLockElement !== this.element) {
       try { void (this.element.requestPointerLock() as unknown as Promise<void> | undefined)?.catch?.(() => {}) } catch { /* not allowed here */ }
       event.preventDefault()

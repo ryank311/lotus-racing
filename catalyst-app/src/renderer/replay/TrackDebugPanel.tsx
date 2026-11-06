@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReplayCorner } from '../../shared/replay'
 import type { ReplayEngine } from './engine'
 import { NO_TRACK_DEBUG, type TrackDebugOptions, type TrackProbe } from './trackDebug'
+import { isTextEntry } from './flyCamera'
 
 const OPTIONS_KEY = 'catalyst:replay-track-debug'
 const FLAGS_KEY = 'catalyst:replay-track-flags:'
@@ -96,7 +97,7 @@ export function TrackDebugPanel({ engine, debug, fly, onFly, corners, place, ses
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || (event.key !== 'm' && event.key !== 'M')) return
-      if (event.target instanceof Element && event.target.closest('input, select, textarea, [contenteditable="true"]')) return
+      if (isTextEntry(event.target)) return
       flag()
     }
     window.addEventListener('keydown', onKey)
@@ -111,7 +112,7 @@ export function TrackDebugPanel({ engine, debug, fly, onFly, corners, place, ses
   }
   return <details className="replay-panel replay-debug" open={fly || debug.active || flags.length > 0 || undefined}>
     <summary className="review-eyebrow">Track debug</summary>
-    <label className="replay-check"><input type="checkbox" checked={fly} onChange={e => onFly(e.target.checked)} />Fly camera <kbd>N</kbd></label>
+    <label className="replay-check"><input type="checkbox" checked={fly} onChange={e => { onFly(e.target.checked); e.currentTarget.blur() }} />Fly camera <kbd>N</kbd></label>
     <label className="replay-check"><input type="checkbox" checked={options.edges} onChange={set('edges')} /><i className="replay-debug-swatch" style={{ background: '#ffd400' }} />Track model: road edges, centre and width every 20 m</label>
     <label className="replay-check"><input type="checkbox" checked={options.garmin} onChange={set('garmin')} /><i className="replay-debug-swatch" style={{ background: '#22d3ee' }} />Garmin’s centre line</label>
     <label className="replay-check"><input type="checkbox" checked={options.gps} onChange={set('gps')} /><i className="replay-debug-swatch" style={{ background: '#ff5a5a' }} />GPS as recorded (before the shift)</label>
