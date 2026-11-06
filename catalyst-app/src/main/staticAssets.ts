@@ -21,7 +21,8 @@ function isFile(filePath: string): boolean {
   try { return fs.statSync(filePath).isFile() } catch { return false }
 }
 
-function encodingQuality(header: string | undefined): (encoding: string) => number {
+/** The q-value an Accept-Encoding header gives each content coding (0: not acceptable). */
+export function encodingQuality(header: string | undefined): (encoding: string) => number {
   const weights = new Map<string, number>()
   for (const part of (header ?? '').split(',')) {
     const [name, ...parameters] = part.trim().toLowerCase().split(';')
@@ -33,6 +34,79 @@ function encodingQuality(header: string | undefined): (encoding: string) => numb
   return encoding => weights.get(encoding) ?? (encoding === 'identity'
     ? (weights.get('*') === 0 ? 0 : 1)
     : (weights.get('*') ?? 0))
+}
+
+// ─── Precompressed model files ──────────────────────────────────────────────
+
+export interface Precompressed {
+  path: string
+  encoding: 'br' | 'gzip'
+  size: number
+}
+
+const MTIME_SLACK_MS = 2000
+
+/** Stats of a file, or null. */
+function statOf(file: string): fs.Stats | null {
+  try { return fs.statSync(file) } catch { return null }
+}
+
+/** The uncompressed length a .gz records in its trailer (mod 2³²), or null. */
+function gzipLength(file: string, size: number): number | null {
+  if (size < 18) return null
+  let handle: number | null = null
+  try {
+    handle = fs.openSync(file, 'r')
+    const tail = Buffer.alloc(4)
+    fs.readSync(handle, tail, 0, 4, size - 4)
+    return tail.readUInt32LE(0)
+  } catch {
+    return null
+  } finally {
+    if (handle != null) fs.closeSync(handle)
+  }
+}
+
+/**
+ * A sidecar of `file` (<file>.br or <file>.gz, written offline by
+ * scripts/compress-models.mjs) that is current: at least as new as the file
+ * and, for the .gz, recording the file's length. The .br is written with
+ * the .gz, so a .gz that no longer matches retires both (a file put back
+ * with its old mtime is then served as it is).
+ */
+export function freshSidecar(file: string, encoding: 'br' | 'gzip', source: fs.Stats | null = statOf(file)): Precompressed | null {
+  if (!source?.isFile()) return null
+  // Within MTIME_SLACK_MS: a stamp copied through a Date (utimes) loses the
+  // sub-millisecond part, and some filesystems keep 2-second times.
+  const fresh = (candidate: string): fs.Stats | null => {
+    const stat = statOf(candidate)
+    return stat?.isFile() && stat.mtimeMs >= source.mtimeMs - MTIME_SLACK_MS ? stat : null
+  }
+  const gzPath = `${file}.gz`
+  const gz = fresh(gzPath)
+  const gzOk = !!gz && gzipLength(gzPath, gz.size) === source.size % 2 ** 32
+  if (encoding === 'gzip') return gzOk ? { path: gzPath, encoding, size: gz!.size } : null
+  const brPath = `${file}.br`
+  const br = fresh(brPath)
+  if (!br || (fs.existsSync(gzPath) && !gzOk)) return null
+  return { path: brPath, encoding, size: br.size }
+}
+
+/**
+ * The precompressed copy of `file` to send for this Accept-Encoding: the
+ * most preferred current sidecar, brotli before gzip when both are
+ * acceptable; null when none is (the file is then sent as it is).
+ */
+export function precompressedSidecar(file: string, acceptEncoding: string | string[] | undefined): Precompressed | null {
+  const quality = encodingQuality(Array.isArray(acceptEncoding) ? acceptEncoding.join(',') : acceptEncoding)
+  const source = statOf(file)
+  const candidates = (['br', 'gzip'] as const)
+    .filter(encoding => quality(encoding) > 0)
+    .map(encoding => ({ q: quality(encoding), sidecar: freshSidecar(file, encoding, source) }))
+    .filter((c): c is { q: number; sidecar: Precompressed } => !!c.sidecar)
+  // A stable sort keeps brotli first among equals.
+  candidates.sort((a, b) => b.q - a.q)
+  return candidates[0]?.sidecar ?? null
 }
 
 /** Serve original assets or precompressed siblings without touching API/SSE responses. */

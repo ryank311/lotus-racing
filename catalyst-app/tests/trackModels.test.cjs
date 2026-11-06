@@ -173,3 +173,74 @@ test('track models: served to signed-in drivers, gzipped, with long cache header
   }
   assert.equal((await call('/api/track-models/test-raceway/base.glb', { method: 'DELETE' }, cookie)).status, 405)
 })
+
+test('track models: precompressed sidecars are served as they are, the gzip cache only without one', { timeout: 120000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'catalyst-tracks-'))
+  const dataDir = path.join(root, 'server'), media = path.join(root, 'media')
+  const dir = userDirectory(dataDir, 'Ryan')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'account.json'), JSON.stringify({ username: 'Ryan' }))
+  // base.glb comes compressed offline (scripts/compress-models.mjs); full.glb does not.
+  const modelDir = path.join(media, 'shared', 'track-models', 'test-raceway')
+  const base = glbFile({ title: 'b'.repeat(200_000) }), full = glbFile({ title: 'f'.repeat(100_000) })
+  writeModel(modelDir, { files: { 'base.glb': base, 'full.glb': full, 'footprint.png': PNG } })
+  const basePath = path.join(modelDir, 'base.glb')
+  const { mtime } = fs.statSync(basePath)
+  fs.writeFileSync(`${basePath}.br`, zlib.brotliCompressSync(base))
+  fs.writeFileSync(`${basePath}.gz`, zlib.gzipSync(base, { level: 9 }))
+  for (const sidecar of [`${basePath}.br`, `${basePath}.gz`]) fs.utimesSync(sidecar, mtime, mtime)
+
+  const server = await startCatalystServer({ host: '127.0.0.1', port: 0, dataDir, mediaDir: media, templateRoot: root })
+  t.after(async () => { await server.close(); fs.rmSync(root, { recursive: true, force: true }) })
+  const raw = (endpoint, headers) => new Promise((resolve, reject) => {
+    http.get(server.url + endpoint, { headers }, res => {
+      const chunks = []
+      res.on('data', c => chunks.push(c)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }))
+    }).on('error', reject)
+  })
+  const login = await fetch(server.url + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'Ryan' }) })
+  const cookie = login.headers.get('set-cookie').split(';')[0]
+  const versions = async () => JSON.parse((await raw('/api/track-models', { cookie })).body).models[0].versions
+  let version = (await versions())['base.glb']
+
+  const br = await raw(`/api/track-models/test-raceway/base.glb?v=${version}`, { cookie, 'accept-encoding': 'gzip, deflate, br' })
+  assert.equal(br.status, 200)
+  assert.equal(br.headers['content-encoding'], 'br')
+  assert.equal(br.headers['content-type'], 'model/gltf-binary')
+  assert.equal(br.headers['cache-control'], 'private, max-age=31536000, immutable')
+  assert.equal(br.headers.vary, 'Accept-Encoding')
+  assert.equal(Number(br.headers['content-length']), fs.statSync(`${basePath}.br`).size)
+  assert.deepEqual(zlib.brotliDecompressSync(br.body), base)
+  const gz = await raw(`/api/track-models/test-raceway/base.glb?v=${version}`, { cookie, 'accept-encoding': 'gzip, deflate' })
+  assert.equal(gz.headers['content-encoding'], 'gzip')
+  assert.deepEqual(gz.body, fs.readFileSync(`${basePath}.gz`), 'the sidecar itself')
+  const plain = await raw(`/api/track-models/test-raceway/base.glb?v=${version}`, { cookie, 'accept-encoding': 'identity' })
+  assert.equal(plain.headers['content-encoding'], undefined)
+  assert.deepEqual(plain.body, base)
+  assert.equal((await raw('/api/track-models/test-raceway/base.glb', { cookie, 'if-none-match': plain.headers.etag })).status, 304)
+  const range = await raw('/api/track-models/test-raceway/base.glb', { cookie, range: 'bytes=0-3', 'accept-encoding': 'br' })
+  assert.equal(range.status, 206)
+  assert.deepEqual(range.body, base.subarray(0, 4))
+
+  // full.glb has no sidecar: gzipped from the cache, and never brotli at runtime.
+  const fullGz = await raw('/api/track-models/test-raceway/full.glb', { cookie, 'accept-encoding': 'gzip, br' })
+  assert.equal(fullGz.headers['content-encoding'], 'gzip')
+  assert.deepEqual(zlib.gunzipSync(fullGz.body), full)
+  assert.equal((await raw('/api/track-models/test-raceway/full.glb', { cookie, 'accept-encoding': 'br' })).headers['content-encoding'], undefined)
+  const cache = path.join(media, 'shared', 'track-models', '.cache', 'test-raceway')
+  assert.ok(fs.readdirSync(cache).some(n => n.startsWith('full.glb.')))
+  assert.ok(!fs.readdirSync(cache).some(n => n.startsWith('base.glb.')), 'base.glb is never compressed at runtime')
+
+  // A new base.glb (newer than its sidecars): a new version, served from the gzip cache until compressed again.
+  const newer = glbFile({ title: 'n'.repeat(150_000) })
+  fs.writeFileSync(basePath, newer)
+  const later = new Date(Date.now() + 60_000)
+  fs.utimesSync(basePath, later, later)
+  const next = (await versions())['base.glb']
+  assert.notEqual(next, version)
+  version = next
+  const fallback = await raw(`/api/track-models/test-raceway/base.glb?v=${version}`, { cookie, 'accept-encoding': 'gzip, deflate, br' })
+  assert.equal(fallback.headers['content-encoding'], 'gzip')
+  assert.deepEqual(zlib.gunzipSync(fallback.body), newer)
+  assert.ok(fs.readdirSync(cache).some(n => n.startsWith(`base.glb.${version}`)))
+})

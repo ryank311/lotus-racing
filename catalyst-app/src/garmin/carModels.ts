@@ -9,11 +9,16 @@
 // to the vehicles whose model word its title names. The file stays where it
 // is, so the folder may belong to another user as long as it is readable.
 //
+// A model may come with precompressed copies beside it (<file>.br, <file>.gz,
+// written offline by scripts/compress-models.mjs), which the server sends
+// to browsers that take them. Each file has a version (its size and mtime)
+// for cache-busting URLs.
+//
 // Models are third-party work: they are never part of the repository.
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import {
   glbCredits, glbJsonLength, MAX_CAR_MODEL_BYTES, presetFor, presetKeysIn,
   type CarModel, type CarModelFit,
@@ -109,6 +114,9 @@ function validPattern(pattern: string): boolean {
   try { new RegExp(pattern, 'i'); return true } catch { return false }
 }
 
+/** A file's version: changes whenever it is replaced (size and mtime). */
+export const carModelVersion = (stat: fs.Stats) => createHash('sha1').update(`${stat.size}:${stat.mtimeMs}`).digest('hex').slice(0, 12)
+
 const fitFor = (matches: string[]): CarModelFit => structuredClone(presetFor(matches[0] ?? null).fit)
 const publicModel = ({ file: _file, ...model }: Entry): CarModel => model
 const publicList = (models: Entry[]): CarModel[] => models.map(publicModel).sort((a, b) => a.name.localeCompare(b.name))
@@ -155,6 +163,30 @@ export class CarModelLibrary {
       if (changed) await this.save(index)
       return publicList(index.models)
     })
+  }
+
+  /**
+   * The listing for the web: each model with its file's version (for
+   * cache-busting URLs) and its size as it is now (a model compressed
+   * offline is smaller than it was uploaded).
+   */
+  async listWithVersions(): Promise<Array<CarModel & { version: string }>> {
+    const models = await this.list()
+    const files = new Map((this.index?.models ?? []).map(m => [m.id, m.file]))
+    const out: Array<CarModel & { version: string }> = []
+    for (const model of models) {
+      const name = files.get(model.id)
+      const stat = name ? await fs.promises.stat(path.join(this.dir, name)).catch(() => null) : null
+      if (stat) out.push({ ...model, sizeBytes: stat.size, version: carModelVersion(stat) })
+    }
+    return out
+  }
+
+  /** A model's .glb and its current version, or null. */
+  async fileInfo(id: unknown): Promise<{ path: string; version: string } | null> {
+    const file = await this.file(id)
+    const stat = file ? await fs.promises.stat(file).catch(() => null) : null
+    return file && stat?.isFile() ? { path: file, version: carModelVersion(stat) } : null
   }
 
   /** The .glb file of a model, or null. */

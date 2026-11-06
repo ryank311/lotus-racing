@@ -188,8 +188,19 @@ async function remoteTrackModelFile(id: string, file: string): Promise<ArrayBuff
   return response.arrayBuffer()
 }
 
+// Car model files too: the version of each from the last listing, in the URL.
+const carModelVersions = new Map<string, string>()
+
+async function remoteCarModels(): Promise<import('../shared/replay').CarModel[]> {
+  const payload = await requestJson('/api/car-models')
+  const models: Array<import('../shared/replay').CarModel & { version?: string }> = payload.models ?? []
+  for (const model of models) if (model.version) carModelVersions.set(model.id, model.version)
+  return models
+}
+
 async function remoteCarModel(id: string): Promise<ArrayBuffer> {
-  const response = await requestBinary(`/api/car-models/${encodeURIComponent(id)}.glb`)
+  const version = carModelVersions.get(id)
+  const response = await requestBinary(`/api/car-models/${encodeURIComponent(id)}.glb${version ? `?v=${version}` : ''}`)
   return response.arrayBuffer()
 }
 
@@ -353,7 +364,7 @@ const remoteBridge: CatalystBridge = {
   getTerrainGrid: key => remoteTerrainGrid(key),
   getTerrainImage: key => remoteTerrainImage(key),
   sampleTerrain: (key, latLon) => remoteSampleTerrain(key, latLon),
-  listCarModels: async () => (await requestJson('/api/car-models')).models ?? [],
+  listCarModels: () => remoteCarModels(),
   getCarModel: id => remoteCarModel(id),
   uploadCarModel: (file, meta, onProgress) => uploadCarModel(file, meta, onProgress),
   updateCarModel: async (id, patch) => (await requestJson(`/api/car-models/${encodeURIComponent(id)}`, {

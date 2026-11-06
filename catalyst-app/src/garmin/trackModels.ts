@@ -6,7 +6,10 @@
 //                           road's edges), georef, footprint (see TrackModel
 //                           in shared/replay.ts)
 //   <dir>/<id>/*.glb        the model, split however the layouts share it
+//   <dir>/<id>/*.glb.br|.gz precompressed copies (optional), written offline by
+//                           scripts/compress-models.mjs and served as they are
 //   <dir>/.cache/<id>/      gzipped copies of the .glb files, made on first use
+//                           when there is no current .glb.gz beside them
 //
 // A folder copied in by hand is registered the next time the library is
 // read: its track.json and the files it names are checked, and it is left
@@ -24,6 +27,7 @@ import {
   glbJsonLength, MAX_TRACK_MODEL_FILE_BYTES,
   type TrackModel, type TrackModelFile, type TrackModelFootprint, type TrackModelGeoref, type TrackModelLayout,
 } from '../shared/replay.js'
+import { freshSidecar } from '../main/staticAssets.js'
 
 export const TRACK_MODEL_ID_RE = /^[a-zA-Z0-9_-]{1,100}$/
 // Plain file names in the model's folder; no paths.
@@ -162,7 +166,7 @@ export class TrackModelLibrary {
         this.entries.set(id, entry)
         this.rejected.delete(id)
         this.log(`[track models] ${known ? 'updated' : 'registered'} ${id} (${Object.keys(entry.model.layouts).join(', ')})`)
-        // Compress the models now, so the first replay is served gzipped.
+        // Compress the models now (unless they come precompressed), so the first replay is served gzipped.
         for (const file of entry.model.files) if (/\.glb$/i.test(file.name)) void this.gzipped(id, file.name).catch(() => {})
       } catch (error) {
         this.entries.delete(id)
@@ -236,13 +240,16 @@ export class TrackModelLibrary {
   }
 
   /**
-   * A gzipped copy of a model's file, made on first use (one build per file
-   * at a time) in the cache folder; null when it cannot be made (a folder
-   * the server cannot write), and the file is served as it is.
+   * A gzipped copy of a model's file: its current .gz sidecar when it has
+   * one, else one made on first use (one build per file at a time) in the
+   * cache folder; null when it cannot be made (a folder the server cannot
+   * write), and the file is served as it is.
    */
   async gzipped(id: string, name: string): Promise<string | null> {
     const source = await this.file(id, name)
     if (!source) return null
+    const sidecar = freshSidecar(source.path, 'gzip')
+    if (sidecar) return sidecar.path
     const target = path.join(this.cacheDir, id, `${name}.${source.version}.gz`)
     if (fs.existsSync(target)) return target
     const key = target

@@ -13,7 +13,7 @@ import { MAX_VIDEO_BYTES, VIDEO_ID_RE, VIDEO_UPLOAD_CHUNK } from '../shared/pdr.
 import { createDriverDirectory, type DriverDirectory } from './driverDirectory.js'
 import { databaseAiKeyStore, migrateServerAiKeys, type AiKeyStore, type AiKeys } from './aiKeyStore.js'
 import { localTrackLibrary, serveTrackLibrary, type TrackLibrary } from '../garmin/trackLibrary.js'
-import { serveStaticAsset } from './staticAssets.js'
+import { encodingQuality, precompressedSidecar, serveStaticAsset } from './staticAssets.js'
 import { MAX_SAMPLE_POINTS, TerrainService } from '../garmin/terrain.js'
 import { CAR_MODEL_ID_RE, CarModelLibrary, cleanMatches, type CarModelMeta } from '../garmin/carModels.js'
 import { TRACK_MODEL_ID_RE, TrackModelLibrary } from '../garmin/trackModels.js'
@@ -108,11 +108,11 @@ interface ModelUpload {
 }
 interface VideoImport { owner: string; state: 'importing' | 'done' | 'failed'; result?: unknown; error?: string; touched: number }
 
-// Serve a file with HTTP range support (video seeking).
-function serveFileRange(req: IncomingMessage, res: ServerResponse, filePath: string, contentType: string): void {
+// Serve a file with HTTP range support (video seeking); `extra` headers win.
+function serveFileRange(req: IncomingMessage, res: ServerResponse, filePath: string, contentType: string, extra: Record<string, string> = {}): void {
   const { size } = fs.statSync(filePath)
   const headers: Record<string, string | number> = {
-    'Content-Type': contentType, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=3600',
+    'Content-Type': contentType, 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=3600', ...extra,
   }
   const range = req.headers.range
   let start = 0, end = size - 1
@@ -197,6 +197,45 @@ function serveFile(req: IncomingMessage, res: ServerResponse, file: string, head
   stream.on('error', () => res.destroy())
   res.on('close', () => stream.destroy())
   stream.pipe(res)
+}
+
+/** Whether an If-None-Match header names this entity tag (weak or strong, or *). */
+function etagMatches(header: string | string[] | undefined, etag: string): boolean {
+  if (!header) return false
+  return (Array.isArray(header) ? header.join(',') : header).split(',').some(part => {
+    const tag = part.trim()
+    return tag === '*' || tag.replace(/^W\//, '') === etag
+  })
+}
+
+/**
+ * A 3D replay model file (a car's .glb, a track model's files). A URL
+ * naming the file's current version (?v=) never changes, so browsers keep
+ * it; otherwise they revalidate by ETag. A .glb goes out as its
+ * precompressed sidecar (.br, else .gz) when the client takes one, else
+ * gzipped by `gzipFallback` (the track library's cache), else as it is,
+ * with byte ranges. Nothing is compressed here.
+ */
+async function serveModelFile(
+  req: IncomingMessage, res: ServerResponse, url: URL,
+  file: { path: string; version: string; type: string },
+  gzipFallback: (() => Promise<string | null>) | null = null,
+): Promise<void> {
+  const etag = `"${file.version}"`
+  const headers: Record<string, string> = {
+    'Content-Type': file.type, 'ETag': etag, 'Vary': 'Accept-Encoding',
+    'Cache-Control': url.searchParams.get('v') === file.version ? IMMUTABLE : 'private, no-cache',
+  }
+  if (etagMatches(req.headers['if-none-match'], etag)) { res.writeHead(304, headers); res.end(); return }
+  // A range is of the file as it is.
+  if (/\.glb$/i.test(file.path) && !req.headers.range) {
+    const accept = req.headers['accept-encoding']
+    const sidecar = precompressedSidecar(file.path, accept)
+    if (sidecar) { serveFile(req, res, sidecar.path, { ...headers, 'Content-Encoding': sidecar.encoding }); return }
+    const gzip = gzipFallback && encodingQuality(String(accept ?? ''))('gzip') > 0 ? await gzipFallback() : null
+    if (gzip) { serveFile(req, res, gzip, { ...headers, 'Content-Encoding': 'gzip' }); return }
+  }
+  serveFileRange(req, res, file.path, file.type, headers)
 }
 
 // Appends one upload chunk at `offset` to a part file (at most `limit` bytes).
@@ -786,7 +825,8 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
       // ---- 3D replay: car models, a library shared by every driver ----
       if (url.pathname === '/api/car-models' && req.method === 'GET') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
-        json(res, 200, { models: await carModels.list() }, origin)
+        // Each with its file's version, for the model's URL (?v=).
+        json(res, 200, { models: await carModels.listWithVersions() }, origin)
         return
       }
       if (url.pathname === '/api/car-models/uploads' && req.method === 'POST') {
@@ -874,9 +914,9 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         const [, id, glb] = modelMatch
         if (glb && (req.method === 'GET' || req.method === 'HEAD')) {
-          const file = await carModels.file(id)
+          const file = await carModels.fileInfo(id)
           if (!file) { json(res, 404, { error: 'Car model not found' }, origin); return }
-          serveFileRange(req, res, file, 'model/gltf-binary')
+          await serveModelFile(req, res, url, { ...file, type: 'model/gltf-binary' })
           return
         }
         if (!glb && req.method === 'PATCH') {
@@ -912,16 +952,7 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         try { [id, name] = [decodeURIComponent(trackFileMatch[1]), decodeURIComponent(trackFileMatch[2])] } catch { json(res, 400, { error: 'Invalid file name' }, origin); return }
         const file = TRACK_MODEL_ID_RE.test(id) ? await trackModels.file(id, name) : null
         if (!file) { json(res, 404, { error: 'Track model file not found' }, origin); return }
-        // A URL naming the file's current version never changes: browsers keep it.
-        const versioned = url.searchParams.get('v') === file.version
-        const headers: Record<string, string> = {
-          'Content-Type': file.type, 'ETag': `"${file.version}"`, 'Vary': 'Accept-Encoding',
-          'Cache-Control': versioned ? IMMUTABLE : 'private, no-cache',
-        }
-        if (req.headers['if-none-match'] === `"${file.version}"`) { res.writeHead(304, headers); res.end(); return }
-        const gzip = /\.glb$/i.test(name) && /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? '')) ? await trackModels.gzipped(id, name) : null
-        if (gzip) serveFile(req, res, gzip, { ...headers, 'Content-Encoding': 'gzip' })
-        else serveFile(req, res, file.path, headers)
+        await serveModelFile(req, res, url, file, () => trackModels.gzipped(id, name))
         return
       }
 
