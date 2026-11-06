@@ -1,8 +1,14 @@
 // The replay's overlays, drawn in HTML over the canvas: lap timer and gap to
 // the ghost, speed and the car's inputs, a g-meter, and the onboard video
 // kept in step with the 3D car.
+//
+// Nothing here renders per frame: each part subscribes to the engine once and
+// writes its changing numbers straight into the DOM (frameWriter), and React
+// renders it again only when its structure changes (a compared car appears,
+// another lap, the video). Aria labels and titles follow a few times a second
+// while the lap plays, at once while it is paused.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { speedFromMps, speedUnitLabel, type UnitSystem } from '../../shared/units'
 import type { ReplayEngine, FrameState } from './engine'
@@ -11,10 +17,66 @@ import { replayProfile } from './budget'
 import { PipSync } from './pipSync'
 import type { LapPath } from './lapPath'
 
-export function useFrame(engine: ReplayEngine | null): FrameState | null {
-  const [state, setState] = useState<FrameState | null>(null)
-  useEffect(() => engine?.subscribe(setState), [engine])
-  return state
+/** Publishes the replay's frames: the engine, or a view of it. */
+export interface FrameSource {
+  subscribe(listener: (state: FrameState) => void): () => void
+}
+
+/**
+ * A value derived from the replay's frames, rendering again only when it
+ * changes (playing or paused, say), not every frame. `select` must be stable
+ * (a module-level function).
+ */
+export function useFrameValue<T>(source: FrameSource | null, select: (state: FrameState) => T, initial: T): T {
+  const [value, setValue] = useState<T>(initial)
+  // Before paint, so the first frame shows the engine's value, not `initial`.
+  useLayoutEffect(() => {
+    if (!source) return
+    let last: { value: T } | null = null
+    return source.subscribe(state => {
+      const next = select(state)
+      if (last && Object.is(last.value, next)) return
+      last = { value: next }
+      setValue(() => next)
+    })
+  }, [source, select])
+  return value
+}
+
+/**
+ * Writes to the DOM from a frame subscription, outside React: each text,
+ * style, attribute or class only when it differs from what this writer last
+ * set there. A new writer (a new subscription) writes everything once.
+ */
+export function frameWriter() {
+  const written = new WeakMap<Element, Map<string, string>>()
+  const changed = (el: Element, key: string, value: string) => {
+    let seen = written.get(el)
+    if (!seen) written.set(el, seen = new Map())
+    if (seen.get(key) === value) return false
+    seen.set(key, value)
+    return true
+  }
+  return {
+    text(el: Element | null, value: string) { if (el && changed(el, '#text', value)) el.textContent = value },
+    style(el: HTMLElement | SVGElement | null, property: string, value: string) { if (el && changed(el, property, value)) el.style.setProperty(property, value) },
+    attr(el: Element | null, name: string, value: string) { if (el && changed(el, `@${name}`, value)) el.setAttribute(name, value) },
+    toggle(el: Element | null, name: string, on: boolean) { if (el && changed(el, `.${name}`, on ? '1' : '')) el.classList.toggle(name, on) },
+  }
+}
+
+/** While the lap plays, aria values and titles change at most this often (ms); paused, at once. */
+const LABEL_EVERY_MS = 250
+
+/** Whether this frame's aria values and titles are due (one per subscription). */
+export function labelClock(): (state: FrameState) => boolean {
+  let at = -Infinity
+  return state => {
+    const now = performance.now()
+    if (state.playing && now - at < LABEL_EVERY_MS) return false
+    at = now
+    return true
+  }
 }
 
 /** m:ss.s for the running clock, m:ss.sss for lap times. */
@@ -25,6 +87,7 @@ export function clock(ms: number, places = 1): string {
 }
 
 const G = 9.80665
+const hasCompared = (state: FrameState) => state.compared != null
 
 export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo, rival = null }: {
   engine: ReplayEngine
@@ -36,30 +99,46 @@ export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo, ri
   /** Another driver's lap is the ghost: their name and colour (their speed shows, and their video beside yours). */
   rival?: { name: string; color: string } | null
 }) {
-  const state = useFrame(engine)
   const feed = useMemo(() => comparedFeed(engine), [engine])
-  if (!state) return null
-  const dist = state.pose.dist ?? 0
-  const gap = state.gapMs
+  const compared = useFrameValue(engine, hasCompared, false)
   const inputs = lap.hasChannel('throttle') || lap.hasChannel('brake')
+  const showGap = !!ghost, showRival = !!rival && compared
+  const time = useRef<HTMLElement>(null), duration = useRef<HTMLSpanElement>(null)
+  const gap = useRef<HTMLSpanElement>(null), gapTime = useRef<HTMLSpanElement>(null)
+  const rivalSpeed = useRef<HTMLElement>(null), fps = useRef<HTMLSpanElement>(null), speed = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    const write = frameWriter()
+    return engine.subscribe(state => {
+      write.text(time.current, clock(state.timeMs, 1))
+      write.text(duration.current, `of ${clock(state.durationMs, 3)}`)
+      const g = state.gapMs
+      write.text(gapTime.current, g == null ? '—' : `${g > 0 ? '+' : '−'}${Math.abs(g / 1000).toFixed(2)}`)
+      write.toggle(gap.current, 'behind', g != null && g > 0)
+      write.toggle(gap.current, 'ahead', g != null && g <= 0)
+      const other = state.compared?.pose
+      write.text(rivalSpeed.current, other ? String(Math.round(speedFromMps(other.speedMps ?? 0, units))) : '—')
+      if (REPLAY_DEBUG) write.text(fps.current, `${state.fps.toFixed(0)} fps`)
+      write.text(speed.current, String(Math.round(speedFromMps(state.pose.speedMps ?? 0, units))))
+    })
+  }, [engine, units, showGap, showRival])
   return <div className="replay-hud">
     <div className="replay-hud-timer">
       <span className="replay-hud-label">{lap.lap.label}</span>
-      <strong>{clock(state.timeMs, 1)}</strong>
-      <span className="replay-hud-sub">of {clock(state.durationMs, 3)}</span>
-      {ghost && <span className={`replay-hud-gap ${gap == null ? '' : gap > 0 ? 'behind' : 'ahead'}`} title={`Time gap to the ghost at this point of the lap (${ghostLabel ?? 'ghost'})`}>
-        {gap == null ? '—' : `${gap > 0 ? '+' : '−'}${Math.abs(gap / 1000).toFixed(2)}`}<small>{rival && <i className="replay-hud-dot" style={{ background: rival.color }} />}vs {ghostLabel ?? 'ghost'}</small>
+      <strong ref={time} />
+      <span className="replay-hud-sub" ref={duration} />
+      {ghost && <span ref={gap} className="replay-hud-gap" title={`Time gap to the ghost at this point of the lap (${ghostLabel ?? 'ghost'})`}>
+        <span ref={gapTime} /><small>{rival && <i className="replay-hud-dot" style={{ background: rival.color }} />}vs {ghostLabel ?? 'ghost'}</small>
       </span>}
-      {rival && state.compared && <span className="replay-hud-rival" title={`${rival.name}’s speed now`}>
+      {rival && showRival && <span className="replay-hud-rival" title={`${rival.name}’s speed now`}>
         <i className="replay-hud-dot" style={{ background: rival.color }} />{rival.name}
-        <b>{state.compared.pose ? Math.round(speedFromMps(state.compared.pose.speedMps ?? 0, units)) : '—'}</b> {speedUnitLabel(units)}
+        <b ref={rivalSpeed} /> {speedUnitLabel(units)}
       </span>}
-      {REPLAY_DEBUG && <span className="replay-hud-fps">{state.fps.toFixed(0)} fps</span>}
+      {REPLAY_DEBUG && <span className="replay-hud-fps" ref={fps} />}
     </div>
     <div className="replay-hud-instruments">
-      <div className="replay-hud-speed"><strong>{Math.round(speedFromMps(state.pose.speedMps ?? 0, units))}</strong><span>{speedUnitLabel(units)}</span></div>
-      {inputs && <CarInputs lap={lap} dist={dist} />}
-      <GMeter state={state} />
+      <div className="replay-hud-speed"><strong ref={speed} /><span>{speedUnitLabel(units)}</span></div>
+      {inputs && <CarInputs engine={engine} lap={lap} />}
+      <GMeter engine={engine} />
     </div>
     {showVideo && rival && ghost?.hasVideo
       ? <div className="replay-pips">
@@ -74,38 +153,61 @@ export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo, ri
  * The compared car's frames for its own video: its pose on its own clock
  * (yours plus the offset), playing only while it is on its lap.
  */
-function comparedFeed(engine: ReplayEngine): ReplayEngine {
-  const subscribe = (listener: (state: FrameState) => void) => engine.subscribe(state => {
-    const c = state.compared
-    const pose = c?.pose ?? { ...state.pose, dist: Infinity }
-    listener({ ...state, pose, playing: state.playing && !!c?.pose && c.timeMs > 0 && c.timeMs < c.durationMs })
-  })
-  return { subscribe } as unknown as ReplayEngine
+function comparedFeed(engine: ReplayEngine): FrameSource {
+  return {
+    subscribe: listener => engine.subscribe(state => {
+      const c = state.compared
+      const pose = c?.pose ?? { ...state.pose, dist: Infinity }
+      listener({ ...state, pose, playing: state.playing && !!c?.pose && c.timeMs > 0 && c.timeMs < c.durationMs })
+    }),
+  }
 }
 
-function CarInputs({ lap, dist }: { lap: LapPath; dist: number }) {
-  const throttle = lap.channel('throttle', dist), brake = lap.channel('brake', dist)
-  const gear = lap.channel('gear', dist), rpm = lap.channel('rpm', dist), steering = lap.channel('steering', dist)
-  const maxRpm = useRef(0)
-  if (!maxRpm.current) {
+function CarInputs({ engine, lap }: { engine: ReplayEngine; lap: LapPath }) {
+  const hasRpm = lap.hasChannel('rpm'), hasSteering = lap.hasChannel('steering')
+  const maxRpm = useMemo(() => {
     const all = (lap.car?.rpm ?? []).filter((v): v is number => v != null)
-    maxRpm.current = Math.max(7000, Math.ceil(Math.max(0, ...all) / 1000) * 1000)
-  }
-  const bar = (value: number | null, kind: string, label: string) =>
-    <div className={`replay-bar ${kind}`} title={`${label} ${value == null ? '—' : Math.round(value) + '%'}`}>
-      <i style={{ height: `${Math.min(100, Math.max(0, value ?? 0))}%` }} />
-      <span>{label[0]}</span>
-    </div>
+    return Math.max(7000, Math.ceil(Math.max(0, ...all) / 1000) * 1000)
+  }, [lap])
+  const gear = useRef<HTMLElement>(null), rpmFill = useRef<HTMLElement>(null), rpmText = useRef<HTMLSpanElement>(null)
+  const throttle = useRef<HTMLDivElement>(null), brake = useRef<HTMLDivElement>(null)
+  const wheel = useRef<SVGSVGElement>(null), wheelTurn = useRef<SVGGElement>(null)
+  useLayoutEffect(() => {
+    const write = frameWriter(), labelsDue = labelClock()
+    // A bar's fill is scaled from full height (replay.css); its title gives the value.
+    const bar = (el: HTMLDivElement | null, value: number | null, label: string, labels: boolean) => {
+      write.style(el?.firstElementChild as HTMLElement | null, 'transform', `scaleY(${(Math.min(100, Math.max(0, value ?? 0)) / 100).toFixed(4)})`)
+      if (labels) write.attr(el, 'title', `${label} ${value == null ? '—' : Math.round(value) + '%'}`)
+    }
+    return engine.subscribe(state => {
+      const dist = state.pose.dist ?? 0
+      const labels = labelsDue(state)
+      const g = lap.channel('gear', dist)
+      write.text(gear.current, g == null ? '–' : g <= 0 ? 'N' : String(Math.round(g)))
+      if (hasRpm) {
+        const rpm = lap.channel('rpm', dist)
+        write.style(rpmFill.current, 'transform', `scaleX(${Math.min(1, Math.max(0, (rpm ?? 0) / maxRpm)).toFixed(4)})`)
+        write.text(rpmText.current, `${rpm == null ? '—' : Math.round(rpm / 10) * 10} rpm`)
+      }
+      bar(throttle.current, lap.channel('throttle', dist), 'Throttle', labels)
+      bar(brake.current, lap.channel('brake', dist), 'Brake', labels)
+      if (hasSteering) {
+        const steering = lap.channel('steering', dist)
+        write.attr(wheelTurn.current, 'transform', `rotate(${(steering ?? 0).toFixed(1)})`)
+        if (labels) write.attr(wheel.current, 'aria-label', `Steering ${steering == null ? 'unknown' : Math.round(steering) + '°'}`)
+      }
+    })
+  }, [engine, lap, maxRpm, hasRpm, hasSteering])
   return <div className="replay-hud-inputs">
-    <div className="replay-hud-gear"><strong>{gear == null ? '–' : gear <= 0 ? 'N' : Math.round(gear)}</strong><span>gear</span></div>
-    {lap.hasChannel('rpm') && <div className="replay-hud-rpm">
-      <div className="replay-rpm-track"><i style={{ width: `${Math.min(100, (rpm ?? 0) / maxRpm.current * 100)}%` }} /></div>
-      <span>{rpm == null ? '—' : Math.round(rpm / 10) * 10} rpm</span>
+    <div className="replay-hud-gear"><strong ref={gear} /><span>gear</span></div>
+    {hasRpm && <div className="replay-hud-rpm">
+      <div className="replay-rpm-track"><i ref={rpmFill} /></div>
+      <span ref={rpmText} />
     </div>}
-    {bar(throttle, 'throttle', 'Throttle')}
-    {bar(brake, 'brake', 'Brake')}
-    {lap.hasChannel('steering') && <svg className="replay-hud-wheel" viewBox="-20 -20 40 40" aria-label={`Steering ${steering == null ? 'unknown' : Math.round(steering) + '°'}`}>
-      <g transform={`rotate(${steering ?? 0})`}>
+    <div className="replay-bar throttle" ref={throttle}><i /><span>T</span></div>
+    <div className="replay-bar brake" ref={brake}><i /><span>B</span></div>
+    {hasSteering && <svg className="replay-hud-wheel" viewBox="-20 -20 40 40" ref={wheel}>
+      <g ref={wheelTurn}>
         <circle r="16" fill="none" stroke="currentColor" strokeWidth="3" />
         <path d="M-16 0H16M0 0V16" stroke="currentColor" strokeWidth="3" />
         <rect x="-1.5" y="-19" width="3" height="5" fill="var(--signal)" />
@@ -116,32 +218,41 @@ function CarInputs({ lap, dist }: { lap: LapPath; dist: number }) {
 
 // A friction circle oriented like Analysis's G-G chart: the force the driver
 // feels, so braking is up and lateral g plots negated (as there).
-function GMeter({ state }: { state: FrameState }) {
-  const trail = useRef<Array<{ t: number; x: number; y: number }>>([])
-  const ax = (state.pose.accelX ?? 0) / G, ay = (state.pose.accelY ?? 0) / G
-  const list = trail.current
-  const last = list[list.length - 1]
-  if (last && (state.timeMs < last.t || state.timeMs - last.t > 600)) list.length = 0
-  if (!last || state.timeMs !== last.t) list.push({ t: state.timeMs, x: ay, y: ax })
-  while (list.length && list[0].t < state.timeMs - 1500) list.shift()
+function GMeter({ engine }: { engine: ReplayEngine }) {
+  const svg = useRef<SVGSVGElement>(null), trail = useRef<SVGPolylineElement>(null)
+  const dot = useRef<SVGCircleElement>(null), total = useRef<HTMLSpanElement>(null)
   const R = 40, scale = R / 1.5
-  const points = list.map(p => `${(-p.x * scale).toFixed(1)},${(p.y * scale).toFixed(1)}`).join(' ')
-  const total = Math.hypot(ax, ay)
+  useLayoutEffect(() => {
+    const write = frameWriter(), labelsDue = labelClock()
+    const list: Array<{ t: number; x: number; y: number }> = []
+    return engine.subscribe(state => {
+      const ax = (state.pose.accelX ?? 0) / G, ay = (state.pose.accelY ?? 0) / G
+      const last = list[list.length - 1]
+      if (last && (state.timeMs < last.t || state.timeMs - last.t > 600)) list.length = 0
+      if (!last || state.timeMs !== last.t) list.push({ t: state.timeMs, x: ay, y: ax })
+      while (list.length && list[0].t < state.timeMs - 1500) list.shift()
+      write.attr(trail.current, 'points', list.map(p => `${(-p.x * scale).toFixed(1)},${(p.y * scale).toFixed(1)}`).join(' '))
+      write.attr(dot.current, 'transform', `translate(${(-ay * scale).toFixed(2)} ${(ax * scale).toFixed(2)})`)
+      const g = `${Math.hypot(ax, ay).toFixed(2)} g`
+      write.text(total.current, g)
+      if (labelsDue(state)) write.attr(svg.current, 'aria-label', g)
+    })
+  }, [engine, scale])
   return <div className="replay-hud-g">
-    <svg viewBox="-46 -46 92 92" aria-label={`${total.toFixed(2)} g`}>
+    <svg viewBox="-46 -46 92 92" ref={svg}>
       {[0.5, 1, 1.5].map(g => <circle key={g} r={g * scale} className={g === 1 ? 'ring one' : 'ring'} />)}
       <path d="M-44 0H44M0 -44V44" className="axis" />
-      <polyline points={points} className="trail" />
-      <circle cx={-ay * scale} cy={ax * scale} r="3.6" className="dot" />
+      <polyline ref={trail} className="trail" />
+      <circle ref={dot} r="3.6" className="dot" />
     </svg>
-    <span>{total.toFixed(2)} g</span>
+    <span ref={total} />
   </div>
 }
 
 // The onboard video, picture in picture, held at the 3D car's distance
 // (pipSync.ts: nudged in rate on desktop and Android, steady with rare seeks
 // on iPhone and iPad).
-function PipVideo({ engine, lap }: { engine: ReplayEngine; lap: LapPath }) {
+function PipVideo({ engine, lap }: { engine: FrameSource; lap: LapPath }) {
   const video = useRef<HTMLVideoElement>(null)
   const [large, setLarge] = useState(false)
   const [covered, setCovered] = useState(true)

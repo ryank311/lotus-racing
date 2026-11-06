@@ -4,7 +4,7 @@
 // from the driver's seat or a chase camera, with an optional ghost lap, the
 // car's inputs and the onboard video picture in picture.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, msToLap } from '../api'
 import { NavLink, useNavigation, useRoute } from '../navigation'
 import { routeUrl, segment } from '../routes'
@@ -25,7 +25,7 @@ import { parseGlb } from '../replay/car'
 import { shortTrackName } from '../replay/geo'
 import { REPLAY_DEBUG } from '../replay/debug'
 import { replayProfile } from '../replay/budget'
-import { ReplayHud, clock, useFrame } from '../replay/Hud'
+import { ReplayHud, clock, frameWriter, labelClock, useFrameValue, type FrameSource } from '../replay/Hud'
 import { CoachingCallout, CoachingPanel, CoachingToggles, useReplayCoaching } from '../replay/ReplayCoaching'
 import { WEATHER_CHOICES, lookFor, type Look, type WeatherChoice } from '../replay/weather'
 import '../replay/replay.css'
@@ -574,6 +574,8 @@ function alignmentNote({ on, lap, ghost }: Alignment, ghostLabel: string | null,
   return `GPS shifted ${shift(lap)} onto the road: off it for ${offRoad(lap.before.metres)} of the lap as recorded, ${offRoad(lap.after.metres)} now.${ghostPart}`
 }
 
+const frameQuality = (state: FrameState) => state.quality
+
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
 const compass = (deg: number) => COMPASS[Math.round((((deg % 360) + 360) % 360) / 45) % 8]
 
@@ -591,8 +593,7 @@ function ConditionsPanel({ engine, scene, look, units, weather, onWeather, graph
   ].filter(Boolean).join(' · ')
   const sun = `Sun ${Math.round(look.sun.elevationDeg)}° up in the ${compass(look.sun.azimuthDeg)}${c?.localStart ? ` at ${c.localStart.slice(11, 16)}` : ''}`
   // The level Auto picked: re-rendered only when it changes, not every frame.
-  const [level, setLevel] = useState<FrameState['quality'] | null>(null)
-  useEffect(() => engine.subscribe(state => setLevel(state.quality)), [engine])
+  const level = useFrameValue<FrameState['quality'] | null>(engine, frameQuality, null)
   return <section className="replay-panel replay-conditions">
     <span className="review-eyebrow">Weather and light</span>
     <div className="replay-view-switch" role="group" aria-label="Weather">
@@ -610,18 +611,27 @@ function ConditionsPanel({ engine, scene, look, units, weather, onWeather, graph
   </section>
 }
 
+// What the overlays follow of the frames (each renders again only when its value changes).
+const isLookActive = (state: FrameState) => state.lookActive
+const isPlaying = (state: FrameState) => state.playing
+const hasComparedCar = (state: FrameState) => state.compared != null
+// Paused at the start or the end of the lap: the big button offers to play it, or to play it again.
+const playOffer = (state: FrameState): 'play' | 'replay' | null =>
+  state.playing || (state.timeMs > 0 && state.timeMs < state.durationMs) ? null : state.timeMs >= state.durationMs ? 'replay' : 'play'
+
 function ResetView({ engine }: { engine: ReplayEngine }) {
-  const state = useFrame(engine)
-  if (!state?.lookActive) return null
+  const lookActive = useFrameValue(engine, isLookActive, false)
+  if (!lookActive) return null
   return <button type="button" className="replay-reset-view" onClick={() => engine.resetLook()} title="Back to the default camera (double-click the view)">Reset view</button>
 }
 
 function PlayOverlay({ engine }: { engine: ReplayEngine }) {
-  const state = useFrame(engine)
-  if (!state || state.playing || (state.timeMs > 0 && state.timeMs < state.durationMs)) return null
-  return <button type="button" className="replay-play-overlay" onClick={() => { if (state.timeMs >= state.durationMs) engine.seek(0); engine.play() }} aria-label={state.timeMs >= state.durationMs ? 'Replay the lap' : 'Play the lap'}>
+  const offer = useFrameValue(engine, playOffer, null)
+  if (!offer) return null
+  const again = offer === 'replay'
+  return <button type="button" className="replay-play-overlay" onClick={() => { if (again) engine.seek(0); engine.play() }} aria-label={again ? 'Replay the lap' : 'Play the lap'}>
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
-    <span>{state.timeMs >= state.durationMs ? 'Replay lap' : 'Play lap'}</span>
+    <span>{again ? 'Replay lap' : 'Play lap'}</span>
   </button>
 }
 
@@ -712,18 +722,47 @@ const TRANSPORT_IDLE_MS = 2800
 // The compared car (a ghost or another driver's) on the transport: its short name, full label and colour.
 interface ComparedCar { name: string; label: string; color: string }
 
+/**
+ * The frames for the transport's own writes (its clock and bar, the compared
+ * car's handle and clock), passed on while it shows. Asleep and faded out,
+ * the bar is not written; the latest frame is, as soon as it shows again.
+ */
+class TransportFrames implements FrameSource {
+  hidden = false
+  private latest: FrameState | null = null
+  private listeners = new Set<(state: FrameState) => void>()
+
+  subscribe(listener: (state: FrameState) => void): () => void {
+    this.listeners.add(listener)
+    if (this.latest && !this.hidden) listener(this.latest)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  publish(state: FrameState) {
+    this.latest = state
+    if (!this.hidden) for (const listener of this.listeners) listener(state)
+  }
+
+  show() {
+    if (!this.hidden) return
+    this.hidden = false
+    if (this.latest) this.publish(this.latest)
+  }
+}
+
 function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFullscreen, stage, compared }: {
   engine: ReplayEngine; lap: LapPath; scene: ReplayScene
   view: ReplayView | null; views: readonly CameraView[]; onView: (view: ReplayView) => void
   fullscreen: boolean; onFullscreen: () => void; stage: { current: HTMLElement | null }
   compared: ComparedCar | null
 }) {
-  const state = useFrame(engine)
+  const playing = useFrameValue(engine, isPlaying, false)
+  const comparing = useFrameValue(engine, hasComparedCar, false) && !!compared
   const duration = lap.durationMs
   const markers = useMemo(() => scene.track.corners.map(c => ({ turn: c.turn, name: c.name, at: lap.timeAtDist(c.apexM) })).filter(m => m.at != null), [scene, lap])
-  const time = state?.timeMs ?? 0
   const bar = useRef<HTMLDivElement>(null)
   const scrub = useRef<HTMLDivElement>(null)
+  const range = useRef<HTMLInputElement>(null), fill = useRef<HTMLDivElement>(null), clockText = useRef<HTMLSpanElement>(null)
   useEffect(() => {
     const el = bar.current, host = stage.current
     if (!el || !host) return
@@ -748,7 +787,7 @@ function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFull
     window.addEventListener('keydown', wake)
     return () => { window.clearTimeout(timer); host.removeEventListener('pointermove', wake); host.removeEventListener('pointerdown', wake); window.removeEventListener('keydown', wake) }
   }, [stage])
-  const shown = awake || !state?.playing
+  const shown = awake || !playing
   // The instruments follow the bar: down to the bottom edge while it is hidden.
   useEffect(() => {
     const host = stage.current
@@ -756,25 +795,66 @@ function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFull
     host.dataset.transport = shown ? 'shown' : 'asleep'
     return () => { delete host.dataset.transport }
   }, [stage, shown])
-  return <div ref={bar} className={`replay-transport${shown ? '' : ' asleep'}${compared && state?.compared ? ' compared' : ''}`}
+  // Asleep, the bar stops being written once it has faded out (on a phone it
+  // stays in view below the stage, so it never fades, and is written on).
+  const frames = useMemo(() => new TransportFrames(), [])
+  useLayoutEffect(() => {
+    const el = bar.current
+    if (!el) return
+    frames.hidden = false
+    const onFaded = (event: TransitionEvent) => {
+      if (event.target !== el || event.propertyName !== 'opacity') return
+      if (!shown && getComputedStyle(el).opacity === '0') frames.hidden = true
+      else frames.show()
+    }
+    el.addEventListener('transitionend', onFaded)
+    const unsubscribe = engine.subscribe(state => frames.publish(state))
+    return () => { unsubscribe(); el.removeEventListener('transitionend', onFaded) }
+  }, [engine, frames, shown])
+  // The range input is invisible (the fill shows the time): its value and
+  // spoken time follow a few times a second, and at once before a key steps
+  // it or it takes focus.
+  const valueText = (ms: number) => `${clock(ms, 1)}${compared ? `, ${compared.label} with it` : ''}`
+  const freshen = () => {
+    const el = range.current
+    if (!el) return
+    el.value = String(Math.round(engine.time))
+    el.setAttribute('aria-valuetext', valueText(engine.time))
+  }
+  useLayoutEffect(() => {
+    const write = frameWriter(), labelsDue = labelClock()
+    return frames.subscribe(state => {
+      const time = state.timeMs
+      write.text(clockText.current, clock(time, 1))
+      write.style(fill.current, 'width', `${duration ? (time / duration * 100).toFixed(3) : 0}%`)
+      const el = range.current
+      if (el && labelsDue(state)) {
+        const value = String(Math.round(time))
+        if (el.value !== value) el.value = value
+        write.attr(el, 'aria-valuetext', valueText(time))
+      }
+    })
+    // valueText reads the compared car's label.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [frames, duration, compared?.label])
+  return <div ref={bar} className={`replay-transport${shown ? '' : ' asleep'}${comparing ? ' compared' : ''}`}
     onPointerEnter={() => { hovering.current = true }} onPointerLeave={() => { hovering.current = false }}>
-    <button type="button" className="replay-play" onClick={() => engine.toggle()} aria-label={state?.playing ? 'Pause' : 'Play'} title={state?.playing ? 'Pause (Space)' : 'Play (Space)'}>
-      {state?.playing
+    <button type="button" className="replay-play" onClick={() => engine.toggle()} aria-label={playing ? 'Pause' : 'Play'} title={playing ? 'Pause (Space)' : 'Play (Space)'}>
+      {playing
         ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" /></svg>
         : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>}
     </button>
-    <div className={`replay-scrub${compared && state?.compared ? ' has-ghost' : ''}`} ref={scrub}
+    <div className={`replay-scrub${comparing ? ' has-ghost' : ''}`} ref={scrub}
       style={compared ? { ['--compared' as string]: compared.color } : undefined}>
-      {compared && state?.compared && <ComparedHandle engine={engine} car={compared} state={state} duration={duration} scrub={scrub} />}
-      <input type="range" min={0} max={Math.round(duration)} step={10} value={Math.round(time)} aria-label="Lap time"
-        aria-valuetext={`${clock(time, 1)}${compared ? `, ${compared.label} with it` : ''}`}
-        onChange={e => engine.seek(Number(e.target.value))} />
-      <div className="replay-scrub-fill" style={{ width: `${duration ? time / duration * 100 : 0}%` }} />
+      {compared && comparing && <ComparedHandle engine={engine} frames={frames} car={compared} duration={duration} scrub={scrub} />}
+      <input ref={range} type="range" min={0} max={Math.round(duration)} step={10} defaultValue={0} aria-label="Lap time"
+        onKeyDown={freshen} onFocus={freshen} onChange={e => engine.seek(Number(e.target.value))} />
+      <div className="replay-scrub-fill" ref={fill} />
       {markers.map(m => <span key={m.turn} className="replay-scrub-mark" style={{ left: `${m.at! / duration * 100}%` }} title={`${m.turn}${m.name && m.name !== m.turn ? ` · ${m.name}` : ''}`}
         onClick={() => engine.seek(Math.max(0, m.at! - 3000))}><i />{m.turn.replace(/^T/, '')}</span>)}
     </div>
-    <span className="replay-time">{clock(time, 1)}<small> / {clock(duration, 1)}</small></span>
-    {compared && state?.compared && <ComparedClock engine={engine} car={compared} state={state} />}
+    <span className="replay-time"><span ref={clockText} /><small> / {clock(duration, 1)}</small></span>
+    {compared && comparing && <ComparedClock engine={engine} frames={frames} car={compared} />}
     <div className="replay-rates replay-cameras" role="group" aria-label="Camera" title="Camera (C cycles)">
       {views.map(v => <button key={v} type="button" className={view === v ? 'on' : ''} aria-pressed={view === v} onClick={() => onView(v)}
         title={v === 'both' ? 'Keeps your car and the other in view' : undefined}>{VIEW_NAMES[v]}</button>)}
@@ -793,14 +873,32 @@ function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFull
  * use the arrow keys on it) to move only that car along its lap, so the two
  * meet at a corner; your handle moves both and keeps the gap between them.
  */
-function ComparedHandle({ engine, car, state, duration, scrub }: {
-  engine: ReplayEngine; car: ComparedCar; state: FrameState; duration: number; scrub: { current: HTMLElement | null }
+function ComparedHandle({ engine, frames, car, duration, scrub }: {
+  engine: ReplayEngine; frames: FrameSource; car: ComparedCar; duration: number; scrub: { current: HTMLElement | null }
 }) {
-  const c = state.compared!
   const grab = useRef(0)
-  const own = Math.min(Math.max(0, c.timeMs), c.durationMs)
-  const at = scrubFraction(own, duration) * 100, mine = scrubFraction(state.timeMs, duration) * 100
-  const off = c.timeMs > c.durationMs || c.timeMs < 0
+  const band = useRef<HTMLDivElement>(null), handle = useRef<HTMLDivElement>(null)
+  // Its lap's length (End puts it at its finish).
+  const length = useRef(0)
+  useLayoutEffect(() => {
+    const write = frameWriter(), labelsDue = labelClock()
+    return frames.subscribe(state => {
+      const c = state.compared
+      if (!c) return
+      length.current = c.durationMs
+      const own = Math.min(Math.max(0, c.timeMs), c.durationMs)
+      const at = scrubFraction(own, duration) * 100, mine = scrubFraction(state.timeMs, duration) * 100
+      write.style(band.current, 'left', `${Math.min(at, mine).toFixed(3)}%`)
+      write.style(band.current, 'width', `${Math.abs(at - mine).toFixed(3)}%`)
+      write.style(handle.current, 'left', `${at.toFixed(3)}%`)
+      write.toggle(handle.current, 'off', c.timeMs > c.durationMs || c.timeMs < 0)
+      if (labelsDue(state)) {
+        write.attr(handle.current, 'aria-valuemax', String(Math.round(c.durationMs)))
+        write.attr(handle.current, 'aria-valuenow', String(Math.round(own)))
+        write.attr(handle.current, 'aria-valuetext', `${clock(own, 1)}, ${formatOffset(c.offsetMs)} from your clock`)
+      }
+    })
+  }, [frames, duration])
   const move = (clientX: number) => {
     const r = scrub.current?.getBoundingClientRect()
     if (!r || !r.width) return
@@ -808,10 +906,9 @@ function ComparedHandle({ engine, car, state, duration, scrub }: {
   }
   const step = (ms: number) => engine.setGhostOffset(engine.ghostOffset + ms)
   return <>
-    <div className="replay-scrub-offset" aria-hidden="true" style={{ left: `${Math.min(at, mine)}%`, width: `${Math.abs(at - mine)}%` }} />
-    <div className={`replay-scrub-ghost${off ? ' off' : ''}`} role="slider" tabIndex={0} style={{ left: `${at}%` }}
-      aria-label={`${car.label}’s place on its own lap`} aria-valuemin={0} aria-valuemax={Math.round(c.durationMs)} aria-valuenow={Math.round(own)}
-      aria-valuetext={`${clock(own, 1)}, ${formatOffset(c.offsetMs)} from your clock`}
+    <div className="replay-scrub-offset" aria-hidden="true" ref={band} />
+    <div ref={handle} className="replay-scrub-ghost" role="slider" tabIndex={0}
+      aria-label={`${car.label}’s place on its own lap`} aria-valuemin={0}
       title={`${car.label}: drag to move only this car along its lap (← → a tenth, ⇧ a second)`}
       onPointerDown={e => {
         if (e.pointerType === 'mouse' && e.button !== 0) return
@@ -827,7 +924,7 @@ function ComparedHandle({ engine, car, state, duration, scrub }: {
           ArrowLeft: () => step(e.shiftKey ? -1000 : -100), ArrowDown: () => step(e.shiftKey ? -1000 : -100),
           ArrowRight: () => step(e.shiftKey ? 1000 : 100), ArrowUp: () => step(e.shiftKey ? 1000 : 100),
           PageDown: () => step(-1000), PageUp: () => step(1000),
-          Home: () => engine.seekGhost(0), End: () => engine.seekGhost(c.durationMs),
+          Home: () => engine.seekGhost(0), End: () => engine.seekGhost(length.current),
         }
         if (!keys[e.key]) return
         e.preventDefault(); e.stopPropagation()
@@ -838,16 +935,36 @@ function ComparedHandle({ engine, car, state, duration, scrub }: {
   </>
 }
 
+// Where the compared car is against yours on the track: "level", "3.2 m ahead", "40 m behind".
+const aheadText = (aheadM: number | null) => aheadM == null ? null
+  : Math.abs(aheadM) < 0.5 ? 'level' : `${Math.abs(aheadM) < 10 ? Math.abs(aheadM).toFixed(1) : Math.round(Math.abs(aheadM))} m ${aheadM > 0 ? 'ahead' : 'behind'}`
+
 /** The compared car's clock against yours, and the buttons that set it: Side by side and Sync. */
-function ComparedClock({ engine, car, state }: { engine: ReplayEngine; car: ComparedCar; state: FrameState }) {
-  const c = state.compared!
+function ComparedClock({ engine, frames, car }: { engine: ReplayEngine; frames: FrameSource; car: ComparedCar }) {
   const [missed, setMissed] = useState(false)
   useEffect(() => { if (missed) { const t = window.setTimeout(() => setMissed(false), 2500); return () => window.clearTimeout(t) } }, [missed])
-  const ahead = c.aheadM == null ? null : Math.abs(c.aheadM) < 0.5 ? 'level' : `${Math.abs(c.aheadM) < 10 ? Math.abs(c.aheadM).toFixed(1) : Math.round(Math.abs(c.aheadM))} m ${c.aheadM > 0 ? 'ahead' : 'behind'}`
-  const synced = Math.abs(c.offsetMs) < 5
+  // These render again when they change; the clock and the distance are written per frame.
+  const [synced, setSynced] = useState(true)
+  const [onTrack, setOnTrack] = useState(false)
+  const summary = useRef<HTMLSpanElement>(null), offset = useRef<HTMLElement>(null), ahead = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    const write = frameWriter(), labelsDue = labelClock()
+    let wasSynced: boolean | null = null, wasOnTrack: boolean | null = null
+    return frames.subscribe(state => {
+      const c = state.compared
+      if (!c) return
+      const near = aheadText(c.aheadM)
+      const isSynced = Math.abs(c.offsetMs) < 5, isOnTrack = near != null
+      if (isSynced !== wasSynced) { wasSynced = isSynced; setSynced(isSynced) }
+      if (isOnTrack !== wasOnTrack) { wasOnTrack = isOnTrack; setOnTrack(isOnTrack) }
+      write.text(offset.current, formatOffset(c.offsetMs))
+      write.text(ahead.current, missed ? 'not on its lap here' : near ?? '')
+      if (labelsDue(state)) write.attr(summary.current, 'title', `${car.label}’s lap time minus yours: ${formatOffset(c.offsetMs)}${near ? ` · on track: ${near}` : ''}`)
+    })
+  }, [frames, car.label, missed, onTrack])
   return <div className="replay-sync" role="group" aria-label={`${car.label}’s clock`}>
-    <span className="replay-offset" title={`${car.label}’s lap time minus yours: ${formatOffset(c.offsetMs)}${ahead ? ` · on track: ${ahead}` : ''}`} aria-live="off">
-      <i style={{ background: car.color }} aria-hidden="true" />{car.name} <b>{formatOffset(c.offsetMs)}</b>{ahead && <small>{missed ? 'not on its lap here' : ahead}</small>}
+    <span className="replay-offset" ref={summary} aria-live="off">
+      <i style={{ background: car.color }} aria-hidden="true" />{car.name} <b ref={offset} />{onTrack && <small ref={ahead} />}
     </span>
     <div className="replay-rates">
       <button type="button" onClick={() => setMissed(!engine.ghostSideBySide())} title={`Put ${car.label} level with your car here (the same spot on the track)`}>Side by side</button>

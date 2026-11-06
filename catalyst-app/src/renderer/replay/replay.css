@@ -109,9 +109,10 @@
 .replay-hud-gear strong { font: 700 30px/1 var(--font-mono); color: var(--signal); }
 .replay-hud-rpm { display: grid; gap: 5px; width: 110px; }
 .replay-rpm-track { height: 7px; background: #ffffff14; border-radius: 4px; overflow: hidden; }
-.replay-rpm-track i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--amber) 75%, var(--red)); }
+/* The rpm fill and the pedal bars are full size, scaled to the reading (Hud.tsx writes the transform each frame). */
+.replay-rpm-track i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--amber) 75%, var(--red)); transform: scaleX(0); transform-origin: left; }
 .replay-bar { position: relative; width: 12px; height: 48px; background: #ffffff14; border-radius: 3px; overflow: hidden; }
-.replay-bar i { position: absolute; left: 0; right: 0; bottom: 0; }
+.replay-bar i { position: absolute; left: 0; right: 0; top: 0; bottom: 0; transform: scaleY(0); transform-origin: bottom; }
 .replay-bar.throttle i { background: var(--green); }
 .replay-bar.brake i { background: var(--red); }
 .replay-bar span { position: absolute; left: 0; right: 0; top: 2px; text-align: center; font-size: 8px; color: #fff9; }
