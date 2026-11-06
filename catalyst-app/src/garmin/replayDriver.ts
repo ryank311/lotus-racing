@@ -120,7 +120,8 @@ export function isReplayLapBundle(value: unknown): value is ReplayLapBundle {
   const n = Array.isArray(lap.dist) ? lap.dist.length : 0
   if (!n || !finiteArray(lap.dist, n, false) || !finiteArray(lap.timeMs, n, false) || !finiteArray(lap.lat, n, false) || !finiteArray(lap.lon, n, false)
     || !finiteArray(lap.speedMps, n, false) || !finiteArray(lap.altM, n, true) || !finiteArray(lap.accelX, n, true)
-    || !finiteArray(lap.accelY, n, true) || !finiteArray(lap.headingDeg, n, true)) return false
+    || !finiteArray(lap.accelY, n, true) || !finiteArray(lap.headingDeg, n, true)
+    || (lap.lateral !== undefined && !finiteArray(lap.lateral, n, true))) return false
   const car = lap.car
   if (car != null && (typeof car !== 'object' || typeof car.videoId !== 'string' || !VIDEO_ID_RE.test(car.videoId) || !Array.isArray(car.dist) || !Array.isArray(car.videoT))) return false
   return b.line == null || isMeanLineTrace(b.line)

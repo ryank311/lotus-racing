@@ -914,6 +914,26 @@ altitude over flat ground, with a note. The first visit to a circuit waits
 for the server's terrain build ("Building VIR terrain from USGS elevation
 data…", about 2 minutes); later visits load in a second or two.
 
+**Place by Garmin's lane position on the track** (the "On the track" panel,
+off by default, remembered in the browser; `replay/trackFrame.ts`): the
+laps are placed on the track model from Garmin's own measurements instead of
+their GPS. Each sample has a distance along Garmin's mean line and a
+`lateral_position` (0 at the left edge, 1 at the right: where the device is,
+inside the car). Garmin's line is tied to the model's centre line station by
+station (each of its points projected onto the model's centre, smoothed and
+never running backwards), so a distance along Garmin's line becomes a
+distance along the model; the sample goes there, that share of the way
+across the model's road (lane positions lightly smoothed, ±4 m). The car
+keeps the line it drove however the model's road differs from the real one
+in place or width; its sides can hang over an edge where the device is near
+it, as on the real track. The racing and ghost lines, the coaching marks
+and the suggested line go through the same mapping. Where the model's edges
+stray (a pit or service road joining makes the width jump for a few
+stations), those stations take the road either side's centre and width.
+Laps without lane positions (an older backend's) stay on their GPS. The
+panel says how far Garmin's line runs from the model's centre (VIR Full: a
+median 1.1 m, 90% within 3.1 m, at most 8.8 m).
+
 **Track debug** (panel under the view, `replay/TrackDebugPanel.tsx`,
 `trackDebug.ts`, `flyCamera.ts`), for finding where the track and the data
 disagree:

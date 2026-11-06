@@ -93,8 +93,8 @@ export class TrackDebug {
   sync(world: { group: THREE.Object3D; road: RoadModel; trackEdges?: TrackEdges | null; surface?: (x: number, z: number, refY: number) => number } | null,
     lap: LapPath | null, ghost: LapPath | null, carHalfWidthM: number): boolean {
     const o = this.options
-    const key = [world ? world.group.uuid : '-', lap ? `${lap.lap.sessionGuid}:${lap.lap.lap}:${lap.offsetX}:${lap.offsetZ}` : '-',
-      ghost ? `${ghost.lap.sessionGuid}:${ghost.lap.lap}:${ghost.offsetX}:${ghost.offsetZ}` : '-',
+    const key = [world ? world.group.uuid : '-', lap ? `${lap.lap.sessionGuid}:${lap.lap.lap}:${lap.offsetX}:${lap.offsetZ}:${lap.placed}` : '-',
+      ghost ? `${ghost.lap.sessionGuid}:${ghost.lap.lap}:${ghost.offsetX}:${ghost.offsetZ}:${ghost.placed}` : '-',
       carHalfWidthM, JSON.stringify(o), this.flags.join(',')].join('|')
     if (key === this.key) return false
     this.key = key

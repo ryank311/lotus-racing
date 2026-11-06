@@ -22,6 +22,7 @@ import { PALETTE } from '../components/chartTheme'
 import type { ReplayWorld } from './engine'
 import type { LapPath } from './lapPath'
 import type { Across } from './align'
+import type { FramePoint } from './trackFrame'
 
 export const TONE_COLOR: Record<ReplayCoachTone, string> = { loss: PALETTE.red, gain: PALETTE.green, coach: PALETTE.amber, note: PALETTE.teal }
 /** The best pass's marks, this lap's, the coach's targets, the suggested line. */
@@ -98,6 +99,7 @@ export const lapKey = (lap: LapPath | null) => (lap && typeof lap.lap.lap === 'n
 class Placer {
   private edgeHint = -1
   private across: Across = { o: 0, half: 0, ax: 0, az: 0 }
+  private framePoint = {} as FramePoint
   constructor(private world: ReplayWorld) {}
 
   get road() { return this.world.road }
@@ -113,6 +115,9 @@ class Placer {
 
   /** The road's drawn edges at station s, as offsets across it (+ left): [left, right]. */
   edges(s: number): [number, number] {
+    // Laps placed on the model by Garmin's lane position: its road, where the car is.
+    const frame = this.world.laneFrame
+    if (frame) { const half = frame.at(this.road.dist[s], this.framePoint).half; return [half, -half] }
     const road = this.road, edges = this.world.trackEdges
     if (edges) {
       const x = road.cx[s], z = road.cz[s]
@@ -130,6 +135,12 @@ class Placer {
 
   /** A point across the road at station s: offset o (+ left), a metres along; [x, y, z]. */
   point(s: number, o: number, along = 0, lift = LIFT): [number, number, number] {
+    const frame = this.world.laneFrame
+    if (frame) {
+      const p = frame.at(this.road.dist[s], this.framePoint)
+      const x = p.x + p.ax * o + p.fx * along, z = p.z + p.az * o + p.fz * along
+      return [x, this.ground(x, z, s) + lift, z]
+    }
     const road = this.road
     const fx = -road.lz[s], fz = road.lx[s]
     const x = road.cx[s] + road.lx[s] * o + fx * along, z = road.cz[s] + road.lz[s] * o + fz * along
@@ -466,6 +477,16 @@ export class CoachingOverlay {
 
   setLayers(layers: CoachingLayers) {
     this.layers = { ...layers }
+    this.applyLayers()
+  }
+
+  /** Redraw everything on the road: the laps moved (Align to track, placing by Garmin's lane position). */
+  refreshPlacement() {
+    this.drop(this.zones)
+    this.zones = this.buildZones()
+    if (this.zones) this.group.add(this.zones)
+    this.rebuildLapParts()
+    this.refreshLine()
     this.applyLayers()
   }
 

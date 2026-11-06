@@ -153,6 +153,12 @@ export interface ReplayLap extends ReplayLapRef {
   accelY: Array<number | null>     // m/s², lateral
   headingDeg: Array<number | null> // compass: 0 = north, clockwise
   /**
+   * Garmin's position across the road (its lateral_position): 0 at the left
+   * edge … 1 at the right, as driven; null where it has none. Absent from
+   * laps exported by an older backend.
+   */
+  lateral?: Array<number | null>
+  /**
    * The PDR/Catalyst video and car channels for this lap, when a synced
    * video covers it (the same trace Session Review uses; its `dist` is the
    * same metres, `videoT` the video time at each). Null without video.

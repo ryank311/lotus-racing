@@ -70,7 +70,7 @@ export function useReplayCoaching(engine: ReplayEngine | null, world: ReplayWorl
     const built = new CoachingOverlay(world, data, units)
     engine.scene.add(built.group)
     setOverlay(built)
-    const off = engine.onAlignment(() => { built.refreshLine(); engine.invalidate() })
+    const off = engine.onAlignment(() => { built.refreshPlacement(); engine.invalidate() })
     return () => { off(); built.dispose(); setOverlay(null); engine.invalidate() }
   }, [engine, world, data, hasData, units])
   useEffect(() => { if (overlay) { overlay.setLap(lap); engine?.invalidate() } }, [overlay, lap, engine])

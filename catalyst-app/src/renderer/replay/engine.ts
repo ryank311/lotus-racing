@@ -27,6 +27,7 @@ import { adapt, FrameWindow, type Ladder } from './resolution'
 import { removeFrontHalves, splitDoubleSided, transparentSort } from './twoSided'
 import { FlyCamera } from './flyCamera'
 import { TrackDebug, type TrackDebugOptions, type TrackProbe } from './trackDebug'
+import { TrackFrame, type FrameStats } from './trackFrame'
 
 /** 'both' keeps your car and the compared car in frame (chase when there is none). */
 export type ReplayView = 'driver' | 'garmin' | 'chase' | 'both' | 'orbit' | 'fly'
@@ -71,6 +72,12 @@ export interface ReplayWorld {
   horizon: THREE.Color
   /** The road's edges as drawn, for lining the laps' GPS up with it (align.ts); none: laps stay as recorded. */
   trackEdges?: TrackEdges | null
+  /**
+   * Set by the engine while laps are placed by Garmin's lane position
+   * (trackFrame.ts): anything placed by distance along the track (the
+   * coaching marks) goes through it too, so it sits where the car does.
+   */
+  laneFrame?: TrackFrame | null
   dispose: () => void
 }
 
@@ -79,6 +86,8 @@ export interface Alignment {
   on: boolean
   lap: RoadFit | null
   ghost: RoadFit | null
+  /** Placing by Garmin's lane position on the track model (trackFrame.ts): asked for, how Garmin's line sits on the model, and which laps it placed. */
+  lane: { on: boolean; stats: FrameStats | null; lap: boolean; ghost: boolean }
 }
 
 export interface FrameState {
@@ -234,6 +243,9 @@ export class ReplayEngine {
   private showRacingLine = true
   private showGhostLine = true
   private alignToTrack = true
+  /** Laps placed by Garmin's distance and lane position on the track model, not their GPS. */
+  private lanePlacement = false
+  private frameCache: { edges: TrackEdges; road: ReplayWorld['road']; frame: TrackFrame } | null = null
   // Each lap's fit to a world's road, computed once (a lap belongs to one world's frame).
   private roadFits = new WeakMap<LapPath, { edges: TrackEdges; fit: RoadFit }>()
   private alignListeners = new Set<(alignment: Alignment) => void>()
@@ -616,6 +628,16 @@ export class ReplayEngine {
    * (align.ts fitToRoad); the car, its line and the ghost's all read the
    * shifted positions. Costs a fit per lap, once, and a rebuild of the lines.
    */
+  /** Place the laps by Garmin's lane position on the track model (trackFrame.ts) instead of their GPS. */
+  setLanePlacement(on: boolean) {
+    if (on === this.lanePlacement) return
+    this.lanePlacement = on
+    this.applyAlignment()
+    this.rebuildLines()
+    this.chaseReady = this.mount.ready = false
+    this.invalidate()
+  }
+
   setAlign(on: boolean) {
     if (on === this.alignToTrack) return
     this.alignToTrack = on
@@ -650,7 +672,11 @@ export class ReplayEngine {
   }
 
   alignment(): Alignment {
-    return { on: this.alignToTrack, lap: this.roadFit(this.lap), ghost: this.roadFit(this.ghost) }
+    const frame = this.lanePlacement ? this.laneFrame() : null
+    return {
+      on: this.alignToTrack, lap: this.roadFit(this.lap), ghost: this.roadFit(this.ghost),
+      lane: { on: this.lanePlacement, stats: frame?.stats ?? null, lap: !!this.lap?.placed, ghost: !!this.ghost?.placed },
+    }
   }
 
   /**
@@ -673,12 +699,33 @@ export class ReplayEngine {
     return fit
   }
 
+  // Garmin's line tied to the track model's (one per world); null without edges or when they do not match well enough.
+  private laneFrame(): TrackFrame | null {
+    const world = this.world, edges = world?.trackEdges
+    if (!world || !edges) return null
+    if (this.frameCache?.edges !== edges || this.frameCache.road !== world.road) this.frameCache = { edges, road: world.road, frame: new TrackFrame(world.road, edges) }
+    return this.frameCache.frame.usable ? this.frameCache.frame : null
+  }
+
   private applyAlignment() {
     let changed = false
+    const frame = this.lanePlacement ? this.laneFrame() : null
+    if (this.world && (this.world.laneFrame ?? null) !== frame) { this.world.laneFrame = frame; changed = true }
     for (const lap of [this.lap, this.ghost]) {
       if (!lap) continue
       const fit = this.alignToTrack ? this.roadFit(lap) : null
       if (lap.setOffset(fit?.applied ? fit.dx : 0, fit?.applied ? fit.dz : 0)) changed = true
+      // By Garmin's lane position: on the model wherever Garmin read the lane, its GPS's share across the road elsewhere.
+      if (frame && lap.lateral) {
+        const xs = new Float64Array(lap.n), zs = new Float64Array(lap.n), out: [number, number] = [0, 0]
+        for (let i = 0; i < lap.n; i++) {
+          const share = Number.isFinite(lap.lateral[i]) ? lap.lateral[i] : frame.garminOf(lap.gpsX[i], lap.gpsZ[i], lap.d[i]).share
+          frame.place(lap.d[i], share, out)
+          xs[i] = out[0]; zs[i] = out[1]
+        }
+        lap.place(xs, zs, (x, z, to) => frame.mapLocal(x, z, to))
+        changed = true
+      } else if (lap.place(null, null)) changed = true
     }
     if (changed && this.alignListeners.size) {
       const alignment = this.alignment()

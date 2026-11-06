@@ -5,6 +5,7 @@
 import type { ReplayLap } from '../../shared/replay'
 import type { CarTrace } from '../../shared/pdr'
 import { localX, localZ, type LocalFrame } from './geo'
+import { LANE_SMOOTH } from './trackFrame'
 
 export interface LapPose {
   x: number
@@ -88,6 +89,12 @@ export class LapPath {
   /** The shift applied to the GPS positions (setOffset), metres: aligning the lap with the road (align.ts). */
   offsetX = 0
   offsetZ = 0
+  /** Garmin's position across the road, smoothed: 0 the left edge … 1 the right; NaN where it has none (null: no channel). */
+  readonly lateral: Float64Array | null
+  /** Placed on a track model by Garmin's distance and lane position (place()), not by its GPS. */
+  placed = false
+  // While placed: how a GPS position from this session moves onto the model (toLocal).
+  private mapper: ((x: number, z: number, out: [number, number]) => [number, number]) | null = null
   readonly fx: Float64Array
   readonly fz: Float64Array
   readonly speed: Float64Array
@@ -125,39 +132,13 @@ export class LapPath {
     const rawX = lap.lon.map(lon => localX(frame, lon)), rawZ = lap.lat.map(lat => localZ(frame, lat))
     this.gpsX = smooth(rawX, [1, 4, 6, 4, 1]); this.gpsZ = smooth(rawZ, [1, 4, 6, 4, 1])
     this.x = Float64Array.from(this.gpsX); this.z = Float64Array.from(this.gpsZ)
-    // Heading from the path over about 3 m each way, then smoothed again.
-    const s = new Float64Array(n)
-    for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(this.x[i] - this.x[i - 1], this.z[i] - this.z[i - 1])
-    const hx = new Array<number>(n), hz = new Array<number>(n)
-    for (let i = 0, a = 0, b = 0; i < n; i++) {
-      while (a < i && s[i] - s[a + 1] >= 3) a++
-      b = Math.max(b, i)
-      while (b < n - 1 && s[b] - s[i] < 3) b++
-      const dx = this.x[b] - this.x[a], dz = this.z[b] - this.z[a]
-      const len = Math.hypot(dx, dz)
-      hx[i] = len > 1e-6 ? dx / len : (i ? hx[i - 1] : 0)
-      hz[i] = len > 1e-6 ? dz / len : (i ? hz[i - 1] : -1)
-    }
-    const kernel = [1, 2, 3, 4, 3, 2, 1]
-    this.fx = smooth(hx, kernel); this.fz = smooth(hz, kernel)
-    for (let i = 0; i < n; i++) {
-      const len = Math.hypot(this.fx[i], this.fz[i]) || 1
-      this.fx[i] /= len; this.fz[i] /= len
-    }
+    this.fx = new Float64Array(n); this.fz = new Float64Array(n); this.curv = new Float64Array(n)
+    this.derive()
     this.speed = filled(lap.speedMps)
     this.ax = filled(lap.accelX)
     this.ay = filled(lap.accelY)
-    // Curvature: the heading's turn toward the left (fz, −fx) over about
-    // 5 m each way, per metre, then smoothed.
-    const k = new Float64Array(n)
-    for (let i = 0, a = 0, b = 0; i < n; i++) {
-      while (a < i && s[i] - s[a + 1] >= 5) a++
-      b = Math.max(b, i)
-      while (b < n - 1 && s[b] - s[i] < 5) b++
-      const ds = s[b] - s[a]
-      k[i] = ds > 1 ? ((this.fx[b] - this.fx[a]) * this.fz[i] - (this.fz[b] - this.fz[a]) * this.fx[i]) / ds : i ? k[i - 1] : 0
-    }
-    this.curv = smooth(k, [1, 2, 3, 4, 5, 4, 3, 2, 1])
+    // Garmin's lane position, lightly smoothed (it reads the lane from the camera).
+    this.lateral = lap.lateral?.some(v => v != null) ? smooth(lap.lateral.map(v => v ?? NaN), binomial(LANE_SMOOTH)) : null
     let lo = Infinity, hi = 0
     for (const v of this.speed) { lo = Math.min(lo, v); hi = Math.max(hi, v) }
     this.minSpeed = Number.isFinite(lo) ? lo : 0
@@ -183,6 +164,61 @@ export class LapPath {
     return Math.abs(correlation) < 0.5 ? 0 : Math.sign(correlation)
   }
 
+  // Heading over about 3 m each way, then smoothed again; curvature: the
+  // heading's turn toward the left (fz, −fx) over about 5 m each way, per
+  // metre, then smoothed. From the positions as they are now.
+  private derive() {
+    const n = this.n
+    const s = new Float64Array(n)
+    for (let i = 1; i < n; i++) s[i] = s[i - 1] + Math.hypot(this.x[i] - this.x[i - 1], this.z[i] - this.z[i - 1])
+    const hx = new Array<number>(n), hz = new Array<number>(n)
+    for (let i = 0, a = 0, b = 0; i < n; i++) {
+      while (a < i && s[i] - s[a + 1] >= 3) a++
+      b = Math.max(b, i)
+      while (b < n - 1 && s[b] - s[i] < 3) b++
+      const dx = this.x[b] - this.x[a], dz = this.z[b] - this.z[a]
+      const len = Math.hypot(dx, dz)
+      hx[i] = len > 1e-6 ? dx / len : (i ? hx[i - 1] : 0)
+      hz[i] = len > 1e-6 ? dz / len : (i ? hz[i - 1] : -1)
+    }
+    const kernel = [1, 2, 3, 4, 3, 2, 1]
+    this.fx.set(smooth(hx, kernel)); this.fz.set(smooth(hz, kernel))
+    for (let i = 0; i < n; i++) {
+      const len = Math.hypot(this.fx[i], this.fz[i]) || 1
+      this.fx[i] /= len; this.fz[i] /= len
+    }
+    // Curvature: the heading's turn toward the left (fz, −fx) over about
+    // 5 m each way, per metre, then smoothed.
+    const k = new Float64Array(n)
+    for (let i = 0, a = 0, b = 0; i < n; i++) {
+      while (a < i && s[i] - s[a + 1] >= 5) a++
+      b = Math.max(b, i)
+      while (b < n - 1 && s[b] - s[i] < 5) b++
+      const ds = s[b] - s[a]
+      k[i] = ds > 1 ? ((this.fx[b] - this.fx[a]) * this.fz[i] - (this.fz[b] - this.fz[a]) * this.fx[i]) / ds : i ? k[i - 1] : 0
+    }
+    this.curv.set(smooth(k, [1, 2, 3, 4, 5, 4, 3, 2, 1]))
+  }
+
+  /**
+   * Places the lap at these positions (a track model's, from Garmin's
+   * distance and lane position: trackFrame.ts), with `mapper` moving any other
+   * GPS position from its session the same way; null goes back to the GPS
+   * plus the offset. Heading and curvature follow. True if it changed.
+   */
+  place(xs: Float64Array | null, zs: Float64Array | null, mapper: ((x: number, z: number, out: [number, number]) => [number, number]) | null = null): boolean {
+    if (xs && zs) {
+      this.x.set(xs); this.z.set(zs)
+      this.placed = true; this.mapper = mapper
+    } else {
+      if (!this.placed) return false
+      this.placed = false; this.mapper = null
+      for (let i = 0; i < this.n; i++) { this.x[i] = this.gpsX[i] + this.offsetX; this.z[i] = this.gpsZ[i] + this.offsetZ }
+    }
+    this.derive()
+    return true
+  }
+
   /**
    * Shifts the whole lap by (dx, dz) metres from the GPS's positions (0, 0:
    * as recorded). A translation: heading and curvature stay. The car, its
@@ -191,6 +227,7 @@ export class LapPath {
   setOffset(dx: number, dz: number): boolean {
     if (dx === this.offsetX && dz === this.offsetZ) return false
     this.offsetX = dx; this.offsetZ = dz
+    if (this.placed) return true
     for (let i = 0; i < this.n; i++) { this.x[i] = this.gpsX[i] + dx; this.z[i] = this.gpsZ[i] + dz }
     return true
   }
@@ -203,6 +240,7 @@ export class LapPath {
    * it; rebuild them when the shift changes (ReplayEngine.onAlignment).
    */
   toLocal(lat: number, lon: number, out: [number, number] = [0, 0]): [number, number] {
+    if (this.mapper) return this.mapper(localX(this.frame, lon), localZ(this.frame, lat), out)
     out[0] = localX(this.frame, lon) + this.offsetX
     out[1] = localZ(this.frame, lat) + this.offsetZ
     return out
@@ -313,4 +351,11 @@ export function smooth(values: ArrayLike<number>, kernel: number[]): Float64Arra
     out[i] = weight ? sum / weight : values[i]
   }
   return out
+}
+
+/** A binomial kernel reaching `h` either way. */
+function binomial(h: number): number[] {
+  let row = [1]
+  for (let i = 0; i < 2 * h; i++) row = [...row, 0].map((v, k) => v + (k ? row[k - 1] : 0))
+  return row
 }

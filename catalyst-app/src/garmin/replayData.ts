@@ -289,17 +289,17 @@ export async function sessionLap(con: DuckDBConnection, session: SessionMeta, re
   if (optimal && !await hasTable(con, 'optimal_lap_samples')) throw new Error('This session has no optimal lap.')
   const found = optimal
     ? await rows(con, `
-      SELECT distance_m, time_ms, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2, NULL AS alt, NULL AS heading
+      SELECT distance_m, time_ms, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2, NULL AS alt, NULL AS heading, lateral_position AS lane
       FROM optimal_lap_samples WHERE session_guid = ? AND distance_m IS NOT NULL AND time_ms IS NOT NULL
       ORDER BY time_ms, distance_m`, [ref.sessionGuid])
     : await rows(con, `
-      SELECT distance_m, time_ms, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2, gnss_altitude_m AS alt, gnss_heading_deg AS heading
+      SELECT distance_m, time_ms, lat, lon, gnss_speed_mps, accel_x_mps2, accel_y_mps2, gnss_altitude_m AS alt, gnss_heading_deg AS heading, lateral_position AS lane
       FROM samples WHERE session_guid = ? AND lap_index = ? AND distance_m IS NOT NULL AND time_ms IS NOT NULL
       ORDER BY time_ms, distance_m`, [ref.sessionGuid, ref.lap])
 
   const lap: ReplayLap = {
     sessionGuid: ref.sessionGuid, lap: ref.lap, durationMs: 0, label: '',
-    dist: [], timeMs: [], lat: [], lon: [], altM: [], speedMps: [], accelX: [], accelY: [], headingDeg: [], car: null,
+    dist: [], timeMs: [], lat: [], lon: [], altM: [], speedMps: [], accelX: [], accelY: [], headingDeg: [], lateral: [], car: null,
   }
   const t0 = num(found[0]?.time_ms) ?? 0
   for (const r of found) {
@@ -311,6 +311,8 @@ export async function sessionLap(con: DuckDBConnection, session: SessionMeta, re
     const ax = num(r.accel_x_mps2), ay = num(r.accel_y_mps2), alt = num(r.alt), heading = num(r.heading)
     lap.accelX.push(ax == null ? null : round(ax, 3)); lap.accelY.push(ay == null ? null : round(ay, 3))
     lap.altM.push(alt == null ? null : round(alt, 2)); lap.headingDeg.push(heading == null ? null : round(heading, 2))
+    const lane = num(r.lane)
+    lap.lateral!.push(lane == null ? null : round(lane, 4))
   }
   if (!lap.dist.length) throw new Error(optimal ? 'This session has no optimal lap.' : 'That lap has no telemetry.')
 
