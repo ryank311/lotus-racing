@@ -40,31 +40,35 @@ const nextView = (views: CameraView[], view: ReplayView): ReplayView => views[(v
 const RIVAL_COLOR = '#d8b4fe'
 const titleCase = (s: string | null) => (s ?? '').trim().toLowerCase().replace(/\b\p{L}/gu, c => c.toUpperCase())
 const lapValue = (ref: ReplayLapRef) => `${ref.sessionGuid}:${ref.lap}`
-// The last terrain and car model bytes stay in memory while the app is open,
-// so changing laps, layouts of the same circuit or sessions does not refetch.
+// The last terrain stays in memory while the app is open, so changing laps,
+// layouts of the same circuit or sessions does not refetch it.
 let terrainCache: { key: string; data: Omit<TerrainData, 'sample'> } | null = null
-const modelBytes = new Map<string, ArrayBuffer>()
-// Another driver's car model, when it is not yours (the last one).
-let rivalBytes: { id: string; bytes: Promise<ArrayBuffer> } | null = null
-function rivalModelBytes(id: string): Promise<ArrayBuffer> {
-  const own = modelBytes.get(id)
-  if (own) return Promise.resolve(own)
-  if (rivalBytes?.id !== id) {
-    const bytes = api.getCarModel(id)
-    rivalBytes = { id, bytes }
-    bytes.catch(() => { if (rivalBytes?.bytes === bytes) rivalBytes = null })
+// Car models' bytes, by id, only until they are parsed: your car and another
+// driver's of the same model share a download while either is under way. A
+// later parse (another session, a rebuilt context) reads the browser's cache.
+const carModels = new Map<string, Promise<ArrayBuffer>>()
+async function parseCarModel(id: string) {
+  let bytes = carModels.get(id)
+  if (!bytes) carModels.set(id, bytes = api.getCarModel(id))
+  try {
+    return await parseGlb(await bytes)
+  } finally {
+    if (carModels.get(id) === bytes) carModels.delete(id)
   }
-  return rivalBytes.bytes
 }
-// Track model files (the shared base and each layout's), by "id/file".
+// Track model files (the shared base and each layout's), by "id/file": one
+// download for the early fetch and the build that parses it, let go once
+// parsed (on every device: a rebuild or another layout reads the browser's
+// cache, the files being versioned and immutable).
 const trackFiles = new Map<string, Promise<ArrayBuffer>>()
 // Debugging: what the caches above hold, MiB.
 if (REPLAY_DEBUG) Object.assign(window, { replayCaches: async () => {
   const mib = (bytes: number) => Math.round(bytes / 1048576 * 10) / 10
-  const files = await Promise.all([...trackFiles.values()].map(p => p.then(b => b.byteLength, () => 0)))
+  const sizes = (downloads: Iterable<Promise<ArrayBuffer>>) => Promise.all([...downloads].map(p => p.then(b => b.byteLength, () => 0)))
+  const [files, cars] = await Promise.all([sizes(trackFiles.values()), sizes(carModels.values())])
   return {
     trackFiles: mib(files.reduce((a, b) => a + b, 0)),
-    carModels: mib([...modelBytes.values()].reduce((a, b) => a + b.byteLength, 0)),
+    carModels: mib(cars.reduce((a, b) => a + b, 0)),
     terrain: mib((terrainCache?.data.grid.byteLength ?? 0) + (terrainCache?.data.image?.size ?? 0)),
   }
 } })
@@ -78,6 +82,10 @@ function trackFile(id: string, file: string): Promise<ArrayBuffer> {
     trackFiles.set(key, bytes)
   }
   return bytes
+}
+/** Lets a track file go (parsed, or no longer wanted), unless another download has taken its place. */
+function forgetTrackFile(key: string, bytes: Promise<ArrayBuffer>) {
+  if (trackFiles.get(key) === bytes) trackFiles.delete(key)
 }
 
 
@@ -182,6 +190,25 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   // Wait for the listing before building, so a model track is not built twice.
   const trackSource = !trackModels.data && !trackModels.error ? null : useTrackModel ? `${trackMatch!.model.id}:${trackMatch!.layout.files.join(',')}:${trackMatch!.model.updatedAt}` : 'public'
   const trackKey = scene && trackSource ? `${scene.track.meanLineGuid}|${trackSource}` : ''
+  // The model's files start downloading as soon as the layout is known, while
+  // the lap and the terrain load (the build below takes the same downloads
+  // through trackFile). When the layout changes first, the ones no build took
+  // go once they have arrived (one asked for meanwhile still shares them).
+  const prefetch = useTrackModel && engine ? trackSource : null
+  useEffect(() => {
+    if (!prefetch || !trackMatch) return
+    const { model, layout } = trackMatch
+    const files = model.footprint ? [...layout.files, model.footprint.file] : layout.files
+    const started = files.map(file => [`${model.id}/${file}`, trackFile(model.id, file)] as const)
+    return () => {
+      for (const [key, bytes] of started) {
+        const forget = () => forgetTrackFile(key, bytes)
+        bytes.then(forget, forget)
+      }
+    }
+    // The source names the files (the model, its layout's files and its version).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefetch])
   // The world is built once per track, as soon as a lap of it has loaded (the
   // public world's fallback road follows that lap's altitude). Choosing
   // another lap, which empties `lapData` while it loads, must not tear the
@@ -236,20 +263,30 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           return buildWorld(track, null, latestLap.current!, maxAnisotropy, status)
         }
       }
+      // The model's files this build takes, let go once it is done with them.
+      const taken: Array<readonly [string, Promise<ArrayBuffer>]> = []
+      const getFile = (modelId: string, file: string) => {
+        const bytes = trackFile(modelId, file)
+        taken.push([`${modelId}/${file}`, bytes])
+        return bytes
+      }
       let built: BuiltWorld
-      if (match) {
-        try {
-          built = await buildModelWorld(track, terrain, { model: match.model, layout: match.layout, getFile: trackFile }, maxAnisotropy, status)
-        } catch (error) {
-          if (cancelled) return
-          modelError = error instanceof Error ? error.message : String(error)
-          console.warn('[replay] track model unusable, using public data:', error)
-          built = await buildPublic()
-          built.note = `The ${trackModelLabel(match.model)} track could not be loaded (${modelError}); showing public data.`
-        }
-      } else built = await buildPublic()
-      // A constrained device keeps no copy of the files once parsed (the browser's cache has them).
-      if (replayProfile().lean) trackFiles.clear()
+      try {
+        if (match) {
+          try {
+            built = await buildModelWorld(track, terrain, { model: match.model, layout: match.layout, getFile }, maxAnisotropy, status)
+          } catch (error) {
+            if (cancelled) return
+            modelError = error instanceof Error ? error.message : String(error)
+            console.warn('[replay] track model unusable, using public data:', error)
+            built = await buildPublic()
+            built.note = `The ${trackModelLabel(match.model)} track could not be loaded (${modelError}); showing public data.`
+          }
+        } else built = await buildPublic()
+      } finally {
+        // Parsed (or given up on): no copy of the files is kept, on any device.
+        for (const [key, bytes] of taken) forgetTrackFile(key, bytes)
+      }
       if (cancelled) { built.dispose(); return }
       if (terrainError && built.note && !modelError) built.note += ` (${terrainError})`
       engine.setWorld(built)
@@ -308,14 +345,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     setCarReady(false)
     setModelStatus(`Loading ${model.name}…`)
     void (async () => {
-      let bytes = modelBytes.get(model.id)
-      if (!bytes) {
-        bytes = await api.getCarModel(model.id)
-        modelBytes.clear()
-        // A constrained device keeps no copy once parsed (budget.ts).
-        if (!replayProfile().lean) modelBytes.set(model.id, bytes)
-      }
-      const root = await parseGlb(bytes)
+      const root = await parseCarModel(model.id)
       if (cancelled) return
       engine.setCar(preset, root, model.fit)
       loadedModel.current = model.id
@@ -342,7 +372,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   // Their car from the shared library by their vehicle key (as the Garage
   // assigns it), with its own preset: dimensions, dynamics and the data
   // collector's place. A separate parse of the model, so a car the same as
-  // yours is still its own (tinted) object.
+  // yours is still its own (tinted) object (from the same download while
+  // yours is still loading).
   // Who and which car, kept while another lap of theirs loads (no reload of the car).
   const [rivalIdentity, setRivalIdentity] = useState<Pick<ReplayDriverLap, 'driver' | 'vehicle'> | null>(null)
   useEffect(() => {
@@ -368,7 +399,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     setRivalReady(null)
     setRivalStatus(`Loading ${rivalName}’s ${rivalModel.name}…`)
     void (async () => {
-      const root = await parseGlb(await rivalModelBytes(rivalModel.id))
+      const root = await parseCarModel(rivalModel.id)
       if (cancelled) return
       engine.setRival({ preset: rivalPreset, model: root, fit: rivalModel.fit, color: RIVAL_COLOR, name: rivalName })
       loadedRival.current = rivalModel.id
