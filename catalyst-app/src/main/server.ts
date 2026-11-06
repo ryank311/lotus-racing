@@ -583,6 +583,8 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
         const args = [...body.args]
         // Comparison requests become the compared drivers' exported laps.
         if (body.channel === 'analysis:build') args[3] = await drivers.resolve(username, args[2], args[3])
+        // The replay's other driver: always their backend's export, never the renderer's own.
+        if (body.channel === 'replay:driverLap') args[1] = await drivers.replayLap(username, args[1])
         if (body.channel === 'coach:run' && args[0] && typeof args[0] === 'object') {
           args[0] = { ...args[0], comparisons: await drivers.resolve(username, args[0].lapFilter, args[0].comparisons) }
         }
@@ -705,6 +707,17 @@ export async function startCatalystServer(serverOptions: CatalystServerOptions =
       if (url.pathname === '/api/drivers' && req.method === 'GET') {
         if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
         json(res, 200, { drivers: drivers.list(username) }, origin)
+        return
+      }
+      // The replay's driver comparison: one of their sessions' valid laps.
+      if (url.pathname === '/api/driver-laps' && req.method === 'POST') {
+        if (!username) { json(res, 401, { error: 'Not signed in' }, origin); return }
+        const body = await readJson(req)
+        try {
+          json(res, 200, { result: await drivers.replayLaps(body?.driver, body?.sessionGuid, username) }, origin)
+        } catch (error: any) {
+          json(res, error?.status ?? 500, { error: error instanceof Error ? error.message : String(error) }, origin)
+        }
         return
       }
       if (url.pathname === '/api/driver-sessions' && req.method === 'POST') {

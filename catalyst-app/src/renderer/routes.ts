@@ -1,6 +1,7 @@
 import type { CoachingSession } from '../shared/types'
 import { coachingLapFilter } from '../shared/coachingScope'
 import { compareParams, isCompareParam } from '../shared/comparison'
+import { isReplayGhostParam } from '../shared/replay'
 
 export type Page = 'home' | 'sessions' | 'review' | 'progress' | 'analysis' | 'replay' | 'coach' | 'garage' | 'tracks' | 'import' | 'account' | 'logs' | 'sign-in' | 'not-found'
 export const paths = { home: '/overview', sessions: '/sessions', review: '/review', progress: '/progress', analysis: '/analysis', replay: '/replay', coach: '/coach', garage: '/garage', tracks: '/tracks', import: '/import', account: '/account', logs: '/logs' } as const
@@ -57,13 +58,13 @@ const enums: Record<string, [string[], string]> = {
 }
 // Pages that give a shared param name other values.
 const pageEnums: Partial<Record<Page, Record<string, [string[], string]>>> = {
-  replay: { view: [['chase', 'driver', 'garmin'], 'chase'] },
+  replay: { view: [['chase', 'driver', 'garmin', 'both'], 'chase'] },
   // A selected car's panel: its 3D model (the default) or its context files.
   garage: { tab: [['model', 'files'], 'model'] },
 }
-// A lap index or Garmin's optimal lap; a ghost is <session guid>:<lap>, or none.
+// A lap index or Garmin's optimal lap; a ghost is <session guid>:<lap>,
+// another driver's driver:<name>:<session guid>:<lap>, or none (isReplayGhostParam).
 const REPLAY_LAP = /^(\d{1,4}|optimal)$/
-const REPLAY_GHOST = /^(none|[A-Za-z0-9_-]{1,128}:(\d{1,4}|optimal))$/
 // The Garage selects a car by its make and model ("LOTUS EXIGE"), e.g. from the replay.
 const isVehicleKey = (value: string) => value.length <= 80 && value === value.trim() && !/[\u0000-\u001f/\\]/.test(value)
 export function normalizeRoute(pathname: string, search: string): { url: string; error?: string } {
@@ -92,7 +93,7 @@ export function normalizeRoute(pathname: string, search: string): { url: string;
       if (key === 'temp' && (!Number.isFinite(Number(value)) || Number(value) < -60 || Number(value) > 70)) { error = 'Invalid temperature.'; continue }
       if (key === 'anchor' && !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) { error = 'Invalid session identifier.'; continue }
       if (key === 'lap' && !REPLAY_LAP.test(value)) { error = 'Invalid lap.'; continue }
-      if (key === 'ghost' && !REPLAY_GHOST.test(value)) { error = 'Invalid ghost lap.'; continue }
+      if (key === 'ghost' && !isReplayGhostParam(value)) { error = 'Invalid ghost lap.'; continue }
       if (key === 'vehicle' && route.page === 'garage' && !isVehicleKey(value)) { error = 'Invalid vehicle.'; continue }
       const choices = pageEnums[route.page]?.[key] ?? enums[key]
       if (choices) {

@@ -9,7 +9,8 @@ import { driverColor } from './chartSeries'
 import { useUnits } from '../units'
 import { compareParams, driverKey, MAX_COMPARE_DRIVERS, MAX_COMPARE_SESSIONS, parseCompareParams, type ComparisonRequest, type DriverAccount } from '../../shared/comparison'
 import type { DbSessionRow } from '../../shared/types'
-import { sameCourse, trackLayoutKey, type TrackLayoutIdentity } from '../../shared/trackLayout'
+import { sameCourse, trackLayoutKey } from '../../shared/trackLayout'
+import { sessionCourse } from './sessionPickerData'
 import './compare.css'
 
 type SortKey = 'date' | 'best'
@@ -25,17 +26,7 @@ function trackLabel(r: Pick<DbSessionRow, 'track_name' | 'track_configuration_na
   return [r.track_name, r.track_configuration_name].map(s => (s ?? '').trim()).filter(Boolean).join(' · ') || 'Unknown layout'
 }
 
-// Course identity for matching another driver's sessions to yours. Mean
-// lines differ between drivers' devices, so this goes by Garmin's course ID
-// (see sameCourse); layout_key is the mean line when there is one.
-function courseOf(r: DbSessionRow): TrackLayoutIdentity {
-  const id = r.track_configuration_id == null ? NaN : Number(r.track_configuration_id)
-  return {
-    configurationId: Number.isFinite(id) ? id : null,
-    meanLineGuid: r.layout_key ?? null,
-    trackLabel: [r.track_name, r.track_configuration_name].map(s => (s ?? '').trim()).join(' · '),
-  }
-}
+const courseOf = sessionCourse
 
 // The URL sorts compare values, which fixes each driver's colour. Order the
 // draft the same way so the picker shows the colours the charts will use.

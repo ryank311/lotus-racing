@@ -59,7 +59,45 @@
 .ghost-row-time b { font: 500 13px var(--font-mono); letter-spacing: -.02em; }
 .ghost-row-time .ghost-gap { min-width: 52px; text-align: right; }
 
+/* Another driver: their colour (Analysis's second driver colour), the steps and their lists. */
+.ghost-picker { --rival: #d8b4fe; }
+.ghost-list { --rival: #d8b4fe; }
+.ghost-swatch.rival, .ghost-picker-trigger.rival .ghost-swatch { background: var(--rival); box-shadow: 0 0 8px #d8b4fe66; }
+.ghost-picker-trigger.rival:hover:not(:disabled) { border-color: var(--rival); }
+.ghost-picker-title small { color: var(--text-dim); font-size: 11px; }
+.ghost-picker-trigger.failed { border-color: var(--amber); }
+.ghost-picker-warn { flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--amber); color: #1a1000; font: 700 10px var(--font-mono); }
+.ghost-list-modes { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--border-strong); }
+.ghost-list-modes button {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px; margin-bottom: -1px;
+  background: none; border: 1px solid transparent; border-bottom: 2px solid transparent; color: var(--text-dim);
+  font: 600 11px var(--font-mono); letter-spacing: .06em; cursor: pointer;
+}
+.ghost-list-modes button[aria-selected=true] { color: var(--text); border-bottom-color: var(--cyan); }
+.mode-driver .ghost-list-modes button[aria-selected=true] { border-bottom-color: var(--rival); }
+.ghost-list-modes .ghost-swatch { width: 12px; height: 3px; }
+.ghost-crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 6px 4px 2px; font: 11px var(--font-mono); color: var(--text-mute); }
+.ghost-crumbs button { min-height: 28px; padding: 0 6px; background: none; border: 1px solid transparent; border-radius: var(--radius); color: var(--cyan); font: inherit; cursor: pointer; }
+.ghost-crumbs button:hover:not(:disabled) { border-color: var(--border-strong); }
+.ghost-crumbs button:disabled { color: var(--text); cursor: default; }
+.ghost-crumb-here { color: var(--text); padding: 0 6px; }
+.ghost-list-hint { margin: 2px 8px 8px; font: 11px/1.5 var(--font-body); color: var(--text-dim); }
+.ghost-list-empty { margin: 10px 8px; font: 12px/1.5 var(--font-body); color: var(--text-dim); }
+.ghost-list-note { margin: 10px 8px 2px; font: 11px/1.5 var(--font-body); color: var(--text-mute); }
+.ghost-link { background: none; border: 0; padding: 0; color: var(--cyan); font: inherit; text-decoration: underline; cursor: pointer; }
+.ghost-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 6px 6px; font: 10px var(--font-mono); color: var(--text-dim); }
+.ghost-list-toolbar .session-browser-sort button { min-height: 28px; padding: 0 10px; font-size: 10px; }
+.ghost-sessions { display: grid; gap: 0; }
+.ghost-row:disabled { cursor: default; opacity: .5; }
+.ghost-row:disabled:hover { background: none; border-color: transparent; }
+.ghost-row-go { color: var(--text-dim); font: 16px var(--font-mono); padding-right: 2px; }
+.mode-driver .ghost-row.is-current { border-color: var(--rival); background: linear-gradient(100deg, #d8b4fe22, transparent 70%); }
+.mode-driver .is-current .ghost-row-marker { background: var(--rival); border-color: var(--rival); }
+.ghost-off { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 4px !important; }
+
 @media (max-width: 640px) {
+  .ghost-list-modes button { min-height: 42px; flex: 1; justify-content: center; }
+  .ghost-crumbs button { min-height: 36px; }
   .ghost-list { width: 100%; max-height: min(640px, 86dvh); margin: auto 0 0; border-radius: 12px 12px 0 0; border-bottom: 0; }
   .ghost-list-body { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
   .ghost-row { min-height: 46px; }

@@ -41,9 +41,10 @@ export interface ShadowQuality {
   farSize: number
 }
 
-export const SHADOW_QUALITY: Record<'high' | 'medium', ShadowQuality> = {
+export const SHADOW_QUALITY: Record<'high' | 'medium' | 'low', ShadowQuality> = {
   high: { carSize: 1024, carSpanM: 24, regionSize: 2048, regionSpanM: 300, farSize: 2048 },
   medium: { carSize: 512, carSpanM: 24, regionSize: 1024, regionSpanM: 240, farSize: 0 },
+  low: { carSize: 512, carSpanM: 24, regionSize: 1024, regionSpanM: 200, farSize: 0 },
 }
 
 /** Layers the shadow cameras draw (the view draws layer 0, which every object keeps). */

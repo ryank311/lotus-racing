@@ -18,6 +18,7 @@ import { importCatalystVideo, planCatalystImport, rematchCatalystVideo } from '.
 import type { CatalystPlanEntry } from '../shared/catalystVideo.js'
 import { sessionCarData } from '../garmin/sessionCarData.js'
 import { replayLap, replayLapRef, replayScene } from '../garmin/replayData.js'
+import { exportReplayLap, exportReplayLaps, replayDriverLap } from '../garmin/replayDriver.js'
 import { replayCoaching } from '../garmin/replayCoaching.js'
 import { MAX_VIDEO_BYTES, VIDEO_ID_RE, type VideoImportResult } from '../shared/pdr.js'
 import { databaseAiKeyStore, migrateAiConfig, type AiKeyStore } from './aiKeyStore.js'
@@ -1129,6 +1130,33 @@ export function registerApiHandlers(
   register('replay:scene', (_e, guid: string) => withDb(con => replayScene(con, sessionId(guid), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
   register('replay:lap', (_e, sceneGuid: string, ref: unknown) =>
     withDb(con => replayLap(con, sessionId(sceneGuid), replayLapRef(ref), loadConfig().units ?? DEFAULT_UNIT_SYSTEM), DB_PATH))
+  // Another driver's lap, raced against yours (replayDriver.ts). In a server
+  // worker it arrives already exported by that driver's backend (the server
+  // replaces the renderer's request); the desktop app asks the local server.
+  register('replay:driverLap', async (_e, sceneGuid: string, value: unknown) => {
+    const scene = sessionId(sceneGuid)
+    const directory = drivers?.()
+    const isRequest = !!value && typeof value === 'object' && !('session' in value)
+    if (isRequest && !directory) throw new Error('Racing another driver needs the Catalyst server, which is not running.')
+    const bundle = isRequest ? await directory!.replayLap(null, value) : value
+    return withDb(con => replayDriverLap(con, scene, bundle), DB_PATH)
+  })
+  register('drivers:replayLaps', async (_e, driver: string, sessionGuid: string) => {
+    const directory = drivers?.()
+    if (!directory) throw new Error('Racing another driver needs the Catalyst server, which is not running.')
+    return directory.replayLaps(driver, sessionGuid, null)
+  })
+  // Read-only: the server calls these on the compared driver's backend
+  // (one session's valid laps, and one of them). Telemetry already in this
+  // workspace only; never syncs or downloads.
+  register('replay:exportLaps', (_e, sessionGuid: unknown) => {
+    if (!fs.existsSync(DB_PATH)) throw new Error('That driver has not synced any telemetry yet.')
+    return withDb(con => exportReplayLaps(con, sessionGuid), DB_PATH, true)
+  })
+  register('replay:exportLap', (_e, request: unknown) => {
+    if (!fs.existsSync(DB_PATH)) throw new Error('That driver has not synced any telemetry yet.')
+    return withDb(con => exportReplayLap(con, request), DB_PATH, true)
+  })
   // The session's coaching, placed along its mean line: the AI coach's reports, the
   // previous focus, Session Review's clear changes and the best pass per corner.
   register('replay:coaching', async (_e, guid: string) => {

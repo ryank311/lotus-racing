@@ -79,6 +79,19 @@
 .replay-hud-sub { font-size: 10px; color: var(--text-mute); }
 .replay-hud-gap { margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--border); font: 700 19px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-dim); }
 .replay-hud-gap small { display: block; font: 400 9px/1.4 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-mute); }
+.replay-hud-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+.replay-hud-rival { margin-top: 4px; display: flex; align-items: baseline; gap: 4px; font: 9px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); white-space: nowrap; }
+.replay-hud-rival b { margin-left: 4px; font: 700 14px var(--font-mono); letter-spacing: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+/* Two videos (yours and the other driver's): stacked at the top right. */
+.replay-pips { top: 12px; right: 12px; width: min(30%, 340px); display: flex; flex-direction: column; gap: 8px; pointer-events: none; transition: width .18s ease-out; }
+.replay-pips:has(.replay-pip.large) { width: min(52%, 680px); }
+.replay-pips .replay-pip { position: relative; top: auto; right: auto; width: 100%; }
+.replay-pip-rival { position: relative; pointer-events: auto; }
+.replay-pip-rival .replay-pip { border-color: color-mix(in srgb, var(--rival) 60%, transparent); }
+.replay-pip-rival::before {
+  content: attr(data-driver); position: absolute; z-index: 1; left: 6px; top: 6px; padding: 2px 6px; border-radius: 3px;
+  background: rgba(10, 10, 12, .78); border-left: 3px solid var(--rival); font: 600 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text);
+}
 .replay-hud-gap.behind { color: var(--red); }
 .replay-hud-gap.ahead { color: var(--green); }
 .replay-hud-fps { font-size: 9px; color: var(--text-mute); }
@@ -163,6 +176,51 @@
 .replay-scrub-mark { position: absolute; top: 18px; transform: translateX(-50%); display: grid; justify-items: center; font: 8px var(--font-mono); color: var(--text-mute); cursor: pointer; z-index: 3; }
 .replay-scrub-mark i { width: 1px; height: 5px; background: var(--text-mute); margin-bottom: 1px; }
 .replay-scrub-mark:hover { color: var(--cyan); }
+/* The compared car's lane above the bar: its own handle (a pin in its
+   colour, dragged to move only that car) and a band to yours. The handle's
+   hit area stops short of your handle, so the two never fight. */
+.replay-scrub.has-ghost { height: 54px; }
+.replay-scrub.has-ghost input { top: 12px; }
+.replay-scrub.has-ghost::before, .replay-scrub.has-ghost .replay-scrub-fill { top: 21px; }
+.replay-scrub.has-ghost .replay-scrub-mark { top: 30px; }
+.replay-scrub-offset { position: absolute; top: 20px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--compared, var(--cyan)) 45%, transparent); pointer-events: none; z-index: 1; }
+.replay-scrub-ghost { position: absolute; top: -2px; width: 28px; height: 17px; transform: translateX(-50%); z-index: 4; cursor: ew-resize; touch-action: none; border-radius: 4px; }
+.replay-scrub-ghost i { position: absolute; left: 50%; top: 2px; width: 14px; height: 13px; margin-left: -7px; background: var(--compared, var(--cyan)); clip-path: polygon(0 0, 100% 0, 100% 58%, 50% 100%, 0 58%); }
+.replay-scrub-ghost b { position: absolute; left: 50%; top: 14px; width: 2px; height: 8px; margin-left: -1px; background: var(--compared, var(--cyan)); pointer-events: none; }
+.replay-scrub-ghost:hover i { filter: brightness(1.2); }
+.replay-scrub-ghost:focus { outline: none; }
+.replay-scrub-ghost:focus-visible { box-shadow: 0 0 0 2px var(--cyan); }
+.replay-scrub-ghost.off i, .replay-scrub-ghost.off b { opacity: .45; }
+@media (pointer: coarse) {
+  .replay-scrub.has-ghost { height: 62px; }
+  .replay-scrub.has-ghost input { top: 18px; }
+  .replay-scrub.has-ghost::before, .replay-scrub.has-ghost .replay-scrub-fill { top: 27px; }
+  .replay-scrub.has-ghost .replay-scrub-mark { top: 36px; }
+  .replay-scrub.has-ghost .replay-scrub-offset { top: 26px; }
+  .replay-scrub-ghost { top: -6px; width: 44px; height: 28px; }
+  .replay-scrub-ghost i { top: 6px; width: 18px; height: 16px; margin-left: -9px; }
+  .replay-scrub-ghost b { top: 21px; height: 8px; }
+}
+/* Its clock against yours, and Side by side / Sync. */
+.replay-sync { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 0; }
+.replay-offset { display: grid; grid-template-columns: auto auto auto; column-gap: 6px; align-items: baseline; font: 600 11px var(--font-mono); color: var(--text-dim); white-space: nowrap; }
+.replay-offset i { width: 10px; height: 4px; border-radius: 2px; align-self: center; grid-row: 1 / 3; }
+.replay-offset b { color: var(--text); font-variant-numeric: tabular-nums; }
+.replay-offset small { grid-column: 2 / 4; font: 10px var(--font-mono); color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.replay-sync .replay-rates button { padding: 0 9px; white-space: nowrap; }
+.replay-sync .replay-rates button:disabled { opacity: .45; cursor: default; }
+/* With a compared car the transport takes two rows, so the bar keeps its
+   length: play, the bar, the time and full screen; under them its clock,
+   Side by side and Sync, and the cameras. */
+@media (min-width: 801px) {
+  .replay-transport.compared { flex-wrap: wrap; row-gap: 8px; }
+  .replay-transport.compared::before { content: ''; order: 4; flex-basis: 100%; height: 0; }
+  .replay-transport.compared .replay-play { order: 1; }
+  .replay-transport.compared .replay-scrub { order: 2; }
+  .replay-transport.compared .replay-time, .replay-transport.compared .replay-fullscreen { order: 3; }
+  .replay-transport.compared .replay-sync { order: 5; }
+  .replay-transport.compared .replay-cameras { order: 6; margin-left: auto; }
+}
 .replay-time { flex-shrink: 0; font: 600 13px var(--font-mono); font-variant-numeric: tabular-nums; }
 .replay-time small { color: var(--text-mute); font-weight: 400; }
 .replay-rates button { padding: 0 8px; }
@@ -176,6 +234,7 @@
 .replay-check input { accent-color: var(--signal); }
 .replay-swatch { display: inline-block; width: 18px; height: 4px; border-radius: 2px; }
 .replay-swatch.ghost { background: var(--cyan); }
+.replay-swatch.rival { background: #d8b4fe; vertical-align: 2px; }
 .replay-legend { display: grid; gap: 3px; max-width: 320px; padding-left: 24px; }
 .replay-legend[aria-hidden=true] { opacity: .35; }
 .replay-legend-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; }
@@ -214,6 +273,9 @@
   .replay-hud-wheel { width: 30px; height: 30px; }
   .replay-hud-g svg { width: 58px; height: 58px; }
   .replay-pip { top: 8px; right: 8px; width: 44%; }
+  .replay-pips { top: 8px; right: 8px; width: 40%; gap: 5px; }
+  .replay-pips .replay-pip { width: 100%; }
+  .replay-hud-rival b { font-size: 12px; }
   .replay-pip.large { width: calc(100% - 16px); }
   .replay-pip-bar { font-size: 8px; padding: 1px 2px 1px 6px; }
   .replay-note { font-size: 10px; }
@@ -237,6 +299,10 @@
   .replay-player:not(:fullscreen) .replay-stage .replay-transport.asleep { opacity: 1; transform: none; pointer-events: auto; }
   .replay-player:not(:fullscreen) .replay-stage .replay-hud-instruments { bottom: 8px; transform: none; }
   .replay-scrub { order: 5; flex-basis: 100%; }
+  .replay-sync { order: 6; flex-basis: 100%; justify-content: space-between; }
+  /* Four cameras with a compared car: a row of their own under play, time and full screen. */
+  .replay-transport.compared .replay-cameras { order: 4; flex: 1 1 100%; }
+  .replay-transport.compared .replay-cameras button { flex: 1; padding: 0 4px; }
   /* Corner numbers collide on a narrow bar; the ticks stay. */
   .replay-scrub-mark { font-size: 0; }
   .replay-scrub-mark i { height: 7px; }

@@ -25,9 +25,11 @@ export interface GrassQuality {
   farRadiusM: number
 }
 
-export const GRASS_QUALITY: Record<'high' | 'medium', GrassQuality> = {
+/** By graphics level; none on Low (a constrained device: the blades and their map go first). */
+export const GRASS_QUALITY: Record<'high' | 'medium' | 'low', GrassQuality | null> = {
   high: { mapSize: 1024, mapSpanM: 150, nearCellM: 0.22, nearRadiusM: 16, farCellM: 0.75, farRadiusM: 50 },
   medium: { mapSize: 512, mapSpanM: 110, nearCellM: 0.32, nearRadiusM: 12, farCellM: 1.0, farRadiusM: 32 },
+  low: null,
 }
 
 const BAKE_VERTEX = /* glsl */`
@@ -278,6 +280,9 @@ export class GrassField {
     this.centre = null
     this.buildRings()
   }
+
+  /** Draw the map again before the next frame (its target is new after a lost context). */
+  invalidate() { this.centre = null }
 
   /** Wind: where it blows towards (degrees from north) and how hard (m/s). */
   setWind(toDeg: number, mps: number) {

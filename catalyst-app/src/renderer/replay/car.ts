@@ -6,9 +6,14 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { CarModelFit, CarPreset } from '../../shared/replay'
 import { rigFrame } from './wheels'
+import { fittedTextures, replayProfile } from './budget'
 
 export async function parseGlb(buffer: ArrayBuffer): Promise<THREE.Group> {
-  const gltf = await new GLTFLoader().parseAsync(buffer, '')
+  const loader = new GLTFLoader()
+  // On a constrained device the images decode at most this size (budget.ts): a 4096² livery is 85 MB on the GPU.
+  const { textureMax, decodeConcurrency } = replayProfile()
+  if (Number.isFinite(textureMax.car)) loader.register(parser => fittedTextures(parser, textureMax.car, decodeConcurrency))
+  const gltf = await loader.parseAsync(buffer, '')
   const root = gltf.scene
   root.traverse(object => {
     const mesh = object as THREE.Mesh
@@ -79,6 +84,69 @@ export function fittedSize(fitted: THREE.Object3D): THREE.Vector3 {
 
 export function ghostMaterial(color: THREE.ColorRepresentation): THREE.Material {
   return new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.38, emissive: new THREE.Color(color).multiplyScalar(0.35) })
+}
+
+/**
+ * Another driver's car is drawn solid, like a real car; a faint glow of its
+ * colour over the paint (strength 0: none) tells it from yours. Materials
+ * that light themselves (lamps) keep their own glow.
+ */
+export function tintCar(root: THREE.Object3D, color: THREE.ColorRepresentation, strength: number) {
+  const tint = new THREE.Color(color).multiplyScalar(strength)
+  root.traverse(object => {
+    const mesh = object as THREE.Mesh
+    if (!mesh.isMesh) return
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const m = material as THREE.MeshStandardMaterial
+      if (!m.isMeshStandardMaterial || m.emissiveMap || m.transparent) continue
+      const base = (m.userData.baseEmissive ??= m.emissive.clone()) as THREE.Color
+      m.emissive.copy(base).add(tint)
+    }
+  })
+}
+
+/**
+ * A name tag over a car (another driver's): a pill in their colour, the
+ * same size on screen however far away, drawn over everything so it marks
+ * the car through trees and from the seat. Its bottom edge sits at the
+ * sprite's position.
+ */
+export function nameTag(text: string, color: THREE.ColorRepresentation): THREE.Sprite {
+  const ratio = 2, fontPx = 26 * ratio, padX = 16 * ratio, dot = 9 * ratio, pointer = 9 * ratio
+  const canvas = document.createElement('canvas')
+  const g = canvas.getContext('2d')!
+  const font = `600 ${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`
+  g.font = font
+  const label = text.length > 24 ? `${text.slice(0, 23)}…` : text
+  const width = Math.ceil(padX * 2 + dot + 10 * ratio + g.measureText(label).width), pill = Math.round(fontPx * 1.55)
+  canvas.width = width + 4; canvas.height = pill + pointer + 4
+  const css = `#${new THREE.Color(color).getHexString()}`
+  g.font = font
+  g.fillStyle = 'rgba(10, 10, 12, 0.82)'
+  g.strokeStyle = css
+  g.lineWidth = 2 * ratio
+  g.beginPath()
+  g.roundRect(2, 2, width, pill, pill / 2)
+  g.moveTo(2 + width / 2 - pointer, 2 + pill)
+  g.lineTo(2 + width / 2, 2 + pill + pointer)
+  g.lineTo(2 + width / 2 + pointer, 2 + pill)
+  g.fill(); g.stroke()
+  g.fillStyle = css
+  g.beginPath(); g.arc(2 + padX + dot / 2, 2 + pill / 2, dot / 2, 0, Math.PI * 2); g.fill()
+  g.fillStyle = '#f2f2f4'
+  g.textBaseline = 'middle'
+  g.fillText(label, 2 + padX + dot + 10 * ratio, 2 + pill / 2 + ratio)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, sizeAttenuation: false, fog: false })
+  const sprite = new THREE.Sprite(material)
+  sprite.center.set(0.5, 0)
+  // About 4% of the view's height.
+  const h = 0.042
+  sprite.scale.set(h * canvas.width / canvas.height, h, 1)
+  sprite.renderOrder = 10
+  sprite.name = 'name-tag'
+  return sprite
 }
 
 /** A copy sharing geometry, in one translucent material. */

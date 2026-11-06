@@ -11,34 +11,63 @@ import { routeUrl, segment } from '../routes'
 import { useResource } from '../useResource'
 import { startLabel } from '../components/reviewTimeline'
 import { SessionPicker } from '../components/SessionPicker'
-import { GhostPicker } from '../replay/GhostPicker'
+import { GhostPicker, type GhostCourse, type RivalChoice } from '../replay/GhostPicker'
 import { InlineLoadStatus } from '../components/Loading'
 import { SPEED_RAMP } from '../components/chartTheme'
-import { carModelFor, presetFor, trackModelFor, type CarModel, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
+import { carModelFor, driverGhostParam, parseDriverGhostParam, presetFor, trackModelFor, type CarModel, type CarPreset, type ReplayDriverLap, type ReplayVehicle, type ReplayLap, type ReplayLapInfo, type ReplayLapRef, type ReplayScene } from '../../shared/replay'
 import { speedFromMps, speedUnitLabel, tempFromC, tempUnitLabel, type UnitSystem } from '../../shared/units'
-import { ReplayEngine, type Alignment, type ReplayView } from '../replay/engine'
+import { ReplayEngine, type Alignment, type FrameState, type ReplayView } from '../replay/engine'
+import { formatOffset, scrubFraction } from '../replay/compare'
 import { LapPath } from '../replay/lapPath'
 import { buildModelWorld, buildWorld, type BuiltWorld, type TerrainData } from '../replay/world'
 import { trackModelLabel } from '../replay/acTrack'
 import { parseGlb } from '../replay/car'
 import { shortTrackName } from '../replay/geo'
 import { REPLAY_DEBUG } from '../replay/debug'
+import { replayProfile } from '../replay/budget'
 import { ReplayHud, clock, useFrame } from '../replay/Hud'
 import { CoachingCallout, CoachingPanel, CoachingToggles, useReplayCoaching } from '../replay/ReplayCoaching'
 import { WEATHER_CHOICES, lookFor, type Look, type WeatherChoice } from '../replay/weather'
 import '../replay/replay.css'
 
-// The cameras, in the order C cycles them.
-const VIEWS = ['chase', 'driver', 'garmin'] as const
-const VIEW_NAMES: Record<string, string> = { chase: 'Chase', driver: 'Driver', garmin: 'Garmin' }
-const nextView = (view: ReplayView): ReplayView => VIEWS[(VIEWS.indexOf(view as typeof VIEWS[number]) + 1) % VIEWS.length]
+// The cameras, in the order C cycles them; Both cars only with a compared car.
+const VIEWS = ['chase', 'driver', 'garmin', 'both'] as const
+type CameraView = typeof VIEWS[number]
+const VIEW_NAMES: Record<string, string> = { chase: 'Chase', driver: 'Driver', garmin: 'Garmin', both: 'Both cars' }
+const camerasFor = (compared: boolean, view: ReplayView): CameraView[] => VIEWS.filter(v => v !== 'both' || compared || view === 'both')
+const nextView = (views: CameraView[], view: ReplayView): ReplayView => views[(views.indexOf(view as CameraView) + 1) % views.length]
+// Another driver's car, line and handle (Analysis's second driver colour: clear of the ghost's cyan and the speed ramp).
+const RIVAL_COLOR = '#d8b4fe'
+const titleCase = (s: string | null) => (s ?? '').trim().toLowerCase().replace(/\b\p{L}/gu, c => c.toUpperCase())
 const lapValue = (ref: ReplayLapRef) => `${ref.sessionGuid}:${ref.lap}`
 // The last terrain and car model bytes stay in memory while the app is open,
 // so changing laps, layouts of the same circuit or sessions does not refetch.
 let terrainCache: { key: string; data: Omit<TerrainData, 'sample'> } | null = null
 const modelBytes = new Map<string, ArrayBuffer>()
+// Another driver's car model, when it is not yours (the last one).
+let rivalBytes: { id: string; bytes: Promise<ArrayBuffer> } | null = null
+function rivalModelBytes(id: string): Promise<ArrayBuffer> {
+  const own = modelBytes.get(id)
+  if (own) return Promise.resolve(own)
+  if (rivalBytes?.id !== id) {
+    const bytes = api.getCarModel(id)
+    rivalBytes = { id, bytes }
+    bytes.catch(() => { if (rivalBytes?.bytes === bytes) rivalBytes = null })
+  }
+  return rivalBytes.bytes
+}
 // Track model files (the shared base and each layout's), by "id/file".
 const trackFiles = new Map<string, Promise<ArrayBuffer>>()
+// Debugging: what the caches above hold, MiB.
+if (REPLAY_DEBUG) Object.assign(window, { replayCaches: async () => {
+  const mib = (bytes: number) => Math.round(bytes / 1048576 * 10) / 10
+  const files = await Promise.all([...trackFiles.values()].map(p => p.then(b => b.byteLength, () => 0)))
+  return {
+    trackFiles: mib(files.reduce((a, b) => a + b, 0)),
+    carModels: mib([...modelBytes.values()].reduce((a, b) => a + b.byteLength, 0)),
+    terrain: mib((terrainCache?.data.grid.byteLength ?? 0) + (terrainCache?.data.image?.size ?? 0)),
+  }
+} })
 function trackFile(id: string, file: string): Promise<ArrayBuffer> {
   const key = `${id}/${file}`
   let bytes = trackFiles.get(key)
@@ -89,8 +118,10 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     ].filter(g => g.laps.length)
   }, [scene, lapInfo])
   const ghostParam = params.get('ghost')
+  // Another driver's lap: ?ghost=driver:<name>:<session>:<lap>, raced in their own car.
+  const rivalRef = useMemo(() => parseDriverGhostParam(ghostParam), [ghostParam])
   const ghostInfo = useMemo(() => {
-    if (!scene || !lapInfo || ghostParam === 'none') return null
+    if (!scene || !lapInfo || ghostParam === 'none' || rivalRef) return null
     if (ghostParam) {
       const [guid, lap] = [ghostParam.slice(0, ghostParam.lastIndexOf(':')), ghostParam.slice(ghostParam.lastIndexOf(':') + 1)]
       const ref = { sessionGuid: guid, lap: lap === 'optimal' ? 'optimal' as const : Number(lap) }
@@ -99,16 +130,20 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     }
     const best = scene.laps.find(l => l.isBest)
     return best && best.lap !== lapInfo.lap ? best : null
-  }, [scene, lapInfo, ghostParam])
+  }, [scene, lapInfo, ghostParam, rivalRef])
 
   const viewParam = params.get('view')
-  const view: ReplayView = viewParam === 'driver' || viewParam === 'garmin' ? viewParam : 'chase'
+  const view: ReplayView = viewParam === 'driver' || viewParam === 'garmin' || viewParam === 'both' ? viewParam : 'chase'
   const [debugOrbit, setDebugOrbit] = useState(false)
 
   const lapKey = id && lapInfo ? `${id}|${lapValue(lapInfo)}` : ''
   const lapResource = useResource<ReplayLap | null>(() => (id && lapInfo ? api.getReplayLap(id, { sessionGuid: lapInfo.sessionGuid, lap: lapInfo.lap }) : Promise.resolve(null)), lapKey)
   const ghostKey = id && ghostInfo ? `${id}|${lapValue(ghostInfo)}` : ''
   const ghostResource = useResource<ReplayLap | null>(() => (id && ghostInfo ? api.getReplayLap(id, { sessionGuid: ghostInfo.sessionGuid, lap: ghostInfo.lap }) : Promise.resolve(null)), ghostKey)
+  // Their lap through the server (their backend, read-only), on this scene's mean line.
+  const rivalKey = id && rivalRef && scene ? `${id}|${driverGhostParam(rivalRef)}|${scene.units}` : ''
+  const rivalResource = useResource<ReplayDriverLap | null>(() => (id && rivalRef && scene ? api.getReplayDriverLap(id, rivalRef, scene.units) : Promise.resolve(null)), rivalKey)
+  const rivalData = rivalRef ? rivalResource.data ?? null : null
   const lapData = lapResource.data ?? null
 
   // ── Engine ─────────────────────────────────────────────────────────────
@@ -116,17 +151,23 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   const [engine, setEngine] = useState<ReplayEngine | null>(null)
   const [engineError, setEngineError] = useState<string | null>(null)
   const [contextLost, setContextLost] = useState(false)
+  // A new engine (and everything built again) after a lost context it cannot restore in place.
+  const [engineAttempt, setEngineAttempt] = useState(0)
   useEffect(() => {
     let created: ReplayEngine
     try { created = new ReplayEngine(stageRef.current!) } catch (error) {
       setEngineError(`3D graphics are unavailable in this browser (${error instanceof Error ? error.message : String(error)}).`)
       return
     }
-    created.onContextLost = setContextLost
+    created.onContextLost = lost => {
+      setContextLost(lost)
+      // Its textures were on the GPU only (a constrained device, budget.ts): build the scene again.
+      if (!lost && created.needsRebuild) setEngineAttempt(n => n + 1)
+    }
     if (REPLAY_DEBUG) (window as unknown as { replay: ReplayEngine }).replay = created
     setEngine(created)
     return () => { created.dispose(); setEngine(null) }
-  }, [])
+  }, [engineAttempt])
 
   // ── World (once per layout) ────────────────────────────────────────────
   const [world, setWorld] = useState<BuiltWorld | null>(null)
@@ -141,7 +182,14 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   // Wait for the listing before building, so a model track is not built twice.
   const trackSource = !trackModels.data && !trackModels.error ? null : useTrackModel ? `${trackMatch!.model.id}:${trackMatch!.layout.files.join(',')}:${trackMatch!.model.updatedAt}` : 'public'
   const trackKey = scene && trackSource ? `${scene.track.meanLineGuid}|${trackSource}` : ''
-  const haveLap = !!lapData
+  // The world is built once per track, as soon as a lap of it has loaded (the
+  // public world's fallback road follows that lap's altitude). Choosing
+  // another lap, which empties `lapData` while it loads, must not tear the
+  // world down and rebuild it: that re-uploads the whole track to the GPU
+  // and, a few lap changes in, runs an iPad out of memory.
+  const [lapReadyFor, setLapReadyFor] = useState('')
+  useEffect(() => { if (lapData && trackKey) setLapReadyFor(trackKey) }, [lapData, trackKey])
+  const haveLap = !!trackKey && lapReadyFor === trackKey
   const [worldAttempt, setWorldAttempt] = useState(0)
   useEffect(() => {
     if (!engine || !scene || !haveLap || !trackKey) return
@@ -200,6 +248,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           built.note = `The ${trackModelLabel(match.model)} track could not be loaded (${modelError}); showing public data.`
         }
       } else built = await buildPublic()
+      // A constrained device keeps no copy of the files once parsed (the browser's cache has them).
+      if (replayProfile().lean) trackFiles.clear()
       if (cancelled) { built.dispose(); return }
       if (terrainError && built.note && !modelError) built.note += ` (${terrainError})`
       engine.setWorld(built)
@@ -213,7 +263,7 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
 
   // ── Laps ───────────────────────────────────────────────────────────────
   const lapPath = useMemo(() => (lapData && world && scene ? new LapPath(lapData, world.frame, scene.track.totalDistM) : null), [lapData, world, scene])
-  const ghostData = ghostInfo ? ghostResource.data ?? null : null
+  const ghostData = rivalRef ? rivalData : ghostInfo ? ghostResource.data ?? null : null
   const ghostPath = useMemo(() => (ghostData && world && scene ? new LapPath(ghostData, world.frame, scene.track.totalDistM) : null), [ghostData, world, scene])
   useEffect(() => { engine?.setLap(lapPath); engine?.seek(0) }, [engine, lapPath])
   useEffect(() => { engine?.setGhost(ghostPath) }, [engine, ghostPath])
@@ -262,7 +312,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       if (!bytes) {
         bytes = await api.getCarModel(model.id)
         modelBytes.clear()
-        modelBytes.set(model.id, bytes)
+        // A constrained device keeps no copy once parsed (budget.ts).
+        if (!replayProfile().lean) modelBytes.set(model.id, bytes)
       }
       const root = await parseGlb(bytes)
       if (cancelled) return
@@ -287,11 +338,66 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, fitKey])
 
+  // ── The other driver's car ─────────────────────────────────────────────
+  // Their car from the shared library by their vehicle key (as the Garage
+  // assigns it), with its own preset: dimensions, dynamics and the data
+  // collector's place. A separate parse of the model, so a car the same as
+  // yours is still its own (tinted) object.
+  // Who and which car, kept while another lap of theirs loads (no reload of the car).
+  const [rivalIdentity, setRivalIdentity] = useState<Pick<ReplayDriverLap, 'driver' | 'vehicle'> | null>(null)
+  useEffect(() => {
+    if (!rivalRef) setRivalIdentity(null)
+    else if (rivalData) setRivalIdentity(current => (current?.driver === rivalData.driver && current.vehicle.key === rivalData.vehicle.key ? current : { driver: rivalData.driver, vehicle: rivalData.vehicle }))
+  }, [rivalRef, rivalData])
+  const rivalVehicle = rivalIdentity?.vehicle ?? null
+  const rivalPreset = useMemo(() => presetFor(rivalVehicle?.key ?? null), [rivalVehicle?.key])
+  const rivalModel = rivalVehicle ? carModelFor(models, rivalVehicle.key) : null
+  const rivalCar = rivalVehicle ? titleCase(rivalVehicle.model) || titleCase(rivalVehicle.make) || rivalPreset.name : null
+  const [rivalStatus, setRivalStatus] = useState('')
+  // The key of the car in the scene, once it is (its model, or the placeholder after a failure).
+  const [rivalReady, setRivalReady] = useState<string | null>(null)
+  const loadedRival = useRef<string | null>(null)
+  const rivalName = rivalIdentity?.driver ?? null
+  const rivalCarKey = rivalName ? `${rivalName}|${rivalModel?.id ?? 'placeholder'}|${rivalPreset.name}` : null
+  useEffect(() => {
+    if (!engine) return
+    loadedRival.current = null
+    if (!rivalName || !rivalCarKey) { engine.setRival(null); setRivalStatus(''); setRivalReady(null); return }
+    if (!rivalModel) { engine.setRival({ preset: rivalPreset, model: null, fit: null, color: RIVAL_COLOR, name: rivalName }); setRivalStatus(''); setRivalReady(rivalCarKey); return }
+    let cancelled = false
+    setRivalReady(null)
+    setRivalStatus(`Loading ${rivalName}’s ${rivalModel.name}…`)
+    void (async () => {
+      const root = await parseGlb(await rivalModelBytes(rivalModel.id))
+      if (cancelled) return
+      engine.setRival({ preset: rivalPreset, model: root, fit: rivalModel.fit, color: RIVAL_COLOR, name: rivalName })
+      loadedRival.current = rivalModel.id
+      setRivalStatus('')
+      setRivalReady(rivalCarKey)
+    })().catch(error => {
+      if (cancelled) return
+      engine.setRival({ preset: rivalPreset, model: null, fit: null, color: RIVAL_COLOR, name: rivalName })
+      setRivalStatus(`${rivalModel.name} could not be loaded (${error instanceof Error ? error.message : String(error)}); ${rivalName}’s car is the placeholder.`)
+      setRivalReady(rivalCarKey)
+    })
+    return () => { cancelled = true }
+    // Refits go through setRivalFit; only a new model reloads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, rivalCarKey])
+  const rivalFitKey = rivalModel ? JSON.stringify(rivalModel.fit) : ''
+  useEffect(() => {
+    if (engine && rivalModel && loadedRival.current === rivalModel.id) engine.setRivalFit(rivalModel.fit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, rivalFitKey])
+  const [marked, setMarked] = useState(true)
+  useEffect(() => { engine?.setRivalMarked(marked) }, [engine, marked])
+
   // ── Controls ───────────────────────────────────────────────────────────
   const setView = useCallback((next: ReplayView) => { setDebugOrbit(false); query({ view: next }) }, [query])
   const playerRef = useRef<HTMLDivElement>(null)
   const fullscreen = useFullscreen(playerRef)
   const toggleFullscreen = fullscreen.toggle
+  const cameras = camerasFor(!!ghostPath, view)
   useEffect(() => {
     if (!engine) return
     const onKey = (event: KeyboardEvent) => {
@@ -302,13 +408,17 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
         event.preventDefault()
         engine.seek(engine.time + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 5000 : 1000))
-      } else if (event.key === 'c' || event.key === 'C') setView(nextView(view))
-      else if (event.key === 'f' || event.key === 'F') toggleFullscreen()
+      } else if (event.key === 'c' || event.key === 'C') setView(nextView(cameras, view))
+      // The compared car alone, a tenth (⇧ a second) back or forward along its lap.
+      else if (event.key === '[' || event.key === ']' || event.key === '{' || event.key === '}') {
+        event.preventDefault()
+        engine.setGhostOffset(engine.ghostOffset + (event.key === '[' || event.key === '{' ? -1 : 1) * (event.shiftKey ? 1000 : 100))
+      } else if (event.key === 'f' || event.key === 'F') toggleFullscreen()
       else if (REPLAY_DEBUG && (event.key === 'o' || event.key === 'O')) setDebugOrbit(v => !v)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [engine, view, setView, toggleFullscreen])
+  }, [engine, view, cameras.join(), setView, toggleFullscreen])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectLap = (value: string) => query({ lap: value })
   const selectGhost = (value: string) => query({ ghost: value })
@@ -321,7 +431,10 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   // world and car does not bring it back.
   const [prepared, setPrepared] = useState<string | null>(null)
   useEffect(() => { setPrepared(null) }, [world])
-  const readyKey = engine && world && lapPath && carReady ? `${trackKey}|${model?.id ?? 'placeholder'}` : null
+  // Another driver's lap and car load with the rest (a failure does not hold the view: it shows a note).
+  const rivalError = rivalRef ? rivalResource.error : null
+  const rivalPending = !!rivalRef && !rivalError && !(rivalData && rivalCarKey && rivalReady === rivalCarKey)
+  const readyKey = engine && world && lapPath && carReady && !rivalPending ? `${trackKey}|${model?.id ?? 'placeholder'}|${rivalRef ? rivalReady ?? 'failed' : 'none'}` : null
   useEffect(() => {
     if (!engine || !readyKey || prepared === readyKey) return
     let cancelled = false
@@ -336,11 +449,28 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       detail: world ? null : worldStatus.step || null,
       note: worldStatus.building && !world ? 'The first visit downloads elevation and imagery for the whole circuit; it is kept for every later replay.' : null },
     { label: 'Car', state: carReady ? 'done' : scene ? 'active' : 'pending', detail: carReady ? null : modelStatus || null },
+    ...(rivalRef ? [{
+      label: `${rivalIdentity?.driver ?? rivalRef.driver}’s lap and car`, state: (rivalPending ? (scene ? 'active' : 'pending') : 'done') as LoaderStep['state'],
+      detail: rivalError ? 'Not available' : !rivalData ? `Loading ${rivalRef.driver}’s L${rivalRef.lap + 1} from their workspace` : rivalStatus || null,
+    }] : []),
     { label: 'Getting the view ready', state: ready ? 'done' : readyKey ? 'active' : 'pending' },
   ]
   const loaderTitle = scene ? [shortTrackName(scene.track.trackName), scene.track.configName].filter(Boolean).join(' · ') : 'Loading the replay'
   const showLoader = !error && !engineError && !(!id && catalogue.data && !sessions.length)
-  const ghostLabel = ghostInfo ? (ghostInfo.sessionGuid === scene?.sessionGuid ? ghostInfo.label.split(' · ').pop()! : ghostInfo.label) : null
+  const ghostLabel = rivalRef ? rivalIdentity?.driver ?? rivalRef.driver
+    : ghostInfo ? (ghostInfo.sessionGuid === scene?.sessionGuid ? ghostInfo.label.split(' · ').pop()! : ghostInfo.label) : null
+  // The compared car's short name on the scrub bar: their car when it is not yours ("Corvette"), else their name, or "Ghost".
+  const myCar = titleCase(scene?.vehicle.model ?? null)
+  const comparedName = rivalRef ? (rivalCar && rivalCar !== myCar ? rivalCar : ghostLabel!) : 'Ghost'
+  const comparedColor = rivalRef ? RIVAL_COLOR : 'var(--cyan)'
+  const rivalChoice: RivalChoice | null = rivalRef ? {
+    ...rivalRef, driver: rivalIdentity?.driver ?? rivalRef.driver, label: rivalData?.label ?? null, durationMs: rivalData?.durationMs ?? 0,
+    car: rivalVehicle ? [titleCase(rivalVehicle.make), titleCase(rivalVehicle.model)].filter(Boolean).join(' ') || null : null, error: rivalError,
+  } : null
+  const ghostCourse: GhostCourse | null = scene ? {
+    identity: { configurationId: scene.track.configurationId ?? null, meanLineGuid: scene.track.meanLineGuid, trackLabel: `${scene.track.trackName ?? ''} · ${scene.track.configName ?? ''}` },
+    label: [shortTrackName(scene.track.trackName), scene.track.configName].filter(Boolean).join(' · '),
+  } : null
   const units = scene?.units ?? 'imperial'
 
   return <div className="page-body replay-page">
@@ -356,25 +486,29 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
       <label>Lap<select value={lapInfo ? String(lapInfo.lap) : ''} disabled={!scene} onChange={e => selectLap(e.target.value)}>
         {scene?.laps.map(l => <option key={String(l.lap)} value={String(l.lap)}>{l.lap === 'optimal' ? '◆ Optimal' : `${l.isBest ? '★ ' : ''}L${(l.lap as number) + 1}`} · {msToLap(l.durationMs)}{l.hasVideo ? ' · video' : ''}</option>)}
       </select></label>
-      <GhostPicker groups={ghostOptions} ghost={ghostInfo} current={lapInfo} sessionGuid={scene?.sessionGuid ?? null}
-        onSelect={selectGhost} disabled={!scene} />
+      <GhostPicker groups={ghostOptions} ghost={ghostInfo} rival={rivalChoice} current={lapInfo} sessionGuid={scene?.sessionGuid ?? null}
+        course={ghostCourse} onSelect={selectGhost} disabled={!scene} />
     </div>
 
     <div className={`replay-player${fullscreen.overlay ? ' pseudo-full' : ''}${ready ? '' : ' waiting'}`} ref={playerRef}>
     <div className={`replay-stage ${view === 'garmin' && !debugOrbit ? 'garmin' : ''}`} ref={stageRef}>
-      {engine && lapPath && world && <ReplayHud engine={engine} lap={lapPath} ghost={ghostPath} ghostLabel={ghostLabel} units={units} showVideo />}
+      {engine && lapPath && world && <ReplayHud engine={engine} lap={lapPath} ghost={ghostPath} ghostLabel={ghostLabel} units={units} showVideo
+        rival={rivalRef && ghostPath ? { name: ghostLabel!, color: RIVAL_COLOR } : null} />}
       {engine && lapPath && world && <PlayOverlay engine={engine} />}
       {engine && world && <ResetView engine={engine} />}
       {world?.note && <div className="replay-note" role="status">{world.note}</div>}
-      {!world?.note && lapMissing && <div className="replay-note" role="status">{lapParam === 'optimal' ? 'Garmin has no optimal lap for this session' : `Lap ${Number(lapParam) + 1} is not a valid lap of this session`}; showing {lapInfo!.label.split(' · ').pop()}.</div>}
+      {!world?.note && rivalError && <div className="replay-note" role="status">{rivalRef!.driver}’s lap could not be loaded: {rivalError}</div>}
+      {!world?.note && !rivalError && lapMissing && <div className="replay-note" role="status">{lapParam === 'optimal' ? 'Garmin has no optimal lap for this session' : `Lap ${Number(lapParam) + 1} is not a valid lap of this session`}; showing {lapInfo!.label.split(' · ').pop()}.</div>}
       {engine && lapPath && world && <CoachingCallout coaching={coaching} engine={engine} lap={lapPath} />}
       {showLoader && <ReplayLoader active={!ready} title={loaderTitle} subtitle={lapInfo?.label ?? null} steps={loaderSteps} />}
       {error && <div className="replay-loading error" role="alert"><strong>{error}</strong>
         {worldStatus.error && <button className="btn ghost small" type="button" onClick={() => setWorldAttempt(n => n + 1)}>Try again</button>}</div>}
       {!id && catalogue.data && !sessions.length && <div className="replay-loading"><strong>No sessions with laps yet.</strong><NavLink to="/sessions">Download sessions</NavLink></div>}
-      {contextLost && <div className="replay-loading" role="status"><strong>Graphics were reset by the system; restoring…</strong></div>}
-      {engine && lapPath && <Transport engine={engine} lap={lapPath} scene={scene!} view={debugOrbit ? null : view} onView={setView}
-        fullscreen={fullscreen.active} onFullscreen={toggleFullscreen} stage={stageRef} />}
+      {contextLost && <div className="replay-loading" role="status"><strong>Graphics were reset by the system; restoring the scene…</strong>
+        <button className="btn ghost small" type="button" onClick={() => { setContextLost(false); setEngineAttempt(n => n + 1) }}>Reload the 3D view</button></div>}
+      {engine && lapPath && <Transport engine={engine} lap={lapPath} scene={scene!} view={debugOrbit ? null : view} views={cameras} onView={setView}
+        fullscreen={fullscreen.active} onFullscreen={toggleFullscreen} stage={stageRef}
+        compared={ghostPath ? { name: comparedName, label: ghostLabel ?? comparedName, color: comparedColor } : null} />}
     </div>
     </div>
 
@@ -387,15 +521,17 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
           <div className="replay-legend-bar">{SPEED_RAMP.map(([t, c]) => <i key={t} style={{ background: c }} />)}</div>
           <div className="replay-legend-labels"><span>{Math.round(speedFromMps(lapPath.minSpeed, units))}</span><span>{Math.round(speedFromMps(lapPath.maxSpeed, units))} {speedUnitLabel(units)}</span></div>
         </div>
-        {ghostPath && <label className="replay-check"><input type="checkbox" checked={lines.ghost} onChange={e => setLines(l => ({ ...l, ghost: e.target.checked }))} /><i className="replay-swatch ghost" />Ghost line · {ghostLabel}</label>}
+        {ghostPath && <label className="replay-check"><input type="checkbox" checked={lines.ghost} onChange={e => setLines(l => ({ ...l, ghost: e.target.checked }))} /><i className={`replay-swatch ${rivalRef ? 'rival' : 'ghost'}`} />{rivalRef ? `${ghostLabel}’s line` : `Ghost line · ${ghostLabel}`}</label>}
+        {rivalRef && ghostPath && <label className="replay-check" title="A tag over their car and a faint tint of their colour, to tell it from yours"><input type="checkbox" checked={marked} onChange={e => setMarked(e.target.checked)} />Tag {ghostLabel}’s car</label>}
         <label className="replay-check" title="GPS without corrections is a metre or more off, a little differently each session: shift each lap as a whole so it sits on the road. Off: the GPS as recorded.">
           <input type="checkbox" checked={align} onChange={e => { setAlign(e.target.checked); store(ALIGN_KEY, e.target.checked ? 'on' : 'off') }} />Align to track</label>
-        {alignment?.lap && <p className="muted small">{alignmentNote(alignment, ghostLabel)}</p>}
+        {alignment?.lap && <p className="muted small">{alignmentNote(alignment, ghostLabel, !!rivalRef)}</p>}
         <CoachingToggles coaching={coaching} />
-        <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets</p>
+        <p className="muted small replay-keys">Space plays and pauses · ← → step a second (⇧ five) · C cycles chase, driver and Garmin cameras{ghostPath ? ' and both cars' : ''} · drag the view to look around (chasing: orbit; wheel or pinch zooms) · double-click resets{ghostPath ? ` · [ ] move ${rivalRef ? `${ghostLabel}’s car` : 'the ghost'} alone a tenth (⇧ a second)` : ''}</p>
         {world?.edges && <p className="muted small">Road edges: {world.edges.applied ? `from the aerial photo (${Math.round(world.edges.found * 100)}% of the lap; the tarmac centre sits ${Math.abs(world.edges.medianShiftM).toFixed(1)} m ${world.edges.medianShiftM >= 0 ? 'left' : 'right'} of Garmin’s line, typically)` : `±${((scene?.track.widthM ?? 10) / 2).toFixed(1)} m around Garmin’s line`}{world.trees ? ` · ${world.trees.toLocaleString()} trees from the photo` : ''}</p>}
       </section>}
-      {scene && <CarPanel scene={scene} preset={preset} model={model} status={modelStatus} />}
+      {scene && <CarPanel scene={scene} preset={preset} model={model} status={modelStatus}
+        rival={rivalRef && rivalVehicle ? { driver: ghostLabel!, vehicle: rivalVehicle, preset: rivalPreset, model: rivalModel, status: rivalStatus } : null} />}
       {scene && look && engine && <ConditionsPanel engine={engine} scene={scene} look={look} units={units}
         weather={weather} onWeather={value => { setWeather(value); store(WEATHER_KEY, value) }}
         graphics={graphics} onGraphics={value => { setGraphics(value); store(GRAPHICS_KEY, value) }} />}
@@ -409,10 +545,16 @@ const WEATHER_KEY = 'catalyst:replay-weather'
 const ALIGN_KEY = 'catalyst:replay-align'
 const ALIGN_CHOICES = ['on', 'off'] as const
 const GRAPHICS_KEY = 'catalyst:replay-graphics'
-const GRAPHICS_CHOICES = ['auto', 'high', 'medium'] as const
+const GRAPHICS_CHOICES = ['auto', 'high', 'medium', 'low'] as const
 type GraphicsChoice = typeof GRAPHICS_CHOICES[number]
 const WEATHER_NAMES: Record<WeatherChoice, string> = { auto: 'Auto', sunny: 'Sunny', overcast: 'Overcast', wet: 'Wet' }
-const GRAPHICS_NAMES: Record<GraphicsChoice, string> = { auto: 'Auto', high: 'High', medium: 'Medium' }
+const GRAPHICS_NAMES: Record<GraphicsChoice, string> = { auto: 'Auto', high: 'High', medium: 'Medium', low: 'Low' }
+const GRAPHICS_TITLES: Record<GraphicsChoice, string> = {
+  auto: replayProfile().constrained ? `Low on this device (${replayProfile().reason}): it has the least memory to spare` : 'High, stepping down to Medium if the frame rate drops',
+  high: 'Grass out to 60 m, sharp shadows near and far',
+  medium: 'Less grass, softer shadows, for slower graphics',
+  low: 'No grass, smaller shadows, the Garmin lens without smoothing: for a small memory budget (iPhone and iPad)',
+}
 
 function readStored<T extends string>(key: string, choices: readonly T[], fallback: T): T {
   try { const v = localStorage.getItem(key) as T | null; return v && choices.includes(v) ? v : fallback } catch { return fallback }
@@ -422,12 +564,12 @@ function store(key: string, value: string) {
 }
 
 // The fit in a line: "GPS shifted 3.5 m onto the road: off it for 436 m of the lap as recorded, 8 m now."
-function alignmentNote({ on, lap, ghost }: Alignment, ghostLabel: string | null): string {
+function alignmentNote({ on, lap, ghost }: Alignment, ghostLabel: string | null, rival = false): string {
   if (!lap) return ''
   const shift = (fit: NonNullable<Alignment['lap']>) => `${Math.hypot(fit.dx, fit.dz).toFixed(1)} m`
   const offRoad = (metres: number) => (metres < 1 ? 'none' : `${Math.round(metres)} m`)
   if (!lap.applied) return 'This lap does not follow the road closely enough to line up; shown as recorded.'
-  const ghostPart = ghost?.applied ? ` Ghost${ghostLabel ? ` (${ghostLabel})` : ''}: ${shift(ghost)}.` : ''
+  const ghostPart = ghost?.applied ? ` ${rival ? `${ghostLabel}’s lap` : `Ghost${ghostLabel ? ` (${ghostLabel})` : ''}`}: ${shift(ghost)}.` : ''
   if (!on) return `GPS as recorded: ${offRoad(lap.before.metres)} of the lap off the road (aligned, it moves ${shift(lap)}).`
   return `GPS shifted ${shift(lap)} onto the road: off it for ${offRoad(lap.before.metres)} of the lap as recorded, ${offRoad(lap.after.metres)} now.${ghostPart}`
 }
@@ -449,7 +591,7 @@ function ConditionsPanel({ engine, scene, look, units, weather, onWeather, graph
   ].filter(Boolean).join(' · ')
   const sun = `Sun ${Math.round(look.sun.elevationDeg)}° up in the ${compass(look.sun.azimuthDeg)}${c?.localStart ? ` at ${c.localStart.slice(11, 16)}` : ''}`
   // The level Auto picked: re-rendered only when it changes, not every frame.
-  const [level, setLevel] = useState<'high' | 'medium' | null>(null)
+  const [level, setLevel] = useState<FrameState['quality'] | null>(null)
   useEffect(() => engine.subscribe(state => setLevel(state.quality)), [engine])
   return <section className="replay-panel replay-conditions">
     <span className="review-eyebrow">Weather and light</span>
@@ -462,7 +604,7 @@ function ConditionsPanel({ engine, scene, look, units, weather, onWeather, graph
     <div className="replay-view-switch" role="group" aria-label="Graphics">
       <span>Graphics</span>
       <div>{GRAPHICS_CHOICES.map(v => <button key={v} type="button" className={graphics === v ? 'on' : ''} aria-pressed={graphics === v} onClick={() => onGraphics(v)}
-        title={v === 'auto' ? 'High, stepping down to Medium if the frame rate drops' : v === 'high' ? 'Grass out to 60 m, sharp shadows near and far' : 'Less grass, softer shadows, for slower graphics'}>{GRAPHICS_NAMES[v]}</button>)}</div>
+        title={GRAPHICS_TITLES[v]}>{GRAPHICS_NAMES[v]}</button>)}</div>
     </div>
     {graphics === 'auto' && level && <p className="muted small">Now {GRAPHICS_NAMES[level].toLowerCase()}.</p>}
   </section>
@@ -567,16 +709,21 @@ function useFullscreen(target: { current: HTMLElement | null }):{ active: boolea
 // any movement. The instruments above it keep clear of its height.
 const TRANSPORT_IDLE_MS = 2800
 
-function Transport({ engine, lap, scene, view, onView, fullscreen, onFullscreen, stage }: {
+// The compared car (a ghost or another driver's) on the transport: its short name, full label and colour.
+interface ComparedCar { name: string; label: string; color: string }
+
+function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFullscreen, stage, compared }: {
   engine: ReplayEngine; lap: LapPath; scene: ReplayScene
-  view: ReplayView | null; onView: (view: ReplayView) => void
+  view: ReplayView | null; views: readonly CameraView[]; onView: (view: ReplayView) => void
   fullscreen: boolean; onFullscreen: () => void; stage: { current: HTMLElement | null }
+  compared: ComparedCar | null
 }) {
   const state = useFrame(engine)
   const duration = lap.durationMs
   const markers = useMemo(() => scene.track.corners.map(c => ({ turn: c.turn, name: c.name, at: lap.timeAtDist(c.apexM) })).filter(m => m.at != null), [scene, lap])
   const time = state?.timeMs ?? 0
   const bar = useRef<HTMLDivElement>(null)
+  const scrub = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = bar.current, host = stage.current
     if (!el || !host) return
@@ -609,23 +756,28 @@ function Transport({ engine, lap, scene, view, onView, fullscreen, onFullscreen,
     host.dataset.transport = shown ? 'shown' : 'asleep'
     return () => { delete host.dataset.transport }
   }, [stage, shown])
-  return <div ref={bar} className={`replay-transport${shown ? '' : ' asleep'}`}
+  return <div ref={bar} className={`replay-transport${shown ? '' : ' asleep'}${compared && state?.compared ? ' compared' : ''}`}
     onPointerEnter={() => { hovering.current = true }} onPointerLeave={() => { hovering.current = false }}>
     <button type="button" className="replay-play" onClick={() => engine.toggle()} aria-label={state?.playing ? 'Pause' : 'Play'} title={state?.playing ? 'Pause (Space)' : 'Play (Space)'}>
       {state?.playing
         ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" /></svg>
         : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>}
     </button>
-    <div className="replay-scrub">
+    <div className={`replay-scrub${compared && state?.compared ? ' has-ghost' : ''}`} ref={scrub}
+      style={compared ? { ['--compared' as string]: compared.color } : undefined}>
+      {compared && state?.compared && <ComparedHandle engine={engine} car={compared} state={state} duration={duration} scrub={scrub} />}
       <input type="range" min={0} max={Math.round(duration)} step={10} value={Math.round(time)} aria-label="Lap time"
+        aria-valuetext={`${clock(time, 1)}${compared ? `, ${compared.label} with it` : ''}`}
         onChange={e => engine.seek(Number(e.target.value))} />
       <div className="replay-scrub-fill" style={{ width: `${duration ? time / duration * 100 : 0}%` }} />
       {markers.map(m => <span key={m.turn} className="replay-scrub-mark" style={{ left: `${m.at! / duration * 100}%` }} title={`${m.turn}${m.name && m.name !== m.turn ? ` · ${m.name}` : ''}`}
         onClick={() => engine.seek(Math.max(0, m.at! - 3000))}><i />{m.turn.replace(/^T/, '')}</span>)}
     </div>
     <span className="replay-time">{clock(time, 1)}<small> / {clock(duration, 1)}</small></span>
+    {compared && state?.compared && <ComparedClock engine={engine} car={compared} state={state} />}
     <div className="replay-rates replay-cameras" role="group" aria-label="Camera" title="Camera (C cycles)">
-      {VIEWS.map(v => <button key={v} type="button" className={view === v ? 'on' : ''} aria-pressed={view === v} onClick={() => onView(v)}>{VIEW_NAMES[v]}</button>)}
+      {views.map(v => <button key={v} type="button" className={view === v ? 'on' : ''} aria-pressed={view === v} onClick={() => onView(v)}
+        title={v === 'both' ? 'Keeps your car and the other in view' : undefined}>{VIEW_NAMES[v]}</button>)}
     </div>
     <button type="button" className="replay-fullscreen" onClick={onFullscreen} aria-pressed={fullscreen}
       aria-label={fullscreen ? 'Exit full screen' : 'Full screen'} title={fullscreen ? 'Exit full screen (F or Esc)' : 'Full screen (F)'}>
@@ -636,12 +788,86 @@ function Transport({ engine, lap, scene, view, onView, fullscreen, onFullscreen,
   </div>
 }
 
+/**
+ * The compared car's own handle on the scrub bar, above yours: drag it (or
+ * use the arrow keys on it) to move only that car along its lap, so the two
+ * meet at a corner; your handle moves both and keeps the gap between them.
+ */
+function ComparedHandle({ engine, car, state, duration, scrub }: {
+  engine: ReplayEngine; car: ComparedCar; state: FrameState; duration: number; scrub: { current: HTMLElement | null }
+}) {
+  const c = state.compared!
+  const grab = useRef(0)
+  const own = Math.min(Math.max(0, c.timeMs), c.durationMs)
+  const at = scrubFraction(own, duration) * 100, mine = scrubFraction(state.timeMs, duration) * 100
+  const off = c.timeMs > c.durationMs || c.timeMs < 0
+  const move = (clientX: number) => {
+    const r = scrub.current?.getBoundingClientRect()
+    if (!r || !r.width) return
+    engine.seekGhost(Math.min(1, Math.max(0, (clientX - grab.current - r.left) / r.width)) * duration)
+  }
+  const step = (ms: number) => engine.setGhostOffset(engine.ghostOffset + ms)
+  return <>
+    <div className="replay-scrub-offset" aria-hidden="true" style={{ left: `${Math.min(at, mine)}%`, width: `${Math.abs(at - mine)}%` }} />
+    <div className={`replay-scrub-ghost${off ? ' off' : ''}`} role="slider" tabIndex={0} style={{ left: `${at}%` }}
+      aria-label={`${car.label}’s place on its own lap`} aria-valuemin={0} aria-valuemax={Math.round(c.durationMs)} aria-valuenow={Math.round(own)}
+      aria-valuetext={`${clock(own, 1)}, ${formatOffset(c.offsetMs)} from your clock`}
+      title={`${car.label}: drag to move only this car along its lap (← → a tenth, ⇧ a second)`}
+      onPointerDown={e => {
+        if (e.pointerType === 'mouse' && e.button !== 0) return
+        e.preventDefault()
+        const r = e.currentTarget.getBoundingClientRect()
+        grab.current = e.clientX - (r.left + r.width / 2)
+        try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* gone */ }
+      }}
+      onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) move(e.clientX) }}
+      onPointerUp={e => { try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* gone */ } }}
+      onKeyDown={e => {
+        const keys: Record<string, () => void> = {
+          ArrowLeft: () => step(e.shiftKey ? -1000 : -100), ArrowDown: () => step(e.shiftKey ? -1000 : -100),
+          ArrowRight: () => step(e.shiftKey ? 1000 : 100), ArrowUp: () => step(e.shiftKey ? 1000 : 100),
+          PageDown: () => step(-1000), PageUp: () => step(1000),
+          Home: () => engine.seekGhost(0), End: () => engine.seekGhost(c.durationMs),
+        }
+        if (!keys[e.key]) return
+        e.preventDefault(); e.stopPropagation()
+        keys[e.key]()
+      }}>
+      <i /><b />
+    </div>
+  </>
+}
+
+/** The compared car's clock against yours, and the buttons that set it: Side by side and Sync. */
+function ComparedClock({ engine, car, state }: { engine: ReplayEngine; car: ComparedCar; state: FrameState }) {
+  const c = state.compared!
+  const [missed, setMissed] = useState(false)
+  useEffect(() => { if (missed) { const t = window.setTimeout(() => setMissed(false), 2500); return () => window.clearTimeout(t) } }, [missed])
+  const ahead = c.aheadM == null ? null : Math.abs(c.aheadM) < 0.5 ? 'level' : `${Math.abs(c.aheadM) < 10 ? Math.abs(c.aheadM).toFixed(1) : Math.round(Math.abs(c.aheadM))} m ${c.aheadM > 0 ? 'ahead' : 'behind'}`
+  const synced = Math.abs(c.offsetMs) < 5
+  return <div className="replay-sync" role="group" aria-label={`${car.label}’s clock`}>
+    <span className="replay-offset" title={`${car.label}’s lap time minus yours: ${formatOffset(c.offsetMs)}${ahead ? ` · on track: ${ahead}` : ''}`} aria-live="off">
+      <i style={{ background: car.color }} aria-hidden="true" />{car.name} <b>{formatOffset(c.offsetMs)}</b>{ahead && <small>{missed ? 'not on its lap here' : ahead}</small>}
+    </span>
+    <div className="replay-rates">
+      <button type="button" onClick={() => setMissed(!engine.ghostSideBySide())} title={`Put ${car.label} level with your car here (the same spot on the track)`}>Side by side</button>
+      <button type="button" className={synced ? '' : 'on'} disabled={synced} onClick={() => engine.syncGhost()} title="Back on the normal timelines: both laps from their own starts">Sync</button>
+    </div>
+  </div>
+}
+
 // Which model the replay draws for this car: chosen and fitted in the Garage.
-function CarPanel({ scene, preset, model, status }: { scene: ReplayScene; preset: ReturnType<typeof presetFor>; model: CarModel | null; status: string }) {
+// Another driver's car: the shared library's model for their vehicle (the Garage assigns one per car), with its preset.
+interface RivalCarInfo { driver: string; vehicle: ReplayVehicle; preset: CarPreset; model: CarModel | null; status: string }
+
+function CarPanel({ scene, preset, model, status, rival }: { scene: ReplayScene; preset: CarPreset; model: CarModel | null; status: string; rival: RivalCarInfo | null }) {
   const garage = scene.vehicle.guid ? `/garage/${segment(scene.vehicle.guid)}` : routeUrl('/garage', { vehicle: scene.vehicle.key })
   return <section className="replay-panel replay-car">
     <span className="review-eyebrow">Car</span>
     <p className="muted small">3D model: {model ? model.name : `placeholder shape (${preset.name} size)`} · <NavLink to={garage}>Change in Garage</NavLink></p>
     {status && <p className="small" role="status">{status}</p>}
+    {rival && <p className="muted small"><i className="replay-swatch rival" /> {rival.driver}’s {[rival.vehicle.make, rival.vehicle.model].filter(Boolean).map(v => titleCase(v)).join(' ') || 'car'}: {rival.model ? rival.model.name : `placeholder shape (${rival.preset.name} size)`}
+      {rival.vehicle.key && <> · <NavLink to={routeUrl('/garage', { vehicle: rival.vehicle.key })}>Model in Garage</NavLink></>}</p>}
+    {rival?.status && <p className="small" role="status">{rival.status}</p>}
   </section>
 }

@@ -6,7 +6,7 @@ import type { ComparisonRequest, DriverAccount } from './comparison.js'
 import type { ConditionOverride, ProgressFilters, ProgressResponse, ReviewCoachResult, ReviewStatus, SessionReviewResponse } from './review.js'
 import type { SessionCarData, SessionVideo, VideoImportResult } from './pdr.js'
 import type { CatalystPlan, CatalystPlanEntry } from './catalystVideo.js'
-import type { CarModel, GeoBox, ReplayLap, ReplayLapRef, ReplayScene, TerrainInfo, TrackModel } from './replay.js'
+import type { CarModel, GeoBox, ReplayDriverLap, ReplayDriverLapRef, ReplayLap, ReplayLapInfo, ReplayLapRef, ReplayScene, TerrainInfo, TrackModel } from './replay.js'
 import type { ReplayCoaching } from './replayCoaching.js'
 
 export interface VideoImportOptions {
@@ -532,6 +532,10 @@ export interface CatalystBridge {
   // on the scene's mean line), terrain and the shared car-model library.
   getReplayScene(sessionGuid: string): Promise<ReplayScene>
   getReplayLap(sceneSessionGuid: string, ref: ReplayLapRef): Promise<ReplayLap>
+  // Another driver's lap to race against (server drivers, read-only): the
+  // valid laps of one of their sessions, and one lap on the scene's mean line.
+  listDriverLaps(driver: string, sessionGuid: string): Promise<ReplayLapInfo[]>
+  getReplayDriverLap(sceneSessionGuid: string, ref: ReplayDriverLapRef, units?: UnitSystem): Promise<ReplayDriverLap>
   // The session's coaching, placed by distance along its mean line (replayCoaching.ts).
   getReplayCoaching(sessionGuid: string): Promise<ReplayCoaching>
   // Resolves once the terrain is built (the first call downloads from USGS

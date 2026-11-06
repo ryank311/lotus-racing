@@ -17,6 +17,10 @@ import { accountKey, userDirectory, USER_RE, workspaceDbPath, workspaceVideoFile
 import { VIDEO_ID_RE } from '../shared/pdr.js'
 import { MAX_COMPARE_DRIVERS, MAX_COMPARE_SESSIONS, type DriverAccount } from '../shared/comparison.js'
 import type { DbSessionRow } from '../shared/types.js'
+import { replayLapRequest, type ReplayLapInfo } from '../shared/replay.js'
+import type { ReplayLapBundle } from '../garmin/replayDriver.js'
+
+const GUID_RE = /^[a-zA-Z0-9_-]{1,128}$/
 
 export interface DriverBackend {
   call(channel: string, args: unknown[]): Promise<unknown>
@@ -38,6 +42,13 @@ export interface DriverDirectory {
    * and reach you only in that driver's comparison export.
    */
   videoFile(driver: unknown, videoId: unknown): string | null
+  /**
+   * The 3D replay's driver comparison: the valid laps of one of a driver's
+   * sessions, and one of those laps exported by their backend (read-only,
+   * the same laps Analysis's comparison may export), with their name added.
+   */
+  replayLaps(driver: unknown, sessionGuid: unknown, self: string | null): Promise<ReplayLapInfo[]>
+  replayLap(self: string | null, request: unknown): Promise<ReplayLapBundle>
 }
 
 export function createDriverDirectory(dataDir: string, backendFor: (username: string) => DriverBackend, mediaDir: string | null = null): DriverDirectory {
@@ -55,6 +66,15 @@ export function createDriverDirectory(dataDir: string, backendFor: (username: st
     return accountName(userDirectory(dataDir, name))
   }
   const hasTelemetry = (name: string) => fs.existsSync(workspaceDbPath(userDirectory(dataDir, name)))
+  // Another driver you may compare against: known, not you, with telemetry.
+  // Never starts a backend (or creates a workspace) for anyone else.
+  const comparable = (driver: unknown, self: string | null): string => {
+    const name = knownDriver(driver)
+    if (!name) throw Object.assign(new Error(`No driver named "${String(driver ?? '').slice(0, 40)}" on this server.`), { status: 404 })
+    if (isSelf(name, self)) throw Object.assign(new Error('Choose another driver; your own laps are in the ghost list already.'), { status: 400 })
+    if (!hasTelemetry(name)) throw Object.assign(new Error(`${name} has not synced any telemetry yet.`), { status: 404 })
+    return name
+  }
 
   return {
     videoFile(driver, videoId) {
@@ -80,6 +100,28 @@ export function createDriverDirectory(dataDir: string, backendFor: (username: st
       // A driver with no database has nothing to compare; avoid starting
       // their backend just to say so.
       return hasTelemetry(name) ? await backendFor(name).call('db:listSessions', [null]) as DbSessionRow[] : []
+    },
+
+    async replayLaps(driver, sessionGuid, self) {
+      const name = comparable(driver, self)
+      if (typeof sessionGuid !== 'string' || !GUID_RE.test(sessionGuid)) throw Object.assign(new Error('Invalid session ID'), { status: 400 })
+      try {
+        return await backendFor(name).call('replay:exportLaps', [sessionGuid]) as ReplayLapInfo[]
+      } catch (error) {
+        throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+
+    async replayLap(self, request) {
+      const r = request as { driver?: unknown } | null
+      const name = comparable(r?.driver, self)
+      const lap = replayLapRequest(request)
+      try {
+        const exported = await backendFor(name).call('replay:exportLap', [lap]) as object
+        return { ...exported, driver: name } as ReplayLapBundle
+      } catch (error) {
+        throw new Error(`${name}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     },
 
     async resolve(self, lapFilter, requests) {

@@ -110,23 +110,34 @@ function SessionBrowser({ id, sessions, selected, onClose, onSelect, restoreFocu
           {sessions.length > 0 && <button type="button" onClick={reset}>Clear filters</button>}</div>}
         {groups.map(group => <section className="session-browser-group" key={group.key} aria-label={`${group.track} · ${group.layout}`}>
           <header><div><span>{group.track}</span><h3>{group.layout}</h3></div><span>{order === 'fastest' ? 'Fastest first' : 'Newest first'} · {group.rows.length}</span></header>
-          <ul>{group.rows.map(row => {
-            const benchmark = benchmarks.get(row.session_guid)!, chosen = row.session_guid === selected
-            return <li key={row.session_guid}><button type="button" className={`session-browser-row${chosen ? ' is-current' : ''}`} data-session={row.session_guid}
-              aria-current={chosen ? 'true' : undefined} onClick={() => onSelect(row.session_guid)}>
-              <span className="session-browser-marker" aria-hidden="true">{chosen ? '✓' : ''}</span>
-              <span className="session-browser-description"><span className="session-browser-date">{startLabel(row.session_start)}
-                {chosen ? <em className="session-browser-selected">Selected</em> : row.session_guid === newest && <em>Latest</em>}</span>
-                <span className="session-browser-meta">{sessionCar(row)}{multipleDrivers && row.account ? ` · ${row.account}` : ''} · {row.lap_count || 0} {(row.lap_count || 0) === 1 ? 'lap' : 'laps'}{row.video_count ? ' · Video' : ''}{!row.details_loaded ? ' · Download on open' : ''}</span>
-              </span>
-              <span className="session-browser-time"><strong>{validLapTime(row.best_lap_ms) ? msToLap(row.best_lap_ms) : '—'}</strong>
-                {benchmark.isPb ? <span className="session-browser-pb">★ Car PB</span> : benchmark.gapMs != null ? <small>+{(benchmark.gapMs / 1000).toFixed(3)} s to PB</small> : <small>{validLapTime(row.best_lap_ms) ? 'Best lap' : 'No lap time'}</small>}
-              </span>
-            </button></li>
-          })}</ul>
+          <ul>{group.rows.map(row => <li key={row.session_guid}><SessionRow row={row} benchmark={benchmarks.get(row.session_guid)!}
+            chosen={row.session_guid === selected} latest={row.session_guid === newest} account={multipleDrivers}
+            note={!row.details_loaded ? 'Download on open' : null} onSelect={() => onSelect(row.session_guid)} /></li>)}</ul>
         </section>)}
       </div>
       <footer id={`${id}-note`}><span>Best session laps · PBs and gaps use the same driver, car and layout.</span><span>↑ ↓ to move · Enter to open</span></footer>
     </div>
   </dialog>
+}
+
+/**
+ * One session in the library's look: its date, car, laps and video, and its
+ * best lap against the car's PB. Also the replay's other-driver picker
+ * (compact). `disabled` says why it cannot be chosen.
+ */
+export function SessionRow({ row, benchmark, chosen, latest = false, account = false, note = null, disabled = null, compact = false, onSelect }: {
+  row: DbSessionRow; benchmark: { gapMs: number | null; isPb: boolean } | undefined; chosen: boolean
+  latest?: boolean; account?: boolean; note?: string | null; disabled?: string | null; compact?: boolean; onSelect: () => void
+}) {
+  return <button type="button" className={`session-browser-row${chosen ? ' is-current' : ''}${compact ? ' compact' : ''}`} data-session={row.session_guid}
+    aria-current={chosen ? 'true' : undefined} disabled={!!disabled} onClick={onSelect}>
+    <span className="session-browser-marker" aria-hidden="true">{chosen ? '✓' : ''}</span>
+    <span className="session-browser-description"><span className="session-browser-date">{startLabel(row.session_start)}
+      {chosen ? <em className="session-browser-selected">Selected</em> : latest && <em>Latest</em>}</span>
+      <span className="session-browser-meta">{sessionCar(row)}{account && row.account ? ` · ${row.account}` : ''} · {row.lap_count || 0} {(row.lap_count || 0) === 1 ? 'lap' : 'laps'}{row.video_count ? ' · Video' : ''}{note ? ` · ${note}` : ''}{disabled ? <em className="session-browser-blocked"> · {disabled}</em> : null}</span>
+    </span>
+    <span className="session-browser-time"><strong>{validLapTime(row.best_lap_ms) ? msToLap(row.best_lap_ms) : '—'}</strong>
+      {benchmark?.isPb ? <span className="session-browser-pb">★ Car PB</span> : benchmark?.gapMs != null ? <small>+{(benchmark.gapMs / 1000).toFixed(3)} s to PB</small> : <small>{validLapTime(row.best_lap_ms) ? 'Best lap' : 'No lap time'}</small>}
+    </span>
+  </button>
 }

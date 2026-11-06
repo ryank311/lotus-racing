@@ -16,6 +16,7 @@ import type { ReplayWorld } from './engine'
 import { buildFarField, loadAcTrack } from './acTrack'
 import { patchWorldMaterial, type SurfaceKind } from './surfaces'
 import { TrackEdges } from './align'
+import { releaseWhenUploaded, replayProfile } from './budget'
 
 export interface TerrainData {
   info: TerrainInfo
@@ -118,6 +119,8 @@ export async function buildWorld(track: ReplayTrack, terrain: TerrainData | null
   const shadowBounds = new THREE.Box3()
   for (let s = 0; s < road.n; s += 8) shadowBounds.expandByPoint(new THREE.Vector3(road.cx[s], road.heights[s * LAT + (LAT >> 1)] || 0, road.cz[s]))
   shadowBounds.expandByVector(new THREE.Vector3(250, 40, 250))
+  // A constrained device keeps no CPU copy of what is on the GPU (budget.ts).
+  if (replayProfile().lean) releaseWhenUploaded(group, true)
   return {
     group, road, frame, edges, note, trees, shadowBounds,
     // The laps line up with the road as drawn: its edges in the photo, else Garmin's line ± half the width.
@@ -177,7 +180,8 @@ export async function buildModelWorld(track: ReplayTrack, terrain: TerrainData |
       let texture: THREE.Texture | null = null, pixels: ImageData | null = null
       if (terrain.image) {
         try {
-          const imagery = await loadImagery(terrain.image, maxAnisotropy)
+          // Only its colour is needed here: a constrained device reads a small copy.
+          const imagery = await loadImagery(terrain.image, maxAnisotropy, replayProfile().lean ? 'preview' : 'full')
           texture = imagery.texture; pixels = imagery.pixels
           textures.push(texture)
         } catch (error) { console.warn('[replay] aerial photo unusable', error) }
@@ -192,6 +196,9 @@ export async function buildModelWorld(track: ReplayTrack, terrain: TerrainData |
     patchWorldMaterial(ground.material as THREE.Material, 'ground')
     group.add(ground)
     console.info(`[replay] track model ${source.model.id}: ${(model.triangles / 1e6).toFixed(2)} M triangles, ${model.surface.triangleCount.toLocaleString()} on the surface index`)
+    // A constrained device keeps no CPU copy of what is on the GPU (budget.ts); the
+    // surface index above has its own.
+    if (replayProfile().lean) releaseWhenUploaded(group, true)
   } catch (error) {
     model.dispose()
     for (const texture of textures) texture.dispose()

@@ -8,8 +8,9 @@ import type { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { CarModelFit, CarPreset } from '../../shared/replay'
 import { LapPath, type LapPose } from './lapPath'
 import type { RoadModel } from './road'
-import { applyFit, blobShadow, buildPlaceholder, disposeGeometry, disposeObject, fittedModel, ghostCopy, ghostMaterial } from './car'
-import { CarMotion } from './motion'
+import { applyFit, blobShadow, buildPlaceholder, disposeGeometry, disposeObject, fittedModel, ghostCopy, ghostMaterial, nameTag, tintCar } from './car'
+import { CarMotion, type GroundAt } from './motion'
+import { clampOffset, framingDistance, frameBoth, offsetFor, sideBySideOffset } from './compare'
 import { rigModelWheels } from './wheels'
 import { REPLAY_DEBUG } from './debug'
 import { buildLapLine } from './roadMesh'
@@ -20,8 +21,36 @@ import { ensureDetailTextures } from './surfaces'
 import { GrassField, GRASS_QUALITY } from './grass'
 import type { Look as WeatherLook } from './weather'
 import { fitToRoad, type RoadFit, type TrackEdges } from './align'
+import { anyReleased, releaseUploaded, releaseWhenUploaded, replayProfile } from './budget'
 
-export type ReplayView = 'driver' | 'garmin' | 'chase' | 'orbit'
+/** 'both' keeps your car and the compared car in frame (chase when there is none). */
+export type ReplayView = 'driver' | 'garmin' | 'chase' | 'both' | 'orbit'
+
+/**
+ * Another driver's car, raced in the ghost's place: solid, in its own model,
+ * fit and dynamics (its preset), tinted and tagged in its colour.
+ */
+export interface RivalCar {
+  preset: CarPreset
+  /** A fitted .glb's root (parsed for this car alone), or null for the placeholder. */
+  model: THREE.Object3D | null
+  fit: CarModelFit | null
+  color: THREE.ColorRepresentation
+  /** On its tag, e.g. the driver's name. */
+  name: string
+}
+
+/** The compared car (the ghost or another driver's), each frame. */
+export interface ComparedState {
+  /** Its lap time: yours plus the offset (may run below 0 or past its lap: it waits at either end). */
+  timeMs: number
+  durationMs: number
+  offsetMs: number
+  /** Where it is, when it is on track. */
+  pose: LapPose | null
+  /** Its metres along the track ahead of yours (negative: behind), when on track. */
+  aheadM: number | null
+}
 
 export interface ReplayWorld {
   group: THREE.Group
@@ -53,14 +82,16 @@ export interface FrameState {
   playing: boolean
   rate: number
   pose: LapPose
-  /** Main lap time minus the ghost's at the same distance (+ = behind), ms. */
+  /** Main lap time minus the ghost's at the same distance (+ = behind), ms; the offset does not change it. */
   gapMs: number | null
+  /** The compared car, or null without one. */
+  compared: ComparedState | null
   view: ReplayView
   fps: number
   /** The camera is dragged away from its default view (show a reset). */
   lookActive: boolean
   /** The graphics level drawn now (Auto picks one). */
-  quality: 'high' | 'medium'
+  quality: GraphicsLevel
 }
 
 const GHOST_COLOR = 0x7dd3fc
@@ -74,8 +105,10 @@ const DRIVER_LOOK_DOWN_DEG = 4
 const GARMIN_BARREL = 0.65
 const Y_AXIS = new THREE.Vector3(0, 1, 0)
 const DEG = Math.PI / 180
+/** Graphics levels; Low is a constrained device's (budget.ts): no grass, small shadows, a plain lens. */
+export type GraphicsLevel = 'high' | 'medium' | 'low'
 // The Garmin lens's drawn size (× the screen) and multisampling, by graphics level.
-const LENS_QUALITY: Record<'high' | 'medium', [number, number]> = { high: [1.1, 4], medium: [1, 2] }
+const LENS_QUALITY: Record<GraphicsLevel, [number, number]> = { high: [1.1, 4], medium: [1, 2], low: [1, 0] }
 // Auto graphics step down to medium only at or below this pixel ratio.
 const AUTO_QUALITY_RATIO = 1.25
 // The inside cameras ride a steady mount, not the car's every bump: its
@@ -87,14 +120,39 @@ const MOUNT_SPRING_S = 0.12
 // Looking around by dragging: from the seat the head turns (relative to the
 // car, so it stays turned through corners); chasing, the camera orbits the
 // car and the wheel or a pinch sets its distance. Each view keeps its own.
-type LookView = 'chase' | 'driver' | 'garmin'
+type LookView = 'chase' | 'driver' | 'garmin' | 'both'
 interface Look { yaw: number; pitch: number; dist: number }
 const CHASE_DIST = Math.hypot(CHASE_BACK, CHASE_UP), CHASE_PITCH = Math.atan2(CHASE_UP, CHASE_BACK)
 const CHASE_MIN_DIST = 3, CHASE_MAX_DIST = 40
 const HEAD_YAW = 160 * DEG, HEAD_PITCH = 70 * DEG, ORBIT_PITCH: [number, number] = [5 * DEG, 80 * DEG]
+// Both cars: the drag turns about them and tilts within this of the framing's pitch; the wheel scales the distance.
+const BOTH_TILT: [number, number] = [-0.25, 0.6], BOTH_SCALE: [number, number] = [0.4, 3]
 // A press that moves less than this is a click, not a drag.
 const DRAG_SLOP_PX = 5
-const lookDefault = (view: LookView): Look => (view === 'chase' ? { yaw: 0, pitch: CHASE_PITCH, dist: CHASE_DIST } : { yaw: 0, pitch: 0, dist: 0 })
+const lookDefault = (view: LookView): Look => (view === 'chase' ? { yaw: 0, pitch: CHASE_PITCH, dist: CHASE_DIST } : view === 'both' ? { yaw: 0, pitch: 0, dist: 1 } : { yaw: 0, pitch: 0, dist: 0 })
+// Another driver's car: its colour over its paint, this strong; this opaque while it overlaps yours.
+const RIVAL_TINT = 0.07
+const RIVAL_OVERLAP_OPACITY = 0.4
+
+// A car's solid materials, made able to fade (blended, still writing depth,
+// so at opacity 1 they draw as before) without a recompile when they do.
+// Its shadows are marked first: blended parts would otherwise count as glass.
+function seeThrough(root: THREE.Object3D): THREE.Material[] {
+  markCarCasters(root)
+  const out = new Set<THREE.Material>()
+  root.traverse(object => {
+    const mesh = object as THREE.Mesh
+    if (!mesh.isMesh) return
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (m.transparent || out.has(m)) continue
+      m.transparent = true
+      m.depthWrite = true
+      m.needsUpdate = true
+      out.add(m)
+    }
+  })
+  return [...out]
+}
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 interface CarRig {
@@ -105,6 +163,18 @@ interface CarRig {
   pose: LapPose
   /** Rolling, steering wheels and the body on its springs; null for a model whose wheels were not found. */
   motion: CarMotion | null
+  /** The car it is: its size and dynamics, and a model's fit (null: the placeholder's, from the preset). */
+  preset: CarPreset | null
+  fit: CarModelFit | null
+  /** Its resting height on the ground at a lap time, for its springs. */
+  ground: GroundAt
+}
+
+// Finds a fitted model's wheels and rigs them (wheels.ts); without them they stay still and the body level.
+function rigWheels(fitted: THREE.Group, fit: CarModelFit, which: string) {
+  const wheels = rigModelWheels(fitted, { pattern: fit.wheelPartsPattern })
+  if (!wheels.ok) console.warn(`[replay] the ${which}'s model's wheels were not found (${wheels.reason}); they stay still and the body level.`)
+  else if (REPLAY_DEBUG) console.info(`[replay] ${which} wheels by ${wheels.method}: ${wheels.wheels.map(w => `${w.corner} r ${w.radiusM.toFixed(3)} m at [${w.centreM.join(', ')}] ← ${w.parts.join(', ')}`).join(' · ')}`)
 }
 
 function supportsReversedDepth(): boolean {
@@ -123,8 +193,8 @@ export class ReplayEngine {
   /** Sky, sun, shadows, haze, environment and exposure for the session's weather. */
   readonly atmosphere: Atmosphere
   private shadowedBodies = new WeakSet<THREE.Object3D>()
-  private quality: 'high' | 'medium' = 'high'
-  private graphics: 'auto' | 'high' | 'medium' = 'auto'
+  private quality: GraphicsLevel = replayProfile().autoGraphics
+  private graphics: 'auto' | GraphicsLevel = 'auto'
   private world: ReplayWorld | null = null
   private lap: LapPath | null = null
   private ghost: LapPath | null = null
@@ -141,7 +211,24 @@ export class ReplayEngine {
   private preset: CarPreset | null = null
   private fit: CarModelFit | null = null
   private model: THREE.Object3D | null = null
+  private paint: THREE.ColorRepresentation = 0xff5e3a
   private ghostShape: THREE.Material = ghostMaterial(GHOST_COLOR)
+  // The ghost's body: a translucent copy of your car (sharing a model's
+  // geometry, or a placeholder of its own geometry), or another driver's
+  // car, solid, owning everything it is made of.
+  private ghostOwns: 'none' | 'geometry' | 'all' = 'none'
+  private rival: { color: THREE.Color; name: string; model: THREE.Object3D | null } | null = null
+  private rivalTag: THREE.Sprite | null = null
+  private rivalMarked = true
+  // The other car's solid materials (dithered alpha, so its opacity changes
+  // without a recompile) and how see-through it is now: it fades while it
+  // overlaps yours, so two lines through the same spot both stay visible.
+  private rivalMaterials: THREE.Material[] = []
+  private rivalFade = 1
+  // The compared car's lap time is yours plus this (compare.ts).
+  private ghostOffsetMs = 0
+  // The "Both cars" camera: its framing's offset from your car, distance and pitch, eased.
+  private both = { ready: false, offset: new THREE.Vector3(), dist: 0, pitch: 0 }
   private orbit: OrbitControls | null = null
   private lens: LensPass | null = null
   private resizeObserver: ResizeObserver
@@ -168,17 +255,24 @@ export class ReplayEngine {
     chase: { target: lookDefault('chase'), now: lookDefault('chase') },
     driver: { target: lookDefault('driver'), now: lookDefault('driver') },
     garmin: { target: lookDefault('garmin'), now: lookDefault('garmin') },
+    both: { target: lookDefault('both'), now: lookDefault('both') },
   }
   private pointers = new Map<number, { x: number; y: number }>()
   private drag: { id: number; x0: number; y0: number; moved: boolean } | null = null
   private pinch: { spread: number; dist: number } | null = null
   private lastTap = { t: 0, x: 0, y: 0 }
   // Resolution adapts to hold the frame rate on slower GPUs.
-  private pixelRatio = Math.min(2, window.devicePixelRatio || 1)
+  private pixelRatio = Math.min(replayProfile().maxPixelRatio, window.devicePixelRatio || 1)
   private perfStart = 0
   private perfFrames = 0
   private raiseAfter = 0
   onContextLost?: (lost: boolean) => void
+  /**
+   * After a lost context: what lost its CPU copy once on the GPU (a
+   * constrained device, budget.ts) cannot be uploaded again, so the engine
+   * stays stopped and the page builds a new one.
+   */
+  needsRebuild = false
   onEnded?: () => void
 
   constructor(private container: HTMLElement) {
@@ -214,7 +308,8 @@ export class ReplayEngine {
       root.add(shadow)
       root.visible = false
       this.scene.add(root)
-      return { root, body: null, shadow, hint: 0, pose: {} as LapPose, motion: null }
+      const rig: CarRig = { root, body: null, shadow, hint: 0, pose: {} as LapPose, motion: null, preset: null, fit: null, ground: (lap, timeMs) => this.restingHeight(rig, lap, timeMs) }
+      return rig
     }
     this.car = rig()
     this.ghostCar = rig()
@@ -239,23 +334,38 @@ export class ReplayEngine {
   private wind: [number, number] = [70, 2]
 
   /**
-   * Grass, shadows and detail: 'high', 'medium' for slower graphics, or
-   * 'auto' (high, stepping down when the frame rate drops at a modest
-   * resolution; see adaptResolution).
+   * Grass, shadows and detail: 'high', 'medium' for slower graphics, 'low'
+   * for a small memory budget, or 'auto' (high, stepping down when the
+   * frame rate drops at a modest resolution, see adaptResolution; low on a
+   * constrained device).
    */
-  setGraphics(choice: 'auto' | 'high' | 'medium') {
+  setGraphics(choice: 'auto' | GraphicsLevel) {
     this.graphics = choice
-    this.setQuality(choice === 'auto' ? 'high' : choice)
+    this.setQuality(choice === 'auto' ? replayProfile().autoGraphics : choice)
     if (choice === 'auto') this.ceiling = 2
   }
 
-  private setQuality(quality: 'high' | 'medium') {
+  private setQuality(quality: GraphicsLevel) {
     this.quality = quality
     this.atmosphere.setQuality(SHADOW_QUALITY[quality])
-    this.grass?.setQuality(GRASS_QUALITY[quality])
+    this.syncGrass()
     this.lens?.setQuality(...LENS_QUALITY[quality])
     this.invalidate()
     this.publish()
+  }
+
+  // Grass on a track model's turf at a level that has it (none on Low).
+  private syncGrass() {
+    const quality = GRASS_QUALITY[this.quality]
+    if (!this.world?.surface || !quality) {
+      this.grass?.dispose()
+      this.grass = null
+      return
+    }
+    if (this.grass) { this.grass.setQuality(quality); return }
+    this.grass = new GrassField(this.renderer, this.world.group, quality)
+    this.grass.setWind(...this.wind)
+    this.scene.add(this.grass.group)
   }
 
   // The environment map is the sky over the ground and woods round the
@@ -284,8 +394,15 @@ export class ReplayEngine {
   }
 
   private contextRestored = () => {
+    // Textures or geometry without their CPU copy cannot be uploaded again (budget.ts).
+    if (anyReleased()) {
+      this.needsRebuild = true
+      this.onContextLost?.(false)
+      return
+    }
     this.lost = false
     this.atmosphere.invalidate()
+    this.grass?.invalidate()
     this.onContextLost?.(false)
     this.invalidate()
     this.frameHandle = requestAnimationFrame(this.frame)
@@ -293,7 +410,7 @@ export class ReplayEngine {
 
   private resize() {
     const width = Math.max(1, this.container.clientWidth), height = Math.max(1, this.container.clientHeight)
-    this.pixelRatio = Math.min(this.pixelRatio, Math.min(2, window.devicePixelRatio || 1))
+    this.pixelRatio = Math.min(this.pixelRatio, Math.min(replayProfile().maxPixelRatio, window.devicePixelRatio || 1))
     this.renderer.setPixelRatio(this.pixelRatio)
     this.renderer.setSize(width, height, false)
     this.camera.aspect = width / height
@@ -340,11 +457,7 @@ export class ReplayEngine {
     this.atmosphere.setWorld(world?.group ?? null, world ? world.shadowBounds ?? new THREE.Box3().setFromObject(world.group) : null)
     this.grass?.dispose()
     this.grass = null
-    if (world?.surface) {
-      this.grass = new GrassField(this.renderer, world.group, GRASS_QUALITY[this.quality])
-      this.grass.setWind(...this.wind)
-      this.scene.add(this.grass.group)
-    }
+    this.syncGrass()
     this.applyAlignment()
     this.rebuildLines()
     this.chaseReady = this.mount.ready = false
@@ -353,6 +466,8 @@ export class ReplayEngine {
   }
 
   setLap(lap: LapPath | null) {
+    // Another lap of yours starts the compared car on its own clock again.
+    if (lap !== this.lap) this.ghostOffsetMs = 0
     this.lap = lap
     this.mount.ready = false
     this.timeMs = Math.min(this.timeMs, lap?.durationMs ?? 0)
@@ -364,6 +479,7 @@ export class ReplayEngine {
   }
 
   setGhost(ghost: LapPath | null) {
+    if (ghost !== this.ghost) this.ghostOffsetMs = 0
     this.ghost = ghost
     this.ghostCar.hint = 0
     this.applyAlignment()
@@ -441,7 +557,8 @@ export class ReplayEngine {
       this.scene.add(this.racingLine)
     }
     if (this.ghost) {
-      this.ghostLine = buildLapLine(this.ghost, road, new THREE.Color(GHOST_COLOR), [0, 1], 0.16, this.world?.surface)
+      // Another driver's line in their colour, a touch wider; a ghost's in cyan.
+      this.ghostLine = buildLapLine(this.ghost, road, this.rival ? this.rival.color.clone() : new THREE.Color(GHOST_COLOR), [0, 1], this.rival ? 0.2 : 0.16, this.world?.surface)
       this.ghostLine.visible = this.showGhostLine
       this.scene.add(this.ghostLine)
     }
@@ -456,53 +573,140 @@ export class ReplayEngine {
     this.preset = preset
     this.model = model
     this.fit = fit
+    this.paint = paint
+    this.car.preset = preset
+    this.car.fit = model ? fit : null
     if (model && fit) {
       const fitted = fittedModel(model, fit)
       // Before the ghost's copy, which takes the rig along.
-      if (!fit.staticWheels) {
-        const wheels = rigModelWheels(fitted, { pattern: fit.wheelPartsPattern })
-        if (!wheels.ok) console.warn(`[replay] the car model's wheels were not found (${wheels.reason}); they stay still and the body level.`)
-        else if (REPLAY_DEBUG) console.info(`[replay] car wheels by ${wheels.method}: ${wheels.wheels.map(w => `${w.corner} r ${w.radiusM.toFixed(3)} m at [${w.centreM.join(', ')}] ← ${w.parts.join(', ')}`).join(' · ')}`)
-      }
+      if (!fit.staticWheels) rigWheels(fitted, fit, 'car')
       this.car.body = fitted
-      this.ghostCar.body = ghostCopy(fitted, this.ghostShape)
     } else {
       this.car.body = buildPlaceholder(preset, paint, null)
-      this.ghostCar.body = buildPlaceholder(preset, paint, this.ghostShape)
     }
     this.car.root.add(this.car.body)
-    this.ghostCar.root.add(this.ghostCar.body)
+    // A ghost of yours takes the same shape; another driver's car keeps its own.
+    if (!this.rival) this.buildGhostBody()
     this.findMotion()
     this.reflectEnvironment(this.car.body)
-    for (const rig of [this.car, this.ghostCar]) rig.shadow.scale.set(preset.widthM / 1.8, 1, preset.lengthM / 4)
+    this.car.shadow.scale.set(preset.widthM / 1.8, 1, preset.lengthM / 4)
     this.applyView()
     this.invalidate()
   }
 
-  // The ghost shares the shared ghost material (and a model's geometry), so
+  // A ghost of yours shares the ghost material (and a model's geometry), so
   // only what each body owns is freed.
   private clearCars(nextModel: THREE.Object3D | null = null) {
-    for (const rig of [this.car, this.ghostCar]) if (rig.body) rig.root.remove(rig.body)
+    if (!this.rival) this.clearGhostBody()
+    if (this.car.body) this.car.root.remove(this.car.body)
     if (this.model) { if (this.model !== nextModel) disposeObject(this.model) }
-    else {
-      if (this.car.body) disposeObject(this.car.body)
-      if (this.ghostCar.body) disposeGeometry(this.ghostCar.body)
+    else if (this.car.body) disposeObject(this.car.body)
+    this.car.body = null
+    this.car.motion = null
+  }
+
+  private clearGhostBody() {
+    const body = this.ghostCar.body
+    if (body) {
+      this.ghostCar.root.remove(body)
+      if (this.ghostOwns === 'all') disposeObject(body)
+      else if (this.ghostOwns === 'geometry') disposeGeometry(body)
     }
-    this.car.body = this.ghostCar.body = null
-    this.car.motion = this.ghostCar.motion = null
+    if (this.rivalTag) {
+      this.rivalTag.removeFromParent()
+      this.rivalTag.material.map?.dispose()
+      this.rivalTag.material.dispose()
+      this.rivalTag = null
+    }
+    this.ghostCar.body = null
+    this.ghostCar.motion = null
+    this.ghostOwns = 'none'
+    this.rivalMaterials = []
+  }
+
+  // The ghost's body: another driver's car (this.rival), or a translucent
+  // copy of yours (nothing until your car is in).
+  private buildGhostBody() {
+    const rig = this.ghostCar, rival = this.rival
+    if (rival) {
+      const preset = rig.preset!
+      let body: THREE.Object3D
+      if (rival.model && rig.fit) {
+        body = fittedModel(rival.model, rig.fit)
+        if (!rig.fit.staticWheels) rigWheels(body as THREE.Group, rig.fit, 'other car')
+      } else body = buildPlaceholder(preset, rival.color, null)
+      tintCar(body, rival.color, this.rivalMarked ? RIVAL_TINT : 0)
+      this.reflectEnvironment(body)
+      this.rivalMaterials = seeThrough(body)
+      this.shadowedBodies.add(body)
+      this.rivalFade = 1
+      rig.body = body
+      this.ghostOwns = 'all'
+      this.rivalTag = nameTag(rival.name, rival.color)
+      this.rivalTag.position.y = preset.heightM + 0.45
+      this.rivalTag.visible = this.rivalMarked
+      rig.root.add(this.rivalTag)
+    } else {
+      rig.preset = this.preset
+      rig.fit = this.car.fit
+      if (!this.car.body || !this.preset) return
+      rig.body = this.model ? ghostCopy(this.car.body, this.ghostShape) : buildPlaceholder(this.preset, this.paint, this.ghostShape)
+      this.ghostOwns = this.model ? 'none' : 'geometry'
+    }
+    rig.root.add(rig.body)
+    const preset = rig.preset!
+    rig.shadow.scale.set(preset.widthM / 1.8, 1, preset.lengthM / 4)
+    rig.shadow.visible = !!rival
+  }
+
+  /**
+   * Another driver's car in the ghost's place (their lap is the ghost lap,
+   * setGhost): solid, its own model, fit and dynamics, its line in its
+   * colour; null puts your translucent ghost back. The model is the
+   * engine's from here on (freed when replaced).
+   */
+  setRival(rival: RivalCar | null) {
+    if (!rival && !this.rival) return
+    this.clearGhostBody()
+    this.rival = rival ? { color: new THREE.Color(rival.color), name: rival.name, model: rival.model } : null
+    if (rival) { this.ghostCar.preset = rival.preset; this.ghostCar.fit = rival.model ? rival.fit : null }
+    this.buildGhostBody()
+    this.findMotion()
+    this.rebuildLines()
+    this.both.ready = false
+    this.invalidate()
+  }
+
+  /** Refit the other driver's model in place (a fit saved in the Garage meanwhile). */
+  setRivalFit(fit: CarModelFit) {
+    const rig = this.ghostCar
+    if (!this.rival?.model || !rig.body) return
+    rig.fit = fit
+    rig.motion?.rest()
+    applyFit(rig.body as THREE.Group, fit)
+    rig.motion?.refresh()
+    this.findMotion()
+    this.invalidate()
+  }
+
+  /** The other driver's tag and tint (on by default). */
+  setRivalMarked(on: boolean) {
+    this.rivalMarked = on
+    if (this.rivalTag) this.rivalTag.visible = on
+    if (this.rival && this.ghostCar.body) tintCar(this.ghostCar.body, this.rival.color, on ? RIVAL_TINT : 0)
+    this.invalidate()
   }
 
   /** Refit the uploaded model in place (the fit editor). */
   setFit(fit: CarModelFit) {
     this.fit = fit
     if (!this.model || !this.car.body) return
+    this.car.fit = fit
     // Fitted at rest (wheels straight, body level), then re-measured.
     this.car.motion?.rest()
     applyFit(this.car.body as THREE.Group, fit)
     this.car.motion?.refresh()
-    this.ghostCar.root.remove(this.ghostCar.body!)
-    this.ghostCar.body = ghostCopy(this.car.body, this.ghostShape)
-    this.ghostCar.root.add(this.ghostCar.body)
+    if (!this.rival) { this.clearGhostBody(); this.buildGhostBody() }
     this.findMotion()
     this.invalidate()
   }
@@ -519,7 +723,7 @@ export class ReplayEngine {
   private findMotion() {
     for (const rig of [this.car, this.ghostCar]) {
       if (rig === this.ghostCar || !rig.motion) rig.motion = CarMotion.find(rig.body)
-      if (rig.motion) rig.motion.enabled = this.carMotion && !this.fit?.staticWheels
+      if (rig.motion) rig.motion.enabled = this.carMotion && !rig.fit?.staticWheels
     }
   }
 
@@ -563,15 +767,61 @@ export class ReplayEngine {
     if (Math.abs((this.lap?.distAt(this.timeMs) ?? 0) - before) > 25) this.chaseReady = this.mount.ready = false
     // Publish the new position now, not the last frame's.
     if (this.lap) this.lap.pose(this.timeMs, this.car.pose)
+    this.poseGhost()
     this.invalidate()
     this.publish()
   }
 
   setRate(rate: number) { this.rate = rate; this.publish() }
 
+  // ── The compared car's own clock (compare.ts) ───────────────────────────
+
+  /** The compared car's lap time minus yours, ms. */
+  get ghostOffset(): number { return this.ghostOffsetMs }
+
+  /** Move only the compared car along its lap: its time becomes yours plus `offsetMs`. Playing keeps the offset. */
+  setGhostOffset(offsetMs: number) {
+    if (!this.ghost) return
+    this.ghostOffsetMs = clampOffset(offsetMs, this.duration, this.ghost.durationMs)
+    this.poseGhost()
+    this.invalidate()
+    this.publish()
+  }
+
+  /** Put the compared car at a time of its own lap, yours staying where it is. */
+  seekGhost(ghostMs: number) {
+    if (this.ghost) this.setGhostOffset(offsetFor(ghostMs, this.timeMs, this.ghost.durationMs))
+  }
+
+  /** Sync: both laps on their own clocks again (no offset). */
+  syncGhost() { this.setGhostOffset(0) }
+
+  /**
+   * Side by side: the compared car level with yours on the track now (the
+   * cars' centres at the same distance). False where its lap does not
+   * reach that spot.
+   */
+  ghostSideBySide(): boolean {
+    if (!this.lap || !this.ghost) return false
+    // Each car's GPS sits this far ahead of its centre.
+    const ahead = (rig: CarRig) => (rig.fit?.gpsM ?? rig.preset?.fit.gpsM)?.[2] ?? 0
+    const offset = sideBySideOffset(this.lap, this.ghost, this.timeMs, ahead(this.ghostCar) - ahead(this.car))
+    if (offset == null) return false
+    this.setGhostOffset(offset)
+    return true
+  }
+
+  private ghostTime(): number { return this.timeMs + this.ghostOffsetMs }
+
+  // The compared car's pose for the published state between frames.
+  private poseGhost() {
+    const t = this.ghostTime()
+    if (this.ghost && t <= this.ghost.durationMs) this.ghost.pose(Math.max(0, t), this.ghostCar.pose)
+  }
+
   setView(view: ReplayView) {
     this.view = view
-    this.chaseReady = this.mount.ready = false
+    this.chaseReady = this.mount.ready = this.both.ready = false
     this.applyView()
     this.invalidate()
     this.publish()
@@ -610,7 +860,16 @@ export class ReplayEngine {
       if (ghostTime != null) gapMs = this.timeMs - ghostTime
     }
     const fps = this.fpsWindow.length > 1 ? 1000 * (this.fpsWindow.length - 1) / (this.fpsWindow[this.fpsWindow.length - 1] - this.fpsWindow[0]) : 0
-    return { timeMs: this.timeMs, durationMs: this.duration, playing: this.playing, rate: this.rate, pose, gapMs, view: this.view, fps, lookActive: this.lookActive, quality: this.quality }
+    let compared: ComparedState | null = null
+    if (this.lap && this.ghost) {
+      const timeMs = this.ghostTime(), onTrack = timeMs <= this.ghost.durationMs && this.ghostCar.pose.dist != null
+      compared = {
+        timeMs, durationMs: this.ghost.durationMs, offsetMs: this.ghostOffsetMs,
+        pose: onTrack ? this.ghostCar.pose : null,
+        aheadM: onTrack && pose.dist != null ? this.ghostCar.pose.dist - pose.dist : null,
+      }
+    }
+    return { timeMs: this.timeMs, durationMs: this.duration, playing: this.playing, rate: this.rate, pose, gapMs, compared, view: this.view, fps, lookActive: this.lookActive, quality: this.quality }
   }
 
   private publish() {
@@ -650,6 +909,8 @@ export class ReplayEngine {
       this.lens.configure(this.camera, this.camera.aspect, { horizontalFovDeg: this.dashcam().fovDeg, barrel: GARMIN_BARREL })
       this.lens.render(this.renderer, this.scene)
     } else this.renderer.render(this.scene, this.camera)
+    // A constrained device drops the CPU copies of what is now on the GPU (budget.ts).
+    releaseUploaded(this.renderer)
     this.adaptResolution(now)
     this.publish()
   }
@@ -664,10 +925,14 @@ export class ReplayEngine {
     this.atmosphere.renderShadows()
     this.grass?.update(this.camera)
     if (this.atmosphere.environment !== env) this.refreshReflections()
-    const body = this.car.body
-    if (body && !this.shadowedBodies.has(body)) {
-      this.shadowedBodies.add(body)
-      markCarCasters(body)
+    // Another driver's car is solid: it casts and takes shadows like yours.
+    for (const body of [this.car.body, this.rival ? this.ghostCar.body : null]) {
+      if (body && !this.shadowedBodies.has(body)) {
+        this.shadowedBodies.add(body)
+        markCarCasters(body)
+        // Its textures' CPU copies go once uploaded (not its geometry: refits measure it).
+        if (replayProfile().lean) releaseWhenUploaded(body)
+      }
     }
   }
 
@@ -681,7 +946,7 @@ export class ReplayEngine {
     if (now - this.perfStart < 3000) return
     const fps = this.perfFrames * 1000 / (now - this.perfStart)
     this.perfStart = 0
-    const max = Math.min(this.ceiling, 2, window.devicePixelRatio || 1)
+    const max = Math.min(this.ceiling, replayProfile().maxPixelRatio, window.devicePixelRatio || 1)
     let next = this.pixelRatio
     // Auto graphics: down to 1.25 × resolution first, then medium graphics, then lower.
     if (fps < 45 && this.graphics === 'auto' && this.quality === 'high' && this.pixelRatio <= AUTO_QUALITY_RATIO) {
@@ -700,14 +965,37 @@ export class ReplayEngine {
     if (!this.lap || !this.world) { this.car.root.visible = this.ghostCar.root.visible = false; return }
     this.placeRig(this.car, this.lap, this.timeMs)
     this.car.root.visible = true
-    if (this.ghost && this.timeMs <= this.ghost.durationMs) {
-      this.placeRig(this.ghostCar, this.ghost, this.timeMs)
+    // On its own clock (yours plus the offset): before its start it waits
+    // on the line; after its finish it leaves the track.
+    const ghostMs = this.ghostTime()
+    if (this.ghost && this.ghostCar.body && ghostMs <= this.ghost.durationMs) {
+      this.placeRig(this.ghostCar, this.ghost, Math.max(0, ghostMs))
       this.ghostCar.root.visible = true
     } else this.ghostCar.root.visible = false
+    if (this.rival) this.fadeRival()
     // The driver's own body is in the way of the view from inside, but the
     // dashboard of a real model is the point: only the placeholder hides.
     if (this.car.body) this.car.body.visible = !(this.view === 'driver' && !this.model)
     this.car.shadow.visible = this.view !== 'driver' && this.view !== 'garmin'
+  }
+
+  // Another driver's car overlapping yours (side by side on the same line)
+  // turns see-through, easing, and solid again once clear.
+  private fadeRival() {
+    const a = this.car, b = this.ghostCar
+    let target = 1
+    if (b.root.visible && a.root.visible && a.preset && b.preset) {
+      const dx = b.root.position.x - a.root.position.x, dz = b.root.position.z - a.root.position.z
+      const fx = a.pose.fx ?? 0, fz = a.pose.fz ?? 1
+      const along = Math.abs(dx * fx + dz * fz), across = Math.abs(dx * fz - dz * fx)
+      if (along < (a.preset.lengthM + b.preset.lengthM) / 2 && across < (a.preset.widthM + b.preset.widthM) / 2) target = RIVAL_OVERLAP_OPACITY
+    }
+    if (Math.abs(target - this.rivalFade) < 0.005) return
+    const dt = Math.min(0.1, this.playing ? 1 / 60 : 1 / 30)
+    this.rivalFade += (target - this.rivalFade) * (1 - Math.exp(-dt * 12))
+    if (Math.abs(target - this.rivalFade) < 0.01) this.rivalFade = target
+    for (const m of this.rivalMaterials) m.opacity = this.rivalFade
+    this.invalidate(1)
   }
 
   private tmpForward = new THREE.Vector3()
@@ -719,24 +1007,24 @@ export class ReplayEngine {
   /** Pose a car on the road: height from the surface, pitch and roll from its slope. */
   private placeRig(rig: CarRig, lap: LapPath, timeMs: number) {
     const road = this.world!.road
-    const pose = this.toCarCentre(lap.pose(timeMs, rig.pose))
-    const preset = this.preset
+    const pose = this.toCarCentre(lap.pose(timeMs, rig.pose), rig)
+    const preset = rig.preset
     const halfBase = (preset?.wheelbaseM ?? 2.4) / 2, halfTrack = ((preset?.widthM ?? 1.8) - 0.25) / 2
     const s = rig.hint = road.nearestFrom(pose.x, pose.z, road.stationAt(pose.dist), 12)
     const y = this.restOn(pose, s, halfBase, halfTrack, rig.root.quaternion)
     rig.root.position.set(pose.x, y, pose.z)
     // Wheels and body; the inside cameras ride the steady mount, not the body.
-    if (rig.motion && preset?.dynamics) rig.motion.update(lap, timeMs, pose, preset.dynamics, this.restingHeight)
+    if (rig.motion && preset?.dynamics) rig.motion.update(lap, timeMs, pose, preset.dynamics, rig.ground)
   }
 
   private restPose = {} as LapPose
   private restQuat = new THREE.Quaternion()
 
   /** A car's height on the ground at a lap time, as placeRig rests it (for its springs). */
-  private restingHeight = (lap: LapPath, timeMs: number): number => {
+  private restingHeight(rig: CarRig, lap: LapPath, timeMs: number): number {
     const road = this.world!.road
-    const pose = this.toCarCentre(lap.pose(timeMs, this.restPose))
-    const halfBase = (this.preset?.wheelbaseM ?? 2.4) / 2, halfTrack = ((this.preset?.widthM ?? 1.8) - 0.25) / 2
+    const pose = this.toCarCentre(lap.pose(timeMs, this.restPose), rig)
+    const halfBase = (rig.preset?.wheelbaseM ?? 2.4) / 2, halfTrack = ((rig.preset?.widthM ?? 1.8) - 0.25) / 2
     return this.restOn(pose, road.nearestFrom(pose.x, pose.z, road.stationAt(pose.dist), 12), halfBase, halfTrack, this.restQuat)
   }
 
@@ -746,8 +1034,8 @@ export class ReplayEngine {
    * passenger's dash draws the car off-centre from it, as it was). The
    * racing and ghost lines stay on the GPS track.
    */
-  private toCarCentre(pose: LapPose): LapPose {
-    const gps = this.fit?.gpsM ?? this.preset?.fit.gpsM
+  private toCarCentre(pose: LapPose, rig: CarRig): LapPose {
+    const gps = rig.fit?.gpsM ?? rig.preset?.fit.gpsM
     if (gps) {
       const left = gps[0], forward = gps[2]
       // The car's left is (fz, −fx) in x/z.
@@ -838,6 +1126,7 @@ export class ReplayEngine {
       }
       return
     }
+    if (this.view === 'both') { this.placeBoth(dt); return }
     // Chase: behind and above the car. Its position is followed exactly (a
     // lagging position falls metres behind at speed); the heading and height
     // ease, so the view swings through corners instead of snapping.
@@ -872,6 +1161,58 @@ export class ReplayEngine {
     this.camera.lookAt(this.chaseLook)
     // Keep easing after a pause until the camera settles.
     if (Math.abs(d.x * pose.fz - d.z * pose.fx) > 1e-3 || Math.abs(p.y - this.chaseHeight) > 1e-3) this.invalidate(1)
+  }
+
+  private bothTarget = new THREE.Vector3()
+
+  /**
+   * Both cars: behind them along your car's eased heading, looking at a
+   * point between them, back far enough that a sphere round both stays in
+   * view, higher the further apart they are (compare.ts frameBoth). The
+   * cars are followed exactly; the framing's offset from your car, its
+   * distance and pitch ease, so a scrub or a change of lead glides. Past
+   * ~150 m apart (or with no compared car on track) it follows yours.
+   */
+  private placeBoth(dt: number) {
+    const pose = this.car.pose, a = this.car.root.position, s = this.both
+    const b = this.ghost && this.ghostCar.root.visible ? this.ghostCar.root.position : null
+    const frame = frameBoth([a.x, a.y, a.z], b ? [b.x, b.y, b.z] : null)
+    const look = this.looks.both.now
+    // A tenth to spare round the sphere: the HUD and the transport cover the view's edges.
+    const dist = Math.max(CHASE_DIST, 1.1 * framingDistance(frame.radiusM, this.camera.fov, this.camera.aspect)) * look.dist
+    const pitch = clamp(frame.pitch + look.pitch, ORBIT_PITCH[0], ORBIT_PITCH[1])
+    const offset = this.bothTarget.set(frame.target[0] - a.x, frame.target[1] - a.y, frame.target[2] - a.z)
+    if (!this.chaseReady || !s.ready) {
+      this.chaseDir.set(pose.fx, 0, pose.fz)
+      this.chaseReady = true
+      s.offset.copy(offset); s.dist = dist; s.pitch = pitch; s.ready = true
+    } else if (dt > 0) {
+      this.chaseDir.lerp(this.tmpForward.set(pose.fx, 0, pose.fz), 1 - Math.exp(-dt * 3.5)).normalize()
+      s.offset.lerp(offset, 1 - Math.exp(-dt * 4))
+      const k = 1 - Math.exp(-dt * 2.5)
+      s.dist += (dist - s.dist) * k
+      s.pitch += (pitch - s.pitch) * k
+    }
+    const d = this.chaseDir, cos = Math.cos(look.yaw), sin = Math.sin(look.yaw)
+    const ox = d.x * cos + d.z * sin, oz = -d.x * sin + d.z * cos
+    const tx = a.x + s.offset.x, ty = a.y + s.offset.y, tz = a.z + s.offset.z
+    const back = s.dist * Math.cos(s.pitch), up = s.dist * Math.sin(s.pitch)
+    this.chasePos.set(tx - ox * back, ty + up, tz - oz * back)
+    // Aimed a little short of the middle (toward the camera), so the pair sits
+    // about 8% of the view higher, clear of the transport at the bottom.
+    const lead = 0.08 * this.camera.fov * DEG * s.dist / Math.max(0.2, Math.sin(s.pitch))
+    this.chaseLook.set(tx - ox * lead, ty + 0.6, tz - oz * lead)
+    const road = this.world!.road
+    let ground = road.surface(this.chasePos.x, this.chasePos.z, road.nearestFrom(this.chasePos.x, this.chasePos.z, this.car.hint, 20)).h
+    const onModel = this.world!.surface?.(this.chasePos.x, this.chasePos.z, ground) ?? NaN
+    if (Number.isFinite(onModel)) ground = onModel
+    this.chasePos.y = Math.max(this.chasePos.y, ground + 1.5)
+    this.camera.position.copy(this.chasePos)
+    this.camera.up.set(0, 1, 0)
+    this.camera.lookAt(this.chaseLook)
+    // Keep easing after a pause until the framing settles.
+    if (s.offset.distanceToSquared(offset) > 1e-4 || Math.abs(dist - s.dist) > 1e-2 || Math.abs(pitch - s.pitch) > 1e-4
+      || Math.abs(d.x * pose.fz - d.z * pose.fx) > 1e-3) this.invalidate(1)
   }
 
   // ── Looking around ───────────────────────────────────────────────────────
@@ -933,7 +1274,7 @@ export class ReplayEngine {
     if (this.pointers.size === 1) this.drag = { id: event.pointerId, x0: event.clientX, y0: event.clientY, moved: false }
     else if (this.pointers.size === 2) {
       // Two fingers: a pinch sets the chase distance; neither finger turns.
-      this.pinch = { spread: this.spread(), dist: this.looks.chase.target.dist }
+      this.pinch = { spread: this.spread(), dist: this.looks[this.view === 'both' ? 'both' : 'chase'].target.dist }
       this.drag = null
     }
     // No text selection or focus change from a press on the view.
@@ -952,6 +1293,9 @@ export class ReplayEngine {
       if (view === 'chase' && spread > 10 && this.pinch.spread > 10) {
         this.looks.chase.target.dist = clamp(this.pinch.dist * this.pinch.spread / spread, CHASE_MIN_DIST, CHASE_MAX_DIST)
         this.lookChanged()
+      } else if (view === 'both' && spread > 10 && this.pinch.spread > 10) {
+        this.looks.both.target.dist = clamp(this.pinch.dist * this.pinch.spread / spread, ...BOTH_SCALE)
+        this.lookChanged()
       }
       return
     }
@@ -968,6 +1312,9 @@ export class ReplayEngine {
     if (view === 'chase') {
       target.yaw -= dx * k
       target.pitch = clamp(target.pitch + dy * k, ORBIT_PITCH[0], ORBIT_PITCH[1])
+    } else if (view === 'both') {
+      target.yaw -= dx * k
+      target.pitch = clamp(target.pitch + dy * k, ...BOTH_TILT)
     } else {
       target.yaw = clamp(target.yaw + dx * k, -HEAD_YAW, HEAD_YAW)
       target.pitch = clamp(target.pitch + dy * k, -HEAD_PITCH, HEAD_PITCH)
@@ -1002,11 +1349,12 @@ export class ReplayEngine {
 
   // The wheel zooms the chase camera; elsewhere it scrolls the page as usual.
   private onWheel = (event: WheelEvent) => {
-    if (this.view !== 'chase') return
+    if (this.view !== 'chase' && this.view !== 'both') return
     event.preventDefault()
-    const target = this.looks.chase.target
+    const target = this.looks[this.view].target
     const step = event.deltaMode === 1 ? 0.06 : event.deltaMode === 2 ? 1 : 0.0015
-    target.dist = clamp(target.dist * Math.exp(event.deltaY * step), CHASE_MIN_DIST, CHASE_MAX_DIST)
+    const [lo, hi] = this.view === 'both' ? BOTH_SCALE : [CHASE_MIN_DIST, CHASE_MAX_DIST]
+    target.dist = clamp(target.dist * Math.exp(event.deltaY * step), lo, hi)
     this.lookChanged()
   }
 
@@ -1034,6 +1382,7 @@ export class ReplayEngine {
     this.setWorld(null)
     for (const line of [this.racingLine, this.ghostLine]) if (line) disposeObject(line)
     this.clearCars()
+    this.clearGhostBody()
     disposeObject(this.car.shadow); disposeObject(this.ghostCar.shadow)
     this.ghostShape.dispose()
     this.atmosphere.dispose()

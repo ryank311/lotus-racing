@@ -148,6 +148,9 @@ const bridge: CatalystBridge = {
   // 3D replay. Terrain builds in the main process; this polls like the web.
   getReplayScene: guid => ipcRenderer.invoke('replay:scene', guid),
   getReplayLap: (sceneGuid, ref) => ipcRenderer.invoke('replay:lap', sceneGuid, ref),
+  // Another driver's laps come from the local Catalyst server the app starts.
+  listDriverLaps: (driver, sessionGuid) => ipcRenderer.invoke('drivers:replayLaps', driver, sessionGuid),
+  getReplayDriverLap: (sceneGuid, ref, units) => ipcRenderer.invoke('replay:driverLap', sceneGuid, { ...ref, units }),
   getReplayCoaching: guid => ipcRenderer.invoke('replay:coaching', guid),
   getTerrain: async (area, onState) => {
     let reported = false

@@ -348,6 +348,31 @@ daylight-saving rules (`estimateUtcOffsetMin`). GNSS altitude is height above th
 ellipsoid: at VIR it sits about 30 m below the terrain's heights, so place the
 car on the terrain (`sampleTerrain`) and use altitude only for its shape.
 
+**Another driver's lap** (the replay's driver comparison,
+`src/garmin/replayDriver.ts`) comes the way Analysis's comparison does: each
+backend reads only its own database, and the server goes between them
+(`driverDirectory.ts`). `POST /api/driver-laps {driver, sessionGuid}` lists
+the valid laps of one of their sessions (their backend's read-only
+`replay:exportLaps`); RPC `replay:driverLap(sceneGuid, {driver, sessionGuid, lap, units})`
+is always rewritten by the server into that driver's own export of the lap
+(`replay:exportLap`: one valid, not excluded lap, on their mean line, with
+their session's course and car and that mean line, thinned to 5 m), so a
+renderer can never hand its backend telemetry of its own making. Your
+backend checks the session is on the scene's course (Garmin's course ID:
+mean lines are per device), moves the lap onto the scene's mean line
+(`meanLineAlign.ts`, as for your own laps from another device) and returns it
+as a `ReplayDriverLap`: a `ReplayLap` plus `driver` and `vehicle` (make, model
+and the key that picks the car model and preset). Its car trace, when a
+synced video covers the lap, carries their PDR channels and the video ID
+with their name, so the player streams it through the existing driver video
+route (`/api/drivers/<name>/videos/<id>.mp4`); the channels are decoded from
+that same video. The access rules are Analysis's: signed in, another driver
+on this server (never you, never an unknown name, which never creates a
+workspace), who has synced telemetry, and a session whose telemetry is
+downloaded in their workspace; nothing is synced or downloaded for you. The
+desktop app reaches the same drivers through the local server
+(`drivers:replayLaps`, and `replay:driverLap` resolving its request there).
+
 **Terrain** (`src/garmin/terrain.ts`) is downloaded once per area from two
 public-domain USGS services and kept for every driver:
 
@@ -533,7 +558,7 @@ replay, and models must be added again.
 ## 3D replay: the page
 
 **3D Replay** (sidebar, ⌘6) drives one lap on the track in three.js:
-`/replay/<session>?lap=<index|optimal>&ghost=<session>:<lap|optimal>|none&view=chase|driver|garmin`.
+`/replay/<session>?lap=<index|optimal>&ghost=<session>:<lap|optimal>|driver:<name>:<session>:<lap>|none&view=chase|driver|garmin|both`.
 Lap indices are the app's own (L3 is `lap=2`). Without a session it opens the
 latest session with laps; without a lap, the session's best; without a ghost,
 the best lap when you watch another (`ghost=none` turns it off). Session
@@ -547,14 +572,60 @@ distance: red when behind), the lap timer, speed, a g-meter oriented like
 Analysis's G-G chart (the force the driver feels: braking up, a right-hander
 to the left; with a 1.5 s trail), and with a
 PDR video gear, RPM, throttle, brake and steering. The onboard video plays
-picture in picture at the 3D car's distance (`car.videoT`): while playing it
-runs at the replay's rate and closes small drift by running up to 25 % fast
-or slow, seeking only beyond 0.6 s; paused or scrubbed it seeks directly.
+picture in picture at the 3D car's distance (`car.videoT`, `replay/pipSync.ts`):
+while playing it runs at the replay's rate and closes small drift by running
+up to 25 % fast or slow, seeking only beyond 0.6 s; paused or scrubbed it
+seeks directly. On iPhone and iPad (WebKit stalls the picture on every rate
+change, and a seek decodes from the last keyframe) it keeps the replay's rate,
+seeks only past 1 s of drift, aiming ahead by how long its recent seeks took,
+and waits 1.5 s after a seek before another. It starts inside your tap on
+Play; where the browser still refuses (Low Power Mode, an autoplay setting)
+the video says "Tap the video to play it".
+**Racing another driver.** The Ghost picker has two lists: *My laps*, and
+*Another driver*: a driver on this server (with telemetry; not you), then
+their sessions on this course (the session library's rows, compact: date,
+car, laps, video, best lap against their car's PB; Recent or Fastest), then a
+lap (their best marked and focused). The choice goes in the URL
+(`ghost=driver:<name>:<session>:<lap>`). Their lap is raced in their own car:
+the shared library's model for their vehicle (as the Garage assigns it; the
+placeholder from their preset without one), with their preset's size,
+dynamics and data-collector position (`gpsM`), wheels rigged and the body on
+its own springs, drawn solid with a faint tint and a name tag in their colour
+(lavender, Analysis's second driver colour; **Tag … car** in "On the track"
+turns both off). Where it overlaps your car (side by side on the same line)
+it turns see-through until clear, so both lines stay visible. Their line is
+drawn in that colour with its own Align to track fit; the timer shows the
+live gap (the time between the laps at the same spot) and their speed, and
+their onboard video plays as a second picture in picture when a video covers
+their lap. The loading screen covers their lap and car; a lap that cannot be
+loaded (a driver who is gone, a session no longer there or on another
+course) leaves your replay running with a note and a warning on the picker.
+
+**The compared car's own clock** (any ghost, yours or another driver's;
+`replay/compare.ts`): its lap time is yours plus an offset. Its handle rides
+above the scrub bar in its colour (a pin, with a band to yours): drag it
+(or focus it and use ← →, ⇧ for a second) to move only that car along its
+lap; your handle moves both and keeps the offset; play keeps it too. Under
+the bar its clock reads, e.g., "Corvette −1.24 s · 3 m behind" (its car when
+it is not yours, else the driver's name, or Ghost), with **Side by side**
+(the offset that puts its centre level with yours on the track now: the
+"two cars in turn 3" case in one click) and **Sync** (offset 0: both laps
+from their starts). Before its start it waits on the line; past its finish
+it leaves the track. [ and ] move it alone a tenth (⇧ a second).
+
+**Both cars** (a fourth camera, with a compared car): behind the pair along
+your car's heading, looking between them, back far enough that a sphere
+round both fits the view and higher as they part (near top-down 80 m apart);
+the cars are followed exactly while the framing eases. From about 90 m apart
+it slides back to following your car, which it does alone past 150 m (or
+with the other car off track). Drag to turn around them and tilt, wheel or
+pinch to zoom.
+
 Space plays and pauses, ← → step a second (⇧ five), C cycles the cameras:
-chase, the driver's seat, and the Garmin camera. Playback runs in real
+chase, the driver's seat, the Garmin camera and, with a ghost, both cars. Playback runs in real
 time; scrub to any point (the scrub bar marks each corner's apex). The view fills the window's height,
-with the transport (play, scrub bar, time, the Chase / Driver / Garmin
-switch and full screen) over its bottom edge like a video player's; it
+with the transport (play, scrub bar, time, the Chase / Driver / Garmin (/ Both cars)
+switch and full screen; with a compared car a second row for its clock and the cameras) over its bottom edge like a video player's; it
 fades while the lap plays and the pointer rests, and comes back on any
 movement. On phones it sits just below the view instead. The full-screen
 button (or F) uses the browser's own full screen, on desktop and iPad;
@@ -645,7 +716,9 @@ How the world is built (`src/renderer/replay/`, framework-free; the page is
   sits at the model's eye point looking 4° down at the road (FOV 70°, wider
   on a tall phone screen).
   Resolution adapts to hold 50–60 fps; the WebGL context is restored after
-  a loss; everything is disposed when you leave.
+  a loss (on a constrained device, below, the scene is built again in a new
+  engine: its textures are on the GPU only); everything is disposed when you
+  leave.
 - `car.ts`: the model for the session's car is the one chosen for its
   vehicle key in the Garage (`carModelFor`: of several matching, the newest),
   else a low-poly car at the real dimensions. A model is centred, turned
@@ -752,13 +825,29 @@ data…", about 2 minutes); later visits load in a second or two.
 **Weather and light** (panel under the view): the session's weather, with the
 start time and the sun's height and direction; **Weather: Auto | Sunny |
 Overcast | Wet** shows the session's own look or one of the others at the same
-time of day, and **Graphics: Auto | High | Medium** trades grass, shadow
+time of day, and **Graphics: Auto | High | Medium | Low** trades grass, shadow
 resolution and the far shadow map for frame rate (Auto starts on High and steps
 to Medium only once the resolution has come down to 1.25 × and the frame rate
-still drops below 45). Both are remembered in this browser. On the MacBook
+still drops below 45; Low has no grass, small shadows and the Garmin lens
+without multisampling). Both are remembered in this browser. On the MacBook
 Pro's Radeon Pro 560X at 1.25 × resolution the AC track draws chase in about
 6 ms of GPU time, the driver's view in 8 and the Garmin view (lens pass
 included) in 11.
+
+**iPhone and iPad** (`replay/budget.ts`): every browser there is WebKit, and a
+tab over its memory budget is reloaded ("A problem repeatedly occurred"); the
+AC track and the #313 car are about 1 GB of textures and render targets on the
+GPU at 2 × resolution, plus two thirds of that again in CPU copies. So an
+iPhone or iPad (an iPad asking for desktop sites included, by its touch
+screen; or a device reporting 2 GB or less) gets a constrained profile: track
+textures decoded straight to at most 1024 px (three at a time), the car's to
+2048, the aerial photo to 2048; the CPU copies of textures and of the track's
+geometry dropped once on the GPU, and the downloaded model files once parsed;
+at most 1.5 × resolution; and Auto on Low. In Chrome at an iPad's 1366 × 1024
+× 2 that takes the WebGL allocations from 0.94–1.11 GB to 0.53–0.55 GB and the
+CPU copies from 670 MB to 8 MB (the page's process from 800 MB to 150 MB).
+`localStorage['catalyst:replay-profile']` overrides it: `ios` (this profile
+anywhere, for testing), `low` (without the iOS video handling) or `standard`.
 
 Debugging: in `vite` dev, or after `localStorage['catalyst:replay-debug'] = '1'`,
 the timer shows the frame rate, O toggles an orbit camera, and

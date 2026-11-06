@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "test:server": "tsc -p tsconfig.main.json && node --test tests/*.test.cjs",
     "test:charts": "node --import tsx --test tests/chartGestures.test.ts tests/carData.test.ts && node tests/chartTouch.mjs",
-    "test:replay": "node --import tsx --test tests/carDynamics.test.ts tests/trackAlign.test.ts",
+    "test:replay": "node --import tsx --test tests/carDynamics.test.ts tests/trackAlign.test.ts tests/replayCompare.test.ts tests/pipSync.test.ts tests/replayBudget.test.ts",
     "test:analysis": "node tests/analysisRecovery.mjs",
     "test:performance": "node --import tsx --test tests/activityStore.test.ts && node tests/scrollPerformance.mjs",
     "fetch": "tsx src/garmin/cli/fetch.ts",

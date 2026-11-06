@@ -15,6 +15,7 @@ import type { TerrainInfo, TrackModel, TrackModelFootprint, TrackModelGeoref, Tr
 import type { LocalFrame } from './geo'
 import { patchWorldMaterial, type SurfaceKind } from './surfaces'
 import { patchCutoutMaterial } from './foliage'
+import { fittedTextures, replayProfile } from './budget'
 
 const R_EARTH = 6_378_137
 const DEG = Math.PI / 180
@@ -211,6 +212,9 @@ export async function loadAcTrack(options: AcTrackOptions): Promise<AcTrack> {
   group.name = `track-model:${model.id}`
   group.matrixAutoUpdate = false
   const loader = new GLTFLoader()
+  // On a constrained device the images decode at most this size, a few at a time (budget.ts).
+  const { textureMax, decodeConcurrency } = replayProfile()
+  if (Number.isFinite(textureMax.track)) loader.register(parser => fittedTextures(parser, textureMax.track, decodeConcurrency))
   const textures = new Set<THREE.Texture>()
   // One world material per glTF material (they are shared between meshes).
   const converted = new Map<THREE.Material, THREE.Material>()

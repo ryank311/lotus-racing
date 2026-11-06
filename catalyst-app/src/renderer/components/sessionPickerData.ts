@@ -1,4 +1,5 @@
 import type { DbSessionRow } from '../../shared/types'
+import type { TrackLayoutIdentity } from '../../shared/trackLayout'
 import { startLabel } from './reviewTimeline'
 
 export type SessionOrder = 'recent' | 'fastest'
@@ -7,6 +8,18 @@ const clean = (value: string | null | undefined) => (value ?? '').trim().toLower
 
 export function sessionCar(row: DbSessionRow): string {
   return [row.vehicle_make, row.vehicle_model].filter(Boolean).join(' ') || 'Unknown car'
+}
+
+// Course identity for matching another driver's sessions to yours. Mean
+// lines differ between drivers' devices, so this goes by Garmin's course ID
+// (see sameCourse); layout_key is the mean line when there is one.
+export function sessionCourse(row: DbSessionRow): TrackLayoutIdentity {
+  const id = row.track_configuration_id == null ? NaN : Number(row.track_configuration_id)
+  return {
+    configurationId: Number.isFinite(id) ? id : null,
+    meanLineGuid: row.layout_key ?? null,
+    trackLabel: [row.track_name, row.track_configuration_name].map(s => (s ?? '').trim()).join(' · '),
+  }
 }
 
 export function sessionCourseKey(row: DbSessionRow): string {

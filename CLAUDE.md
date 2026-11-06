@@ -30,7 +30,7 @@ Navigate by clicking sidebar items or footer buttons:
 | Session Review | Sidebar — "Session Review" (⌘3) |
 | Progress | Sidebar — "Progress" (⌘4) |
 | Analysis | Sidebar — "Analysis" (⌘5) |
-| 3D Replay | Sidebar — "3D Replay" (⌘6), or "Watch in 3D" on a lap in Session Review |
+| 3D Replay | Sidebar — "3D Replay" (⌘6), or "Watch in 3D" on a lap in Session Review. Ghost picker → "Another driver" races another server driver's lap (`?ghost=driver:<name>:<session>:<lap>`; Both cars camera `?view=both`) |
 | AI Coach | Sidebar — "AI Coach" (⌘7) |
 | Garage | Sidebar — "Garage" (⌘8) |
 | Tracks | Sidebar — "Tracks" (⌘9) |

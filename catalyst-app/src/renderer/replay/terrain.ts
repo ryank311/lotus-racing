@@ -6,6 +6,7 @@ import * as THREE from 'three'
 import type { TerrainInfo } from '../../shared/replay'
 import { localX, localZ, type LocalFrame } from './geo'
 import { SHOULDER_M, type RoadModel, type SurfacePoint } from './road'
+import { fitSize, replayProfile, shrinkBitmap } from './budget'
 
 // The server's grid is at most 1400 px on its long side; a larger one is thinned.
 const MAX_VERTICES = 2_100_000
@@ -181,9 +182,17 @@ export function buildGround(y: number, color: THREE.Color): THREE.Mesh {
   return mesh
 }
 
-/** The aerial photo as a texture, and its pixels for edge and tree finding. */
-export async function loadImagery(blob: Blob, maxAnisotropy: number): Promise<{ texture: THREE.Texture; pixels: ImageData | null }> {
-  const bitmap = await createImageBitmap(blob)
+/**
+ * The aerial photo as a texture (on a constrained device at most the
+ * profile's terrain size, budget.ts), and its pixels for edge and tree
+ * finding: full size, or 'preview' (a small copy, enough for its colour).
+ */
+export async function loadImagery(blob: Blob, maxAnisotropy: number, pixelsWanted: 'full' | 'preview' = 'full'): Promise<{ texture: THREE.Texture; pixels: ImageData | null }> {
+  const full = await createImageBitmap(blob)
+  let pixels = pixelsWanted === 'full' ? readPixels(full) : null
+  // The full-size image is closed when a smaller copy replaces it.
+  const bitmap = await shrinkBitmap(full, replayProfile().textureMax.terrain)
+  if (pixelsWanted === 'preview') pixels = readPixels(bitmap, 512)
   const texture = new THREE.Texture(bitmap)
   // ImageBitmaps upload unflipped: v runs from the north edge (see uv above).
   texture.flipY = false
@@ -192,12 +201,15 @@ export async function loadImagery(blob: Blob, maxAnisotropy: number): Promise<{ 
   texture.generateMipmaps = true
   texture.minFilter = THREE.LinearMipmapLinearFilter
   texture.needsUpdate = true
-  let pixels: ImageData | null = null
-  try {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
-    const context = canvas.getContext('2d', { willReadFrequently: true })!
-    context.drawImage(bitmap, 0, 0)
-    pixels = context.getImageData(0, 0, bitmap.width, bitmap.height)
-  } catch { /* edge finding and trees are optional */ }
   return { texture, pixels }
+}
+
+function readPixels(image: ImageBitmap, max = Infinity): ImageData | null {
+  try {
+    const [width, height] = fitSize(image.width, image.height, max)
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d', { willReadFrequently: true })!
+    context.drawImage(image, 0, 0, width, height)
+    return context.getImageData(0, 0, width, height)
+  } catch { return null } // edge finding and trees are optional
 }

@@ -2,11 +2,13 @@
 // the ghost, speed and the car's inputs, a g-meter, and the onboard video
 // kept in step with the 3D car.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import { speedFromMps, speedUnitLabel, type UnitSystem } from '../../shared/units'
 import type { ReplayEngine, FrameState } from './engine'
 import { REPLAY_DEBUG } from './debug'
+import { replayProfile } from './budget'
+import { PipSync } from './pipSync'
 import type { LapPath } from './lapPath'
 
 export function useFrame(engine: ReplayEngine | null): FrameState | null {
@@ -24,15 +26,18 @@ export function clock(ms: number, places = 1): string {
 
 const G = 9.80665
 
-export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo }: {
+export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo, rival = null }: {
   engine: ReplayEngine
   lap: LapPath
   ghost: LapPath | null
   ghostLabel: string | null
   units: UnitSystem
   showVideo: boolean
+  /** Another driver's lap is the ghost: their name and colour (their speed shows, and their video beside yours). */
+  rival?: { name: string; color: string } | null
 }) {
   const state = useFrame(engine)
+  const feed = useMemo(() => comparedFeed(engine), [engine])
   if (!state) return null
   const dist = state.pose.dist ?? 0
   const gap = state.gapMs
@@ -43,7 +48,11 @@ export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo }: 
       <strong>{clock(state.timeMs, 1)}</strong>
       <span className="replay-hud-sub">of {clock(state.durationMs, 3)}</span>
       {ghost && <span className={`replay-hud-gap ${gap == null ? '' : gap > 0 ? 'behind' : 'ahead'}`} title={`Time gap to the ghost at this point of the lap (${ghostLabel ?? 'ghost'})`}>
-        {gap == null ? '—' : `${gap > 0 ? '+' : '−'}${Math.abs(gap / 1000).toFixed(2)}`}<small>vs {ghostLabel ?? 'ghost'}</small>
+        {gap == null ? '—' : `${gap > 0 ? '+' : '−'}${Math.abs(gap / 1000).toFixed(2)}`}<small>{rival && <i className="replay-hud-dot" style={{ background: rival.color }} />}vs {ghostLabel ?? 'ghost'}</small>
+      </span>}
+      {rival && state.compared && <span className="replay-hud-rival" title={`${rival.name}’s speed now`}>
+        <i className="replay-hud-dot" style={{ background: rival.color }} />{rival.name}
+        <b>{state.compared.pose ? Math.round(speedFromMps(state.compared.pose.speedMps ?? 0, units)) : '—'}</b> {speedUnitLabel(units)}
       </span>}
       {REPLAY_DEBUG && <span className="replay-hud-fps">{state.fps.toFixed(0)} fps</span>}
     </div>
@@ -52,8 +61,26 @@ export function ReplayHud({ engine, lap, ghost, ghostLabel, units, showVideo }: 
       {inputs && <CarInputs lap={lap} dist={dist} />}
       <GMeter state={state} />
     </div>
-    {showVideo && lap.hasVideo && <PipVideo engine={engine} lap={lap} />}
+    {showVideo && rival && ghost?.hasVideo
+      ? <div className="replay-pips">
+        {lap.hasVideo && <PipVideo engine={engine} lap={lap} />}
+        <div className="replay-pip-rival" data-driver={rival.name} style={{ ['--rival' as string]: rival.color }}><PipVideo engine={feed} lap={ghost} /></div>
+      </div>
+      : showVideo && lap.hasVideo && <PipVideo engine={engine} lap={lap} />}
   </div>
+}
+
+/**
+ * The compared car's frames for its own video: its pose on its own clock
+ * (yours plus the offset), playing only while it is on its lap.
+ */
+function comparedFeed(engine: ReplayEngine): ReplayEngine {
+  const subscribe = (listener: (state: FrameState) => void) => engine.subscribe(state => {
+    const c = state.compared
+    const pose = c?.pose ?? { ...state.pose, dist: Infinity }
+    listener({ ...state, pose, playing: state.playing && !!c?.pose && c.timeMs > 0 && c.timeMs < c.durationMs })
+  })
+  return { subscribe } as unknown as ReplayEngine
 }
 
 function CarInputs({ lap, dist }: { lap: LapPath; dist: number }) {
@@ -111,52 +138,75 @@ function GMeter({ state }: { state: FrameState }) {
   </div>
 }
 
-// The onboard video, picture in picture, held at the 3D car's distance.
+// The onboard video, picture in picture, held at the 3D car's distance
+// (pipSync.ts: nudged in rate on desktop and Android, steady with rare seeks
+// on iPhone and iPad).
 function PipVideo({ engine, lap }: { engine: ReplayEngine; lap: LapPath }) {
   const video = useRef<HTMLVideoElement>(null)
   const [large, setLarge] = useState(false)
   const [covered, setCovered] = useState(true)
+  // The browser would not start it without a tap (iOS Low Power Mode, a browser's autoplay setting).
+  const [refused, setRefused] = useState(false)
+  const refusedRef = useRef(false)
   const car = lap.car!
   const src = api.videoUrl(car.videoId, car.driver)
+  const steady = replayProfile().webkitMobile
   useEffect(() => {
     const el = video.current
+    if (!el) return
+    // Inline and silent: iOS plays a video without a tap only when it is muted.
+    el.muted = el.defaultMuted = true
+    el.setAttribute('muted', '')
+    const sync = new PipSync(steady)
     let lastCovered = true
     let latest: FrameState | null = null
-    const sync = (state: FrameState) => {
+    let starting = false, retryAt = 0
+    const play = () => {
+      const now = performance.now()
+      // After a refusal, only inside a tap (a click on Play reaches here synchronously).
+      const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation
+      if (starting || now < retryAt || (refusedRef.current && !activation?.isActive)) return
+      starting = true
+      el.play().then(() => {
+        starting = false
+        if (refusedRef.current) { refusedRef.current = false; setRefused(false) }
+      }, (error: unknown) => {
+        starting = false
+        retryAt = performance.now() + 1000
+        if ((error as { name?: string })?.name === 'NotAllowedError' && !refusedRef.current) { refusedRef.current = true; setRefused(true) }
+      })
+    }
+    const apply = (state: FrameState) => {
       latest = state
-      if (!el) return
       const target = lap.videoTime(state.pose.dist)
       const isCovered = target != null
       if (isCovered !== lastCovered) { lastCovered = isCovered; setCovered(isCovered) }
       if (target == null) { if (!el.paused) el.pause(); return }
-      if (el.readyState < 1 || el.seeking) return
-      const drift = el.currentTime - target
-      if (state.playing) {
-        if (el.paused) void el.play().catch(() => { /* autoplay refused: stays paused, seeks below */ })
-        // Small drift: run a little fast or slow to close it (a seek stalls
-        // the picture for a moment); large drift: seek.
-        if (Math.abs(drift) > 0.6) { el.currentTime = target + 0.08 * state.rate; el.playbackRate = state.rate }
-        else el.playbackRate = state.rate * Math.min(1.25, Math.max(0.8, 1 - drift * 0.9))
-      } else {
-        if (!el.paused) el.pause()
-        if (Math.abs(drift) > 0.02) el.currentTime = target
-      }
+      if (state.playing) { if (el.paused) play() } else if (!el.paused) el.pause()
+      const plan = sync.plan(state, target, el, performance.now())
+      if (plan.seekTo != null) { sync.seeking(performance.now()); el.currentTime = plan.seekTo }
+      if (plan.rate != null && plan.rate !== el.playbackRate) el.playbackRate = plan.rate
     }
     // A seek that finishes after the replay stopped publishing catches up here.
-    const resync = () => { if (latest) sync(latest) }
-    el?.addEventListener('seeked', resync)
-    el?.addEventListener('loadedmetadata', resync)
-    const unsubscribe = engine.subscribe(sync)
+    const onSeeked = () => { sync.seeked(performance.now(), !!latest?.playing); if (latest) apply(latest) }
+    const resync = () => { if (latest) apply(latest) }
+    el.addEventListener('seeked', onSeeked)
+    el.addEventListener('loadedmetadata', resync)
+    el.addEventListener('canplay', resync)
+    const unsubscribe = engine.subscribe(apply)
     return () => {
       unsubscribe()
-      el?.removeEventListener('seeked', resync)
-      el?.removeEventListener('loadedmetadata', resync)
+      el.removeEventListener('seeked', onSeeked)
+      el.removeEventListener('loadedmetadata', resync)
+      el.removeEventListener('canplay', resync)
     }
-  }, [engine, lap])
+  }, [engine, lap, steady])
+  // A tap on the video starts it where the browser refused to.
+  const tapToPlay = () => { if (refusedRef.current) void video.current?.play().then(() => { refusedRef.current = false; setRefused(false) }, () => {}) }
   return <div className={`replay-pip ${large ? 'large' : ''} ${covered ? '' : 'uncovered'}`}>
-    <video ref={video} src={src} muted playsInline preload="auto" />
+    <video ref={video} src={src} muted playsInline preload={steady ? 'metadata' : 'auto'} disablePictureInPicture onClick={tapToPlay} />
     <div className="replay-pip-bar">
-      <span>{covered ? 'Onboard video' : 'Video does not cover this point'}</span>
+      <span>{!covered ? 'Video does not cover this point' : refused ? 'Tap the video to play it' : 'Onboard video'}</span>
       <button type="button" onClick={() => setLarge(v => !v)} aria-label={large ? 'Smaller video' : 'Larger video'} title={large ? 'Smaller video' : 'Larger video'}>{large ? '⤡' : '⤢'}</button>
     </div>
   </div>

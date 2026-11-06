@@ -57,6 +57,19 @@
 .session-browser-time strong { font: 500 20px/1.1 var(--font-mono); letter-spacing: -.04em; }
 .session-browser-time small { color: var(--text-dim); font: 10px var(--font-mono); }
 .session-browser-pb { color: var(--green); font: 10px var(--font-mono); }
+.session-browser-row:disabled { cursor: default; opacity: .5; }
+.session-browser-row:disabled:hover { background: transparent; border-color: transparent; border-bottom-color: var(--border); }
+.session-browser-blocked { font-style: normal; color: var(--amber); }
+/* Compact rows: the replay's other-driver picker. */
+.session-browser-row.compact { grid-template-columns: 14px minmax(0, 1fr) auto; gap: 10px; min-height: 52px; padding: 7px 8px; margin: 1px 0; }
+.session-browser-row.compact .session-browser-marker { width: 12px; height: 12px; font-size: 8px; }
+.session-browser-row.compact .session-browser-description { gap: 3px; }
+.session-browser-row.compact .session-browser-date { font-size: 12px; }
+.session-browser-row.compact .session-browser-meta { font-size: 10px; }
+.session-browser-row.compact .session-browser-time { gap: 3px; }
+.session-browser-row.compact .session-browser-time strong { font-size: 14px; letter-spacing: -.02em; }
+.session-browser-row.compact .session-browser-time small, .session-browser-row.compact .session-browser-pb { font-size: 9px; }
+.session-browser-row.compact:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .session-browser-empty { padding: 48px 24px; text-align: center; }
 .session-browser-empty strong { font: 600 24px var(--font-display); }
 .session-browser-empty p { color: var(--text-dim); font-size: 13px; }

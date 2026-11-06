@@ -343,6 +343,11 @@ const remoteBridge: CatalystBridge = {
 
   getReplayScene: guid => rpc('replay:scene', guid),
   getReplayLap: (sceneGuid, ref) => rpc('replay:lap', sceneGuid, ref),
+  listDriverLaps: async (driver, sessionGuid) => (await requestJson('/api/driver-laps', {
+    method: 'POST', body: JSON.stringify({ driver, sessionGuid }),
+  })).result ?? [],
+  // The server swaps the request for that driver's own export before your backend sees it.
+  getReplayDriverLap: (sceneGuid, ref, units) => rpc('replay:driverLap', sceneGuid, { ...ref, units }),
   getReplayCoaching: guid => rpc('replay:coaching', guid),
   getTerrain: (area, onState) => remoteTerrain(area, onState),
   getTerrainGrid: key => remoteTerrainGrid(key),

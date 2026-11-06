@@ -89,7 +89,7 @@ async function sceneArea(con: DuckDBConnection, meta: SessionMeta, own: GeoBox):
 // ─── Videos ─────────────────────────────────────────────────────────────────
 
 // "sg:lapIdx" for every lap a synced video covers.
-async function videoLaps(con: DuckDBConnection, sessionGuids: string[]): Promise<Set<string>> {
+export async function videoLaps(con: DuckDBConnection, sessionGuids: string[]): Promise<Set<string>> {
   const out = new Set<string>()
   if (!sessionGuids.length || !await hasTable(con, 'session_videos')) return out
   const found = await rows(con, `
@@ -230,6 +230,7 @@ export async function replayScene(con: DuckDBConnection, sessionGuid: string, un
       trackName: meta.track_name ?? (geometry.trackName || null),
       configName: meta.track_configuration_name ?? (geometry.configName || null),
       meanLineGuid: geometry.meanLineGuid,
+      configurationId: num(meta.track_configuration_id),
       totalDistM,
       widthM: Number.isFinite(geometry.widthM) && geometry.widthM > 0 ? round(geometry.widthM, 2) : 10.64,
       line, corners, sectorsM, area,
@@ -264,6 +265,26 @@ export async function replayLap(con: DuckDBConnection, sceneGuid: string, ref: R
   if (!scene || !session) throw new Error('That session is not in your workspace.')
   if (!sameCourse(sessionLayout(scene), sessionLayout(session))) throw new Error('That lap was driven on another track layout.')
 
+  const lap = await sessionLap(con, session, ref, units)
+  // Measured along another mean line (another device's, or one Garmin
+  // rebuilt): moved onto the scene's, so laps compare by distance.
+  const map = sceneMap(scene, session, lap.dist.at(-1)!)
+  return map ? remapReplayLap(lap, map) : lap
+}
+
+/** A lap's distances (and its car trace's) through a map onto another mean line. */
+export function remapReplayLap<T extends ReplayLap>(lap: T, map: DistanceMap): T {
+  const out = { ...lap, dist: lap.dist.map(d => round(mapPosition(map, d), 2)) }
+  if (lap.car) out.car = { ...lap.car, dist: lap.car.dist.map(d => round(mapPosition(map, d), 2)) }
+  return out
+}
+
+/**
+ * One lap of a session in this workspace, in time order, measured along
+ * that session's own mean line, with its video's car data. Shared by your
+ * own laps and the export another driver's replay asks for (replayDriver.ts).
+ */
+export async function sessionLap(con: DuckDBConnection, session: SessionMeta, ref: ReplayLapRef, units: UnitSystem = DEFAULT_UNIT_SYSTEM): Promise<ReplayLap> {
   const optimal = ref.lap === 'optimal'
   if (optimal && !await hasTable(con, 'optimal_lap_samples')) throw new Error('This session has no optimal lap.')
   const found = optimal
@@ -305,14 +326,6 @@ export async function replayLap(con: DuckDBConnection, sceneGuid: string, ref: R
       const trace: CarTrace | undefined = car?.traces[0]
       if (trace) lap.car = { ...trace, label: lap.label, durationMs: lap.durationMs }
     }
-  }
-
-  // Measured along another mean line (another device's, or one Garmin
-  // rebuilt): moved onto the scene's, so laps compare by distance.
-  const map = sceneMap(scene, session, lap.dist.at(-1)!)
-  if (map) {
-    lap.dist = lap.dist.map(d => round(mapPosition(map, d), 2))
-    if (lap.car) lap.car = { ...lap.car, dist: lap.car.dist.map(d => round(mapPosition(map, d), 2)) }
   }
   return lap
 }

@@ -27,6 +27,8 @@ export interface ReplayTrack {
   trackName: string | null
   configName: string | null
   meanLineGuid: string
+  /** Garmin's course ID: shared by every driver's sessions of the course (their mean lines differ); null when unknown. */
+  configurationId?: number | null
   totalDistM: number
   /** Track width from the mean line (10.64 m at VIR). */
   widthM: number
@@ -156,6 +158,73 @@ export interface ReplayLap extends ReplayLapRef {
    * same metres, `videoT` the video time at each). Null without video.
    */
   car: CarTrace | null
+}
+
+// ─── Another driver's lap (driver comparison in the replay) ────────────────
+
+/**
+ * Another driver's lap to race against yours: one of their valid laps on
+ * the scene's course. In the URL: `ghost=driver:<name>:<session guid>:<lap>`.
+ */
+export interface ReplayDriverLapRef {
+  driver: string
+  sessionGuid: string
+  lap: number
+}
+
+/**
+ * Another driver's lap, fetched from their workspace through the server
+ * (driverDirectory.ts, read-only) and measured along *your* scene's mean
+ * line like any other lap. Their car: the shared car-model library's model
+ * and preset for `vehicle.key`. `car.driver` is their name, so the video
+ * streams from their workspace.
+ */
+export interface ReplayDriverLap extends ReplayLap {
+  driver: string
+  vehicle: ReplayVehicle
+}
+
+/** What the server asks the other driver's backend for: one of their laps, with car data in your units. */
+export interface ReplayLapRequest {
+  sessionGuid: string
+  lap: number
+  units: UnitSystem
+}
+
+/** Validates a lap request (from the renderer, or the server for another driver). */
+export function replayLapRequest(value: unknown): ReplayLapRequest {
+  const v = value as Partial<ReplayLapRequest> | null
+  if (!v || typeof v !== 'object' || typeof v.sessionGuid !== 'string' || !GHOST_GUID_RE.test(v.sessionGuid)) throw new Error('Invalid lap')
+  if (!Number.isSafeInteger(v.lap) || (v.lap as number) < 0 || (v.lap as number) > 9999) throw new Error('Invalid lap')
+  return { sessionGuid: v.sessionGuid, lap: v.lap as number, units: v.units === 'metric' ? 'metric' : 'imperial' }
+}
+
+const DRIVER_GHOST = 'driver:'
+const GHOST_GUID_RE = /^[A-Za-z0-9_-]{1,128}$/
+// Driver names: as DRIVER_NAME_RE in comparison.ts (no ':').
+const GHOST_DRIVER_RE = /^[\p{L}\p{N}][\p{L}\p{N}_. -]{0,39}$/u
+
+/** `driver:<name>:<session guid>:<lap>`, the ghost param for another driver's lap. */
+export function driverGhostParam(ref: ReplayDriverLapRef): string {
+  return `${DRIVER_GHOST}${ref.driver}:${ref.sessionGuid}:${ref.lap}`
+}
+
+/** Another driver's lap from a ghost param, or null (not one, or malformed). */
+export function parseDriverGhostParam(value: string | null | undefined): ReplayDriverLapRef | null {
+  if (!value?.startsWith(DRIVER_GHOST)) return null
+  const parts = value.slice(DRIVER_GHOST.length).split(':')
+  if (parts.length !== 3) return null
+  const [driver, sessionGuid, lap] = parts
+  if (!GHOST_DRIVER_RE.test(driver) || !GHOST_GUID_RE.test(sessionGuid) || !/^\d{1,4}$/.test(lap)) return null
+  return { driver, sessionGuid, lap: Number(lap) }
+}
+
+/** A valid `ghost` param: none, one of your laps (<session>:<lap|optimal>), or another driver's. */
+export function isReplayGhostParam(value: string): boolean {
+  if (value === 'none') return true
+  if (value.startsWith(DRIVER_GHOST)) return parseDriverGhostParam(value) != null
+  const i = value.lastIndexOf(':')
+  return i > 0 && GHOST_GUID_RE.test(value.slice(0, i)) && /^(\d{1,4}|optimal)$/.test(value.slice(i + 1))
 }
 
 // ─── Terrain (USGS 3DEP elevation + USDA NAIP imagery, public domain) ──────
