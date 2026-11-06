@@ -832,10 +832,12 @@ function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFull
   useLayoutEffect(() => {
     const el = bar.current
     if (!el) return
-    frames.hidden = false
+    const faded = () => !shown && getComputedStyle(el).opacity === '0'
+    // Just put to sleep, it is still fading (opacity 1 as the transition starts).
+    frames.hidden = faded()
     const onFaded = (event: TransitionEvent) => {
       if (event.target !== el || event.propertyName !== 'opacity') return
-      if (!shown && getComputedStyle(el).opacity === '0') frames.hidden = true
+      if (faded()) frames.hidden = true
       else frames.show()
     }
     el.addEventListener('transitionend', onFaded)
@@ -860,9 +862,10 @@ function Transport({ engine, lap, scene, view, views, onView, fullscreen, onFull
       write.style(fill.current, 'width', `${duration ? (time / duration * 100).toFixed(3) : 0}%`)
       const el = range.current
       if (el && labelsDue(state)) {
-        const value = String(Math.round(time))
+        // Against the element itself: the pointer and freshen set these too.
+        const value = String(Math.round(time)), text = valueText(time)
         if (el.value !== value) el.value = value
-        write.attr(el, 'aria-valuetext', valueText(time))
+        if (el.getAttribute('aria-valuetext') !== text) el.setAttribute('aria-valuetext', text)
       }
     })
     // valueText reads the compared car's label.
