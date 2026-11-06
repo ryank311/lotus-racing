@@ -141,7 +141,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   }, [scene, lapInfo, ghostParam, rivalRef])
 
   const viewParam = params.get('view')
-  const view: ReplayView = viewParam === 'driver' || viewParam === 'garmin' || viewParam === 'both' ? viewParam : 'chase'
+  // Racing another driver, both cars stay in frame unless a camera was chosen.
+  const view: ReplayView = viewParam === 'driver' || viewParam === 'garmin' || viewParam === 'both' || viewParam === 'chase' ? viewParam : rivalRef ? 'both' : 'chase'
   const [debugOrbit, setDebugOrbit] = useState(false)
 
   const lapKey = id && lapInfo ? `${id}|${lapValue(lapInfo)}` : ''
@@ -452,7 +453,8 @@ export function Replay({ refreshTick }: { refreshTick: number }) {
   }, [engine, view, cameras.join(), setView, toggleFullscreen])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectLap = (value: string) => query({ lap: value })
-  const selectGhost = (value: string) => query({ ghost: value })
+  // Turning to another driver's lap starts on both cars (the default above).
+  const selectGhost = (value: string) => query(!rivalRef && parseDriverGhostParam(value) ? { ghost: value, view: null } : { ghost: value })
 
   // ── Status ─────────────────────────────────────────────────────────────
   const error = engineError ?? sceneResource.error ?? lapResource.error ?? worldStatus.error ?? null

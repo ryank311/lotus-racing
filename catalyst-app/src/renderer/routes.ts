@@ -58,7 +58,8 @@ const enums: Record<string, [string[], string]> = {
 }
 // Pages that give a shared param name other values.
 const pageEnums: Partial<Record<Page, Record<string, [string[], string]>>> = {
-  replay: { view: [['chase', 'driver', 'garmin', 'both'], 'chase'] },
+  // No default to drop: chasing is the default alone, both cars racing another driver (Replay.tsx).
+  replay: { view: [['chase', 'driver', 'garmin', 'both'], ''] },
   // A selected car's panel: its 3D model (the default) or its context files.
   garage: { tab: [['model', 'files'], 'model'] },
 }

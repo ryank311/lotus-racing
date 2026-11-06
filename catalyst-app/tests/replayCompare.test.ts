@@ -108,4 +108,7 @@ test('the ghost param names another driver’s lap', () => {
   assert.equal(kept.error, undefined)
   assert.deepEqual(Object.fromEntries(new URLSearchParams(kept.url.split('?')[1])), { ghost: 'driver:Mitch Smith:e43adaf4-b2a6:3', view: 'both' })
   assert.equal(normalizeRoute('/replay/abc', '?ghost=driver:Mitch:abc:x').error, 'Invalid ghost lap.')
+  // Chase chosen while racing another driver stays (Both cars is that view's default).
+  const chase = normalizeRoute('/replay/abc', `?${new URLSearchParams({ ghost: driverGhostParam(ref), view: 'chase' })}`)
+  assert.equal(new URLSearchParams(chase.url.split('?')[1]).get('view'), 'chase')
 })

@@ -680,7 +680,8 @@ it is not yours, else the driver's name, or Ghost), with **Side by side**
 from their starts). Before its start it waits on the line; past its finish
 it leaves the track. [ and ] move it alone a tenth (⇧ a second).
 
-**Both cars** (a fourth camera, with a compared car): behind the pair along
+**Both cars** (a fourth camera, with a compared car, and the one a lap
+raced against another driver starts on): behind the pair along
 your car's heading, looking between them, back far enough that a sphere
 round both fits the view and higher as they part (near top-down 80 m apart);
 the cars are followed exactly while the framing eases. From about 90 m apart
