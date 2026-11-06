@@ -64,13 +64,16 @@
   font: 600 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase;
 }
 .replay-reset-view:hover { border-color: var(--signal); }
-/* The engine appends its canvas after the overlays: lift them above it. */
+/* The engine appends its canvas after the overlays: lift them above it.
+   The panels are solid enough to read over a bright sky without blurring
+   what is behind them (a backdrop blur costs a third of the frame rate on
+   an integrated GPU). */
 .replay-hud, .replay-note, .replay-loading, .replay-play-overlay { z-index: 1; }
 .replay-hud { position: absolute; inset: 0; pointer-events: none; font-family: var(--font-mono); color: var(--text); }
 .replay-hud > *, .replay-note, .replay-loading { position: absolute; }
 .replay-glass, .replay-hud-timer, .replay-hud-instruments > div, .replay-pip, .replay-note {
-  background: rgba(10, 10, 12, 0.72); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-lg);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  background: rgba(10, 10, 12, 0.82); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-lg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 }
 
 .replay-hud-timer { top: 12px; left: 12px; padding: 9px 13px 10px; display: grid; gap: 1px; min-width: 150px; }
@@ -157,8 +160,7 @@
 .replay-transport { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .replay-stage .replay-transport {
   position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 3;
-  background: rgba(10, 12, 15, .74); border-color: rgba(255, 255, 255, .09);
-  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  background: rgba(10, 12, 15, .84); border-color: rgba(255, 255, 255, .09);
   transition: opacity .35s ease, transform .35s ease;
 }
 .replay-stage .replay-transport.asleep { opacity: 0; transform: translateY(8px); pointer-events: none; }
@@ -294,7 +296,7 @@
   .replay-player:not(:fullscreen) .replay-stage { overflow: visible; margin-bottom: calc(var(--transport-h, 96px) + 10px); }
   .replay-player:not(:fullscreen) .replay-stage .replay-transport {
     top: calc(100% + 10px); bottom: auto; left: -1px; right: -1px;
-    background: var(--panel); border-color: var(--border); backdrop-filter: none; -webkit-backdrop-filter: none;
+    background: var(--panel); border-color: var(--border);
   }
   .replay-player:not(:fullscreen) .replay-stage .replay-transport.asleep { opacity: 1; transform: none; pointer-events: auto; }
   .replay-player:not(:fullscreen) .replay-stage .replay-hud-instruments { bottom: 8px; transform: none; }

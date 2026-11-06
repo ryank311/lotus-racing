@@ -47,8 +47,7 @@
   position: absolute; z-index: 1; top: 12px; left: 50%; transform: translateX(-50%);
   width: min(420px, calc(100% - 2 * min(32%, 360px) - 24px)); min-width: min(300px, calc(100% - 24px));
   display: grid; gap: 3px; padding: 9px 13px 10px 12px; pointer-events: none;
-  background: rgba(15, 15, 18, 0.82); border: 1px solid #ffffff1f; border-left: 3px solid var(--tone); border-radius: var(--radius-lg);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  background: rgba(15, 15, 18, 0.88); border: 1px solid #ffffff1f; border-left: 3px solid var(--tone); border-radius: var(--radius-lg);
   animation: replay-coach-in .22s ease-out;
 }
 .replay-coach-callout p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
