@@ -1022,6 +1022,8 @@ export class ReplayEngine {
       if (this.timeMs >= this.duration) {
         this.timeMs = this.duration
         this.playing = false
+        // One more frame, so listeners see the lap end even when nothing else moves.
+        this.invalidate(1)
         this.onEnded?.()
       }
     }
