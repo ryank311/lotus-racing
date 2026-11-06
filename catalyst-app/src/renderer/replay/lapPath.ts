@@ -23,6 +23,7 @@ export interface LapPose {
 }
 
 export type CarChannel = 'throttle' | 'brake' | 'rpm' | 'gear' | 'steering' | 'speed'
+const CAR_CHANNELS: readonly CarChannel[] = ['throttle', 'brake', 'rpm', 'gear', 'steering', 'speed']
 
 /** Last index with xs[i] <= x (0 when x is before the first). */
 export function lowerIndex(xs: ArrayLike<number>, x: number): number {
@@ -104,7 +105,11 @@ export class LapPath {
    * is missing or does not follow the path's turns.
    */
   readonly steeringSign: number
+  /** Whether the video's sync covers any of the lap (fixed: read every frame by the HUD). */
+  readonly hasVideo: boolean
   private carDist: number[] = []
+  // The channels with any reading, found once (the HUD asks every frame).
+  private channels = new Set<CarChannel>()
   // The last lookup (index and fraction), so a frame's lookups allocate nothing.
   private li = 0
   private lf = 0
@@ -159,6 +164,8 @@ export class LapPath {
     this.maxSpeed = hi
     this.car = lap.car
     if (lap.car) this.carDist = lap.car.dist
+    for (const key of CAR_CHANNELS) if ((lap.car?.[key] as Array<number | null> | undefined)?.some(v => v != null)) this.channels.add(key)
+    this.hasVideo = !!lap.car?.videoT.some(v => v != null)
     this.steeringSign = this.measureSteeringSign()
   }
 
@@ -286,12 +293,7 @@ export class LapPath {
   }
 
   hasChannel(key: CarChannel): boolean {
-    const values = this.car?.[key] as Array<number | null> | undefined
-    return !!values?.some(v => v != null)
-  }
-
-  get hasVideo(): boolean {
-    return !!this.car?.videoT.some(v => v != null)
+    return this.channels.has(key)
   }
 }
 
